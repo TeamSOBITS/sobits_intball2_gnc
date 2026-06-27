@@ -28,6 +28,7 @@ setup(
         'console_scripts': [
             'location_broadcaster = sobits_intball2_gnc.navigation.location_broadcaster:main',
             'location_setting = sobits_intball2_gnc.navigation.location_setting:main',
+            'fan_control = sobits_intball2_gnc.control.fan_control:main',
         ],
     },
 )

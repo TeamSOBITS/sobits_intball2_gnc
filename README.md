@@ -120,6 +120,59 @@ sobits_intball2_gnc/
    - シミュレータ内でロボットを登録したい地点・姿勢に移動させ，GUI で地点名を入力して **SNAP CURRENT POS** を押すと登録されます
    - 登録済みの地点の削除・リネームも GUI から行えます
 
+### ファン直接制御方法
+Navigationを使わず，`/ctl/duty`へ直接publishして8基のファンを個別に駆動できます．自律移動・ホバリングをユーザプログラムで実装するための最低レベル制御です．
+```sh
+ros2 run sobits_intball2_gnc fan_control [引数]
+```
+
+> [!NOTE]
+> - ファン番号は `1`〜`8`，デューティ比は `0.0`〜`1.0`（範囲外は自動でクランプ）．
+> - 逆回転（逆推力）はできません．負のdutyを送るとファンが停止するだけです．逆方向の力が必要な場合は逆向きペアのファン（fan1↔fan8, fan2↔fan5, fan3↔fan6, fan4↔fan7）を駆動してください．
+> - Navigationが**OFF**の状態で使用してください（ON時は制御器と競合します）．
+
+#### 引数一覧
+
+| 引数 | 説明 | デフォルト値 |
+| --- | --- | --- |
+| `--fan` | 制御するファン番号（1-8）。`--duty`と併用 | なし |
+| `--duty` | デューティ比（0.0-1.0）。`--fan`と併用 | `0.0` |
+| `--set` | ファン毎に指定（`FAN:DUTY`形式を複数）例: `1:0.5 3:0.2` | なし |
+| `--all` | 全8基を同一デューティ比に設定 | なし |
+| `--duration` | publishを継続する秒数 | `1.0` |
+
+> `--fan` / `--set` / `--all` は排他です（いずれか1つを指定）．引数なしで起動するとヘルプを表示します．
+
+#### 使用例
+
+```sh
+# fan1 を duty=0.5 で 2秒間 駆動
+ros2 run sobits_intball2_gnc fan_control --fan 1 --duty 0.5 --duration 2
+
+# ファン毎に個別指定（fan1=0.5, fan3=0.2）
+ros2 run sobits_intball2_gnc fan_control --set 1:0.5 3:0.2 --duration 2
+
+# 全ファンを duty=0.3 で 1秒間 駆動
+ros2 run sobits_intball2_gnc fan_control --all 0.3 --duration 1
+
+# 逆向きペアで往復（並進をおおよそ初期位置に戻す: 押す→2倍戻す→止める）
+ros2 run sobits_intball2_gnc fan_control --fan 1 --duty 0.3 --duration 1 && \
+ros2 run sobits_intball2_gnc fan_control --fan 8 --duty 0.3 --duration 2 && \
+ros2 run sobits_intball2_gnc fan_control --fan 1 --duty 0.3 --duration 1
+```
+
+他のPythonプログラムから利用する場合は`FanControlNode`をimportして使えます．
+```python
+from intball2_programs.fan_control import FanControlNode
+
+fan = FanControlNode()
+fan.set_duty(1, 0.5)            # fan1 を duty=0.5
+fan.set_duties({1: 0.5, 3: 0.2})  # ファン毎に一括設定
+fan.set_all_duty(0.3)          # 全ファン一括
+duty = fan.force_to_duty(0.02)  # 推力[N] → デューティ比 換算
+```
+
+
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
 ## マイルストーン
