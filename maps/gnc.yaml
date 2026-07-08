@@ -1,0 +1,35 @@
+# IntBall2 GNC parameters (self-implemented control stack).
+# Loaded directly with yaml.safe_load by control nodes (not ROS param format).
+# Fan geometry / thrust model initial values come from tmp/sim/report_fan.md
+# (derived from the simulator's sim.yaml / ctl.yaml). Calibration is out of
+# scope for this change; tune here if needed.
+
+thrust_allocator:
+  kj: 4.082482905        # thrust -> duty coefficient: duty = kj * sqrt(f)
+  fj_max: 0.06           # max thrust per fan [N] (duty = 1.0)
+  cg: [0.001489, 0.001363, 0.000249]   # center of gravity [m]
+  # 8 fans: pos = mounting position [m], vec = thrust unit vector (body frame)
+  fans:
+    - {pos: [0.045, 0.070, 0.0555],   vec: [-0.754, -0.415, -0.509]}   # fan1
+    - {pos: [0.045, -0.070, 0.0555],  vec: [-0.754, 0.415, -0.509]}    # fan2
+    - {pos: [0.045, -0.070, -0.0555], vec: [-0.754, 0.415, 0.509]}     # fan3
+    - {pos: [0.045, 0.070, -0.0555],  vec: [-0.754, -0.415, 0.509]}    # fan4
+    - {pos: [-0.045, 0.070, -0.0555], vec: [0.754, -0.415, 0.509]}     # fan5
+    - {pos: [-0.045, 0.070, 0.0555],  vec: [0.754, -0.415, -0.509]}    # fan6
+    - {pos: [-0.045, -0.070, 0.0555], vec: [0.754, 0.415, -0.509]}     # fan7
+    - {pos: [-0.045, -0.070, -0.0555], vec: [0.754, 0.415, 0.509]}     # fan8
+
+direction_control:
+  control_rate: 50.0     # publish rate [Hz]
+  force_magnitude: 0.02  # commanded translation force per direction cmd [N]
+  max_force: 0.1         # clamp on commanded force magnitude [N]
+
+hover_control:
+  control_rate: 50.0     # control loop rate [Hz]
+  kd_w: [0.02, 0.02, 0.02]   # angular-rate damping gain (torque per rad/s)
+  kp_a: [0.5, 0.5, 0.5]      # acceleration disturbance rejection gain (force per m/s^2)
+  deadband_w: 0.01       # gyro deadband [rad/s] (below -> no torque)
+  deadband_a: 0.02       # acc residual deadband [m/s^2] (below -> no force)
+  acc_bias_alpha: 0.01   # EMA coefficient for accelerometer bias estimate
+  max_force: 0.1         # output force clamp (per axis) [N]
+  max_torque: 0.02       # output torque clamp (per axis) [Nm]
