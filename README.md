@@ -43,11 +43,18 @@ ROS2 Humble に対応しています．
 ```
 sobits_intball2_gnc/
 ├── maps/
-│   └── iss_location.yaml            # 登録済みロケーション一覧（27地点）
+│   ├── iss_location.yaml            # 登録済みロケーション一覧（27地点）
+│   └── gnc.yaml                     # GNC パラメータ（ファン配置・推力モデル・制御ゲイン）
 ├── sobits_intball2_gnc/
-│   └── navigation/
-│       ├── location_broadcaster.py  # YAML のロケーションを TF にパブリッシュ（10Hz）
-│       └── location_setting.py      # ロケーション登録 GUI（Tkinter + Zenity）
+│   ├── navigation/
+│   │   ├── location_broadcaster.py  # YAML のロケーションを TF にパブリッシュ（10Hz）
+│   │   └── location_setting.py      # ロケーション登録 GUI（Tkinter + Zenity）
+│   └── control/
+│       ├── fan_control.py           # 8基ファンの直接 duty 制御（/ctl/duty）
+│       ├── thrust_allocator.py      # wrench（力・トルク）→ 8ファン duty 配分ライブラリ
+│       ├── direction_control.py     # 進行方向ベクトル → ファン制御ノード
+│       ├── hover_control.py         # IMU ホバリング制御ノード
+│       └── gnc_params.py            # gnc.yaml ローダ（共通）
 ├── package.xml
 ├── setup.py
 └── setup.cfg
@@ -163,14 +170,54 @@ ros2 run sobits_intball2_gnc fan_control --fan 1 --duty 0.3 --duration 1
 
 他のPythonプログラムから利用する場合は`FanControlNode`をimportして使えます．
 ```python
-from intball2_programs.fan_control import FanControlNode
+from sobits_intball2_gnc.control.fan_control import FanControlNode
 
 fan = FanControlNode()
 fan.set_duty(1, 0.5)            # fan1 を duty=0.5
 fan.set_duties({1: 0.5, 3: 0.2})  # ファン毎に一括設定
 fan.set_all_duty(0.3)          # 全ファン一括
+fan.set_duty_array([0.1]*8)    # 8基まとめて設定（配分結果の publish に使用）
 duty = fan.force_to_duty(0.02)  # 推力[N] → デューティ比 換算
 ```
+
+> [!NOTE]
+> 以下の進行方向制御・ホバリング制御を含むファン関連パラメータ（推力換算係数 `kj`，ファン配置，制御ゲイン等）はすべて [maps/gnc.yaml](maps/gnc.yaml) に集約されています．`kj` は `FanControlNode` と推力配分で共有される単一情報源です．
+
+
+### 進行方向制御方法
+
+進みたい**進行方向ベクトル（機体座標系）**を指定すると，推力配分（`thrust_allocator`）により8基のファンを制御してその方向へ並進力を発生させます．Navigation を使わない自前の自由経路移動の土台です．
+
+```sh
+ros2 run sobits_intball2_gnc direction_control
+```
+- `geometry_msgs/Vector3` 型の `/gnc/direction`（機体座標系）を購読し，最新ベクトルを正規化して `gnc.yaml` の `force_magnitude` 倍した並進力を `control_rate` Hz で `/ctl/duty` に出力します．
+- 方向未受信・ゼロ長ベクトルのときは全ファン停止（duty 0）です．
+
+```sh
+# 例: +X 方向へ進む指令を送る
+ros2 topic pub /gnc/direction geometry_msgs/msg/Vector3 "{x: 1.0, y: 0.0, z: 0.0}"
+```
+
+単発検証用に CLI で方向を直接与えるモードもあります．
+```sh
+# +X 方向に 3秒間 publish して終了（テスト用）
+ros2 run sobits_intball2_gnc direction_control --vec 1 0 0 --duration 3
+```
+
+### ホバリング制御方法
+
+IMU（`/imu/imu`）のジャイロ・加速度のみを用いて姿勢を安定させるホバリング制御です．角速度を減衰（無回転を維持）し，並進加速度外乱を抑制します．
+
+```sh
+ros2 run sobits_intball2_gnc hover_control
+```
+- `ib2_msgs/msg/IMU` の `/imu/imu` を購読し，`gnc.yaml` のゲイン（`kd_w`, `kp_a` 等）で補正 wrench を計算 → 推力配分 → `/ctl/duty` に出力します．
+
+> [!NOTE]
+> - **前提**: いずれのノードも Navigation が **OFF** の状態で使用してください（ON 時は `ctl_only` が `/ctl/duty` に競合 publish します）．
+> - IMU のみのため姿勢・位置の絶対参照がなく，**真の定点保持ではなく「無回転・外乱抑制の維持」**です（姿勢・位置はゆっくりドリフトします）．
+> - **将来の自由経路移動**は，`HoverController` のフィードフォワード並進力フック（`/gnc/feedforward_force`，または `compute(..., feedforward_force=...)`）に進行方向の力を与えることで，ホバリング制御の上に積み上げて実装できます．
 
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>

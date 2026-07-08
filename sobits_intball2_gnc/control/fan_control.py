@@ -9,8 +9,11 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray, MultiArrayDimension
 
-_KJ: float = 4.082482905  # 推力から duty への換算係数 (N^0.5 -> duty)
-_FAN_COUNT: int = 8
+from sobits_intball2_gnc.control.gnc_params import (
+    DEFAULT_FAN_COUNT,
+    DEFAULT_KJ,
+    load_gnc_config,
+)
 
 
 class FanControlNode(Node):
@@ -19,14 +22,23 @@ class FanControlNode(Node):
     Inherits from rclpy.node.Node. Instantiate directly to use as a
     standalone node, or share the instance with other logic running in
     the same process.
+
+    ``kj`` (thrust->duty coefficient) and the fan count are read from
+    ``maps/gnc.yaml`` so they stay in sync with the thrust allocator. If the
+    file is unavailable, backward-compatible defaults are used.
     """
 
     def __init__(self, node_name: str = "fan_control_node") -> None:
         super().__init__(node_name)
-        self._duties: list[float] = [0.0] * _FAN_COUNT
+        ta = load_gnc_config().get("thrust_allocator", {})
+        self._kj: float = float(ta.get("kj", DEFAULT_KJ))
+        fans = ta.get("fans")
+        self._fan_count: int = len(fans) if fans else DEFAULT_FAN_COUNT
+        self._duties: list[float] = [0.0] * self._fan_count
         self._pub = self.create_publisher(Float64MultiArray, "/ctl/duty", 1)
         self.get_logger().info(
-            "FanControlNode initialized, publishing to /ctl/duty"
+            "FanControlNode initialized (kj=%.6f, fans=%d), "
+            "publishing to /ctl/duty" % (self._kj, self._fan_count)
         )
 
     def set_duty(self, fan_id: int, duty: float) -> None:
@@ -47,17 +59,28 @@ class FanControlNode(Node):
             self.publish()
 
     def set_all_duty(self, duty: float) -> None:
-        """Set all 8 fans to the same duty and publish."""
+        """Set all fans to the same duty and publish."""
         clamped = self._clamp(duty)
-        self._duties = [clamped] * _FAN_COUNT
+        self._duties = [clamped] * self._fan_count
         self.get_logger().info(f"all fans duty -> {clamped:.3f}")
+        self.publish()
+
+    def set_duty_array(self, duties: list[float]) -> None:
+        """Set the full duty array (clamped) and publish.
+
+        Convenience for callers (e.g. the thrust allocator) that compute all
+        fan duties at once. Extra entries are ignored; missing entries stay 0.
+        """
+        self._duties = [0.0] * self._fan_count
+        for i, duty in enumerate(duties[: self._fan_count]):
+            self._duties[i] = self._clamp(duty, i + 1)
         self.publish()
 
     def _apply_duty(self, fan_id: int, duty: float) -> bool:
         """Update one fan in the internal array. Returns True if applied."""
-        if not 1 <= fan_id <= _FAN_COUNT:
+        if not 1 <= fan_id <= self._fan_count:
             self.get_logger().warn(
-                f"fan_id {fan_id} out of range [1, {_FAN_COUNT}], ignored"
+                f"fan_id {fan_id} out of range [1, {self._fan_count}], ignored"
             )
             return False
         clamped = self._clamp(duty, fan_id)
@@ -87,16 +110,18 @@ class FanControlNode(Node):
 
     def force_to_duty(self, f: float) -> float:
         """Convert thrust [N] to duty ratio. Negative values are treated as 0."""
-        return _KJ * math.sqrt(max(0.0, f))
+        return self._kj * math.sqrt(max(0.0, f))
 
     def duty_to_force(self, duty: float) -> float:
         """Convert duty ratio to thrust [N]."""
-        return (duty / _KJ) ** 2
+        return (duty / self._kj) ** 2
 
     def _make_msg(self) -> Float64MultiArray:
         msg = Float64MultiArray()
         msg.layout.dim = [
-            MultiArrayDimension(label="fan_duty", size=_FAN_COUNT, stride=1)
+            MultiArrayDimension(
+                label="fan_duty", size=self._fan_count, stride=1
+            )
         ]
         msg.layout.data_offset = 0
         msg.data = list(self._duties)

@@ -69,3 +69,5 @@ AMENT_IGNORE
 .vscode/
 openspec/
 /tmp
+/.claude
+/.github

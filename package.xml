@@ -9,8 +9,11 @@
 
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>ib2_msgs</depend>
   <depend>tf2_ros</depend>
   <depend>python3-yaml</depend>
+  <depend>python3-numpy</depend>
   <depend>ament_index_python</depend>
 
   <test_depend>ament_copyright</test_depend>

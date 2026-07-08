@@ -13,7 +13,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/maps', glob('maps/*.yaml')),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'numpy'],
     zip_safe=True,
     maintainer='rg-msi-01',
     maintainer_email='rg-msi-01@todo.todo',
@@ -29,6 +29,8 @@ setup(
             'location_broadcaster = sobits_intball2_gnc.navigation.location_broadcaster:main',
             'location_setting = sobits_intball2_gnc.navigation.location_setting:main',
             'fan_control = sobits_intball2_gnc.control.fan_control:main',
+            'direction_control = sobits_intball2_gnc.control.direction_control:main',
+            'hover_control = sobits_intball2_gnc.control.hover_control:main',
         ],
     },
 )
