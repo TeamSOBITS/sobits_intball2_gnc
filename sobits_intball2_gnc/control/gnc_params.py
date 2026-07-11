@@ -50,6 +50,22 @@ DEFAULTS = {
         "max_force": 0.1,
         "max_torque": 0.02,
     },
+    # Disabled by default so the package behaves as pure IMU hover when the
+    # installed gnc.yaml is absent (legacy behavior).
+    "nav_correction": {
+        "enable": False,
+        "nav_rate": 20.0,
+        "gauss_window": 15,
+        "gauss_sigma": 4.0,
+        "timeout": 1.0,
+        "kp_pos": [0.05, 0.05, 0.05],
+        "kd_pos": [0.2, 0.2, 0.2],
+        "kp_att": [0.005, 0.005, 0.005],
+        "max_corr_force": 0.05,
+        "max_corr_torque": 0.01,
+        "standby_ctl_on_start": True,
+        "checkpoint_topic": "/gnc/checkpoints",
+    },
 }
 
 
