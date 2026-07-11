@@ -39,13 +39,15 @@ hover_control:
 # never dominate. Requires Navigation ON (/sensor_fusion/navigation).
 nav_correction:
   enable: true           # false -> pure IMU hover (legacy behavior)
-  nav_rate: 20.0         # down-sampled intake rate [Hz] (raw stream is ~200Hz)
-  gauss_window: 15       # Gaussian smoothing window length [samples]
-  gauss_sigma: 4.0       # Gaussian weight sigma [samples]
+  nav_rate: 50.0         # down-sampled intake rate [Hz] (raw stream is ~200Hz)
+  gauss_window: 30       # Gaussian smoothing window length [samples]
+  gauss_sigma: 8.0       # Gaussian weight sigma [samples]
   timeout: 1.0           # nav silence -> drop correction, pure IMU [s]
-  kp_pos: [0.05, 0.05, 0.05]   # position error -> force gain [N/m]
-  kd_pos: [0.2, 0.2, 0.2]      # velocity damping gain [N/(m/s)]
-  kp_att: [0.005, 0.005, 0.005]  # attitude quaternion error -> torque gain [Nm]
+  kp_pos: [0.15, 0.15, 0.15]   # position error -> force gain [N/m]
+  kd_pos: [0.6, 0.6, 0.6]      # velocity damping gain [N/(m/s)]
+  kp_att: [0.02, 0.02, 0.02]   # attitude quaternion error -> torque gain [Nm];
+                               # must out-muscle the residual torque left by
+                               # non-negative clamping in thrust allocation
   max_corr_force: 0.05   # correction force clamp (independent of IMU term) [N]
   max_corr_torque: 0.01  # correction torque clamp [Nm]
   standby_ctl_on_start: true   # send STAND_BY to /ctl/command_ros2 at startup
