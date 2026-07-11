@@ -215,9 +215,30 @@ ros2 run sobits_intball2_gnc hover_control
 - `ib2_msgs/msg/IMU` の `/imu/imu` を購読し，`gnc.yaml` のゲイン（`kd_w`, `kp_a` 等）で補正 wrench を計算 → 推力配分 → `/ctl/duty` に出力します．
 
 > [!NOTE]
-> - **前提**: いずれのノードも Navigation が **OFF** の状態で使用してください（ON 時は `ctl_only` が `/ctl/duty` に競合 publish します）．
-> - IMU のみのため姿勢・位置の絶対参照がなく，**真の定点保持ではなく「無回転・外乱抑制の維持」**です（姿勢・位置はゆっくりドリフトします）．
+> - IMU のみの場合は姿勢・位置の絶対参照がなく，**「無回転・外乱抑制の維持」**です（姿勢・位置はゆっくりドリフトします）．下記の **Nav 補正**を有効にするとドリフトを抑制できます．
 > - **将来の自由経路移動**は，`HoverController` のフィードフォワード並進力フック（`/gnc/feedforward_force`，または `compute(..., feedforward_force=...)`）に進行方向の力を与えることで，ホバリング制御の上に積み上げて実装できます．
+
+#### Nav 補正（自己位置推定によるドリフト抑制）
+
+`gnc.yaml` の `nav_correction.enable: true`（デフォルト）で，自己位置推定 `/sensor_fusion/navigation` を利用したドリフト補正が有効になります．**IMU 制御が主力**のまま，平滑化した位置・姿勢の保持目標からの誤差を低ゲインの補正 wrench として加算します（補正は `max_corr_force`/`max_corr_torque` で独立にクランプされ，IMU 項を上回りません）．
+
+- **前提**: Navigation を **ON** にしてください（`/sensor_fusion/navigation` は Nav ON 時のみ配信）．
+- Nav ON にすると JAXA の制御器（`ctl_only`）が自動ホバリングを開始し `/ctl/duty` が競合します．ノードは `/ctl/status` を監視し，JAXA 制御器が STAND_BY 以外の状態になるたびに `/ctl/command_ros2` へ **STAND_BY** を自動送信して待機させ続けます（`standby_ctl_on_start: true`，Nav OFF→ON 切替での競合再発も含め シミュレータで動作検証済み）．このためホバリングノード稼働中は `/ctl/command` 系の移動コマンドも STAND_BY に戻されます（ファンの制御権は本ノードが持ちます）．
+- 取得頻度は `nav_rate` にダウンサンプルされ，**ガウシアンフィルタ**（窓長 `gauss_window`・σ `gauss_sigma`）で平滑化されます．
+- Nav が `timeout` 秒間途絶えると自動で**純 IMU ホバリングへ縮退**し，復帰すると保持目標を再捕捉して補正を再開します．
+- `nav_correction.enable: false` にすると従来どおりの純 IMU ホバリング（Nav OFF 前提）になります．
+
+#### 経路チェックポイントIF（将来の自由経路飛行の受け口）
+
+`/gnc/checkpoints`（`geometry_msgs/PoseArray`，DS 座標系＝`/sensor_fusion/navigation` と同一座標系）に経路のチェックポイント配列を publish すると，先頭のポーズが保持目標に切り替わります．空配列でクリアされ，現在位置を保持目標として再捕捉します．
+
+```sh
+# 例: チェックポイント1点を保持目標に設定
+ros2 topic pub --once /gnc/checkpoints geometry_msgs/msg/PoseArray \
+  "{header: {frame_id: iss_body}, poses: [{position: {x: 0.5, y: 0.0, z: 0.0}, orientation: {w: 1.0}}]}"
+```
+
+将来の自由経路飛行プログラムは，配列を publish → 到達判定しつつ `HoverControlNode.advance_checkpoint()` を呼ぶことで経路を進みます（到達判定・軌道生成はこのパッケージのスコープ外）．
 
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
