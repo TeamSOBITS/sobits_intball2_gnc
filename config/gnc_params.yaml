@@ -1,0 +1,135 @@
+# IntBall2 GNC parameters (ROS2 parameter file).
+#
+# Loaded through the ROS2 parameter system by the `control` orchestrator node
+# (control.py), e.g.:
+#   ros2 run sobits_intball2_gnc control --ros-args --params-file <this file>
+#
+# Each control module declares and reads only the parameters it uses (parameter
+# ownership is co-located with the code). Dotted names group parameters per
+# module. Fan geometry / thrust model initial values come from
+# tmp/sim/report_fan.md (derived from the simulator's sim.yaml / ctl.yaml).
+#
+# Self-position comes from the TF tree (iss_body <- body), which the simulator
+# publishes with Navigation OFF. This file has no Navigation settings: the
+# package does not subscribe to /sensor_fusion/navigation and does not talk to
+# the JAXA ctl_only controller.
+#
+# NOTE: ROS2 parameters cannot represent an array of maps, so the 8-fan geometry
+# is flattened into two double[24] arrays (fan_positions / fan_vectors), read
+# 3 elements at a time (x,y,z) per fan. See utils/thrust_allocator.py.
+#
+# NOTE: ROS2 silently ignores parameter overrides that the node never declares.
+# A key left over from an older revision (e.g. anything under `nav_correction`)
+# therefore has no effect and produces no error -- it just quietly does nothing.
+
+/**:
+  ros__parameters:
+
+    thrust_allocator:
+      kj: 4.082482905          # thrust -> duty coefficient: duty = kj * sqrt(f)
+      fj_max: 0.06             # max thrust per fan [N] (duty = 1.0)
+      cg: [0.001489, 0.001363, 0.000249]   # center of gravity [m]
+      # 8 fans, flattened [x1,y1,z1, x2,y2,z2, ...] (body frame).
+      # pos = mounting position [m], vec = thrust unit vector.
+      fan_positions:
+        - 0.045
+        - 0.070
+        - 0.0555     # fan1
+        - 0.045
+        - -0.070
+        - 0.0555     # fan2
+        - 0.045
+        - -0.070
+        - -0.0555    # fan3
+        - 0.045
+        - 0.070
+        - -0.0555    # fan4
+        - -0.045
+        - 0.070
+        - -0.0555    # fan5
+        - -0.045
+        - 0.070
+        - 0.0555     # fan6
+        - -0.045
+        - -0.070
+        - 0.0555     # fan7
+        - -0.045
+        - -0.070
+        - -0.0555    # fan8
+      fan_vectors:
+        - -0.754
+        - -0.415
+        - -0.509     # fan1
+        - -0.754
+        - 0.415
+        - -0.509     # fan2
+        - -0.754
+        - 0.415
+        - 0.509      # fan3
+        - -0.754
+        - -0.415
+        - 0.509      # fan4
+        - 0.754
+        - -0.415
+        - 0.509      # fan5
+        - 0.754
+        - -0.415
+        - -0.509     # fan6
+        - 0.754
+        - 0.415
+        - -0.509     # fan7
+        - 0.754
+        - 0.415
+        - 0.509      # fan8
+
+    control:
+      # Period of the periodic "who owns the fans" status log [s].
+      # Logs /ctl/duty publisher count, IMU/Nav liveness, JAXA ctl status and
+      # the current duty array. Set 0.0 to disable.
+      status_log_period: 2.0
+
+    direction_control:
+      control_rate: 50.0       # publish rate [Hz]
+      force_magnitude: 0.02    # commanded translation force per direction cmd [N]
+      max_force: 0.1           # clamp on commanded force magnitude [N]
+
+    hover_control:
+      # Hover strategy:
+      #   imu    -> IMU only (no TF lookups at all)
+      #   tf_imu -> TF self-position + IMU (TF correction layered on the IMU law)
+      # An unrecognized value fails at startup rather than falling back.
+      mode: tf_imu
+      control_rate: 50.0       # control loop rate [Hz]
+      kd_w: [0.02, 0.02, 0.02] # angular-rate damping gain (torque per rad/s)
+      kp_a: [0.5, 0.5, 0.5]    # acceleration disturbance rejection gain (force per m/s^2)
+      deadband_w: 0.01         # gyro deadband [rad/s] (below -> no torque)
+      deadband_a: 0.02         # acc residual deadband [m/s^2] (below -> no force)
+      acc_bias_alpha: 0.01     # EMA coefficient for accelerometer bias estimate
+      max_force: 0.1           # output force clamp (per axis) [N]
+      max_torque: 0.02         # output torque clamp (per axis) [Nm]
+
+    # TF-pose correction layered on top of the IMU hover law (mode: tf_imu).
+    # IMU stays primary; this correction is independently clamped so it can
+    # never dominate. No Navigation required.
+    #
+    # These are NOT the old nav_correction values. TF is a pull source carrying
+    # near-truth poses at ~300 Hz, so the decimation and heavy smoothing that
+    # the noisy 200 Hz navigation stream needed would only add phase lag here.
+    tf_correction:
+      reference_frame: iss_body  # parent frame (self-position is expressed here)
+      target_frame: body         # vehicle frame
+      poll_rate: 50.0          # TF lookup rate [Hz] (measured /tf rate is ~300Hz)
+      # Liveness: the pose is dropped when the transform's stamp stops advancing
+      # for this long. Stamps are compared to other stamps, never to this
+      # process's clock -- the simulator stamps on sim time and has no /clock.
+      timeout: 1.0             # stamp stalled this long -> pure IMU [s]
+      smooth_window: 5         # Gaussian smoothing window [samples]; 1 disables
+      smooth_sigma: 2.0        # Gaussian weight sigma [samples]
+      # Position gain is proportional only. Damping is the IMU law's job
+      # (hover_control.kp_a / kd_w); there is no velocity estimate from TF.
+      # Starting conservative -- raise once the real behavior is observed.
+      kp_pos: [0.05, 0.05, 0.05]   # position error -> force gain [N/m]
+      kp_att: [0.01, 0.01, 0.01]   # attitude quaternion error -> torque gain [Nm]
+      max_corr_force: 0.05     # correction force clamp (independent of IMU term) [N]
+      max_corr_torque: 0.01    # correction torque clamp [Nm]
+      checkpoint_topic: /gnc/checkpoints   # PoseArray (reference frame) path interface
