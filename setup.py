@@ -12,6 +12,8 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/maps', glob('maps/*.yaml')),
+        ('share/' + package_name + '/config', glob('config/*.yaml')),
+        ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools', 'numpy'],
     zip_safe=True,
@@ -28,9 +30,13 @@ setup(
         'console_scripts': [
             'location_broadcaster = sobits_intball2_gnc.navigation.location_broadcaster:main',
             'location_setting = sobits_intball2_gnc.navigation.location_setting:main',
-            'fan_control = sobits_intball2_gnc.control.fan_control:main',
-            'direction_control = sobits_intball2_gnc.control.direction_control:main',
-            'hover_control = sobits_intball2_gnc.control.hover_control:main',
+            # Control-system orchestrator (the single control node).
+            'control = sobits_intball2_gnc.control.control:main',
+            # ros/ wrapper manual-test entry points.
+            'fan_duty_publisher = sobits_intball2_gnc.control.ros.fan_duty_publisher:main',
+            'imu_subscriber = sobits_intball2_gnc.control.ros.imu_subscriber:main',
+            'tf_client = sobits_intball2_gnc.control.ros.tf_client:main',
+            'path_subscriber = sobits_intball2_gnc.control.ros.path_subscriber:main',
         ],
     },
 )
