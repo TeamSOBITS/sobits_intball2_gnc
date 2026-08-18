@@ -9,6 +9,7 @@ from sobits_intball2_gnc.control.utils.hover_controller import (
     STATUS_OFF,
     STATUS_OK,
     STATUS_STALE,
+    TrajectoryController,
 )
 
 
@@ -104,6 +105,79 @@ def test_smoothing_disabled_with_window_one():
     # With window=1 the latest pose is used verbatim: no averaging with history.
     f, _ = pc.update(0.1, ([0.5, 0.0, 0.0], _IDENTITY, 100.1))
     assert math.isclose(f[0], -0.5, abs_tol=1e-9)
+
+
+def test_kd_pos_defaults_to_zero_no_damping():
+    # kd_pos defaults to [0, 0, 0]: a moving target produces pure-P force,
+    # unaffected by the velocity estimate (Phase 0 damping trial, opt-in).
+    pc = _corrector(smooth_window=1, kp_pos=[0.0, 0.0, 0.0], max_corr_force=10.0)
+    pc.update(0.0, ([0.0, 0.0, 0.0], _IDENTITY, 100.0))
+    f, _ = pc.update(0.1, ([0.5, 0.0, 0.0], _IDENTITY, 100.1))
+    assert f == [0.0, 0.0, 0.0]
+
+
+def test_kd_pos_damps_hold_target_velocity():
+    # Isolate the D term (kp_pos=0): force = -kd_pos * vel, vel = dpos/dt.
+    pc = _corrector(smooth_window=1, kp_pos=[0.0, 0.0, 0.0],
+                    kd_pos=[1.0, 1.0, 1.0], max_corr_force=10.0)
+    pc.update(0.0, ([0.0, 0.0, 0.0], _IDENTITY, 100.0))
+    # vel = (0.5 - 0.0) / (0.1 - 0.0) = 5.0 -> force = -1.0 * 5.0 = -5.0
+    f, _ = pc.update(0.1, ([0.5, 0.0, 0.0], _IDENTITY, 100.1))
+    assert math.isclose(f[0], -5.0, abs_tol=1e-9)
+
+
+def test_vel_filter_alpha_defaults_to_no_filtering():
+    # vel_filter_alpha defaults to 1.0: filtered velocity == raw finite
+    # difference on every tick, matching prior (pre-filter) behavior exactly
+    # (0.5*raw + 0.5*prev collapses to raw when alpha=1.0).
+    pc = _corrector(smooth_window=1, kp_pos=[0.0, 0.0, 0.0],
+                    kd_pos=[1.0, 1.0, 1.0], max_corr_force=10.0)
+    pc.update(0.0, ([0.0, 0.0, 0.0], _IDENTITY, 100.0))
+    f, _ = pc.update(0.1, ([0.5, 0.0, 0.0], _IDENTITY, 100.1))
+    assert math.isclose(f[0], -5.0, abs_tol=1e-9)
+
+
+def test_vel_filter_alpha_smooths_a_velocity_step():
+    # alpha < 1 blends the new raw sample with the previous filtered value,
+    # so a step in raw velocity is only partially reflected on the next tick.
+    pc = _corrector(smooth_window=1, kp_pos=[0.0, 0.0, 0.0],
+                    kd_pos=[1.0, 1.0, 1.0], vel_filter_alpha=0.5,
+                    max_corr_force=10.0)
+    # First sample: no prior pos to difference against -> raw vel = 0, so the
+    # filter (starting at zero) stays at zero too.
+    pc.update(0.0, ([0.0, 0.0, 0.0], _IDENTITY, 100.0))
+    # raw vel = (0.1-0.0)/0.1 = 1.0 -> filtered = 0.5*1.0 + 0.5*0.0 = 0.5.
+    f1, _ = pc.update(0.1, ([0.1, 0.0, 0.0], _IDENTITY, 100.1))
+    assert math.isclose(f1[0], -0.5, abs_tol=1e-9)
+    # raw vel jumps to (0.6-0.1)/0.1 = 5.0 -> filtered = 0.5*5.0 + 0.5*0.5 = 2.75.
+    f2, _ = pc.update(0.2, ([0.6, 0.0, 0.0], _IDENTITY, 100.2))
+    assert math.isclose(f2[0], -2.75, abs_tol=1e-9)
+
+
+def test_vel_filter_resets_after_tf_loss():
+    pc = _corrector(smooth_window=1, kp_pos=[0.0, 0.0, 0.0],
+                    kd_pos=[1.0, 1.0, 1.0], vel_filter_alpha=0.5,
+                    max_corr_force=10.0)
+    pc.update(0.0, ([0.0, 0.0, 0.0], _IDENTITY, 100.0))
+    pc.update(0.1, ([0.1, 0.0, 0.0], _IDENTITY, 100.1))
+    pc.update(0.2, None)  # TF loss
+    # Reacquire: no prior sample, so raw vel is zero on this first post-loss
+    # tick and the filter must reset to zero rather than carry over the
+    # pre-loss filtered value.
+    f, _ = pc.update(0.3, ([5.0, 0.0, 0.0], _IDENTITY, 100.3))
+    assert f == [0.0, 0.0, 0.0]
+
+
+def test_kd_pos_velocity_resets_after_tf_loss():
+    # A TF loss must not leave a stale sample that reads back as a spurious
+    # huge velocity once TF reacquires.
+    pc = _corrector(smooth_window=1, kp_pos=[0.0, 0.0, 0.0],
+                    kd_pos=[1.0, 1.0, 1.0], max_corr_force=10.0)
+    pc.update(0.0, ([0.0, 0.0, 0.0], _IDENTITY, 100.0))
+    pc.update(0.1, None)  # TF loss
+    # Reacquire far away: with no prior sample, velocity must read as zero.
+    f, _ = pc.update(0.2, ([5.0, 0.0, 0.0], _IDENTITY, 100.2))
+    assert f == [0.0, 0.0, 0.0]
 
 
 # --- PoseCorrector: liveness by timestamp advance ----------------------------
@@ -287,3 +361,131 @@ def test_missing_pose_leaves_imu_term_untouched():
     assert alloc_tf.last_force == alloc_imu.last_force
     assert alloc_tf.last_torque == alloc_imu.last_torque
     assert hc.tf_status == STATUS_MISSING
+
+
+# --- HoverController: trajectory following / checkpoint-hold exclusivity ---
+# (Phase 3a, openspec/changes/add-trajectory-following)
+
+
+class _FakeTrajectorySub:
+    """Stands in for TrajectorySubscriber: settable setpoint + liveness."""
+
+    def __init__(self, p_des=None, v_des=None, a_des=None,
+                 last_received_t=None):
+        self.p_des = p_des
+        self.v_des = v_des
+        self.a_des = a_des
+        self.q_des = _IDENTITY
+        self.last_received_t = last_received_t
+
+    @property
+    def ready(self):
+        return self.p_des is not None
+
+
+def test_trajectory_active_uses_trajectory_force_not_checkpoint():
+    tf = _FakeTf(pose=([0.0, 0.0, 0.0], _IDENTITY, 100.0))
+    pc = _corrector(smooth_window=1, kp_pos=[1.0, 1.0, 1.0], max_corr_force=10.0)
+    traj_ctrl = TrajectoryController(mass=1.0, kp_pos=[2.0, 2.0, 2.0],
+                                      kd_pos=[0.0, 0.0, 0.0],
+                                      vel_filter_alpha=1.0, max_force=10.0)
+    traj_sub = _FakeTrajectorySub(
+        p_des=[2.0, 0.0, 0.0], v_des=[0.0, 0.0, 0.0], a_des=[0.0, 0.0, 0.0],
+        last_received_t=0.0,
+    )
+    alloc = _FakeAllocator()
+    hc = HoverController(
+        _FakeImu(gyro=[0, 0, 0], acc=[0, 0, 0]), _FakeFan(), alloc,
+        HoverLaw(max_force=100.0),
+        tf_client=tf, corrector=pc,
+        trajectory_subscriber=traj_sub, trajectory_controller=traj_ctrl,
+        trajectory_timeout=0.2,
+    )
+    hc.step(0.0)
+    # pc alone would push toward its captured hold target (the origin, i.e.
+    # zero force); the trajectory force (kp * (p_des - pos) = 2 * 2.0) must
+    # be what's actually used instead.
+    assert math.isclose(alloc.last_force[0], 4.0, abs_tol=1e-9)
+    assert hc.trajectory_active is True
+
+
+def test_stale_trajectory_falls_back_to_checkpoint_force():
+    tf = _FakeTf(pose=([0.0, 0.0, 0.0], _IDENTITY, 100.0))
+    pc = _corrector(smooth_window=1, kp_pos=[1.0, 1.0, 1.0], max_corr_force=10.0)
+    pc.set_checkpoints([([3.0, 0.0, 0.0], _IDENTITY)])
+    traj_ctrl = TrajectoryController(max_force=10.0)
+    # last_received_t far in the past -> stale at t=0.0 (timeout=0.2).
+    traj_sub = _FakeTrajectorySub(
+        p_des=[9.0, 0.0, 0.0], v_des=[0, 0, 0], a_des=[0, 0, 0],
+        last_received_t=-10.0,
+    )
+    alloc = _FakeAllocator()
+    hc = HoverController(
+        _FakeImu(gyro=[0, 0, 0], acc=[0, 0, 0]), _FakeFan(), alloc,
+        HoverLaw(max_force=100.0),
+        tf_client=tf, corrector=pc,
+        trajectory_subscriber=traj_sub, trajectory_controller=traj_ctrl,
+        trajectory_timeout=0.2,
+    )
+    hc.step(0.0)
+    # Checkpoint hold pushes from [0,0,0] toward [3,0,0]: kp * (3-0) = 3.0.
+    assert math.isclose(alloc.last_force[0], 3.0, abs_tol=1e-9)
+    assert hc.trajectory_active is False
+
+
+def test_fallback_recaptures_hold_target_without_jump():
+    # A checkpoint hold target set up BEFORE trajectory following starts
+    # (simulating a stale target left over from before the vehicle moved
+    # under trajectory control).
+    pc = _corrector(smooth_window=1, kp_pos=[1.0, 1.0, 1.0], max_corr_force=100.0)
+    pc.update(-1.0, ([0.0, 0.0, 0.0], _IDENTITY, 50.0))  # old hold target: origin
+
+    traj_ctrl = TrajectoryController(max_force=10.0)
+    traj_sub = _FakeTrajectorySub(
+        p_des=[9.0, 9.0, 9.0], v_des=[0, 0, 0], a_des=[0, 0, 0],
+        last_received_t=0.0,
+    )
+    tf = _FakeTf(pose=([9.0, 9.0, 9.0], _IDENTITY, 100.0))
+    alloc = _FakeAllocator()
+    hc = HoverController(
+        _FakeImu(gyro=[0, 0, 0], acc=[0, 0, 0]), _FakeFan(), alloc,
+        HoverLaw(max_force=100.0),
+        tf_client=tf, corrector=pc,
+        trajectory_subscriber=traj_sub, trajectory_controller=traj_ctrl,
+        trajectory_timeout=0.2,
+    )
+    hc.step(0.0)  # trajectory active: vehicle "moves" to [9,9,9] (per fake TF)
+    assert hc.trajectory_active is True
+
+    # Trajectory goes stale -> fall back. Without a hold-target reset, pc
+    # would still target the origin and push with kp*(0-9) = -9 per axis.
+    traj_sub.last_received_t = -10.0
+    hc.step(1.0)
+    assert hc.trajectory_active is False
+    assert all(abs(v) < 1e-6 for v in alloc.last_force)
+
+
+def test_torque_keeps_coming_from_corrector_during_trajectory():
+    quat_off = [0.3, 0.0, 0.0, 0.954]  # not aligned with the hold attitude
+    pc = _corrector(smooth_window=1, kp_att=[10.0, 10.0, 10.0],
+                    max_corr_torque=1.0)
+    pc.update(-1.0, ([0.0, 0.0, 0.0], _IDENTITY, 50.0))  # captures IDENTITY as hold attitude
+    tf = _FakeTf(pose=([0.0, 0.0, 0.0], quat_off, 100.0))
+    traj_ctrl = TrajectoryController(max_force=10.0)
+    traj_sub = _FakeTrajectorySub(
+        p_des=[0.0, 0.0, 0.0], v_des=[0, 0, 0], a_des=[0, 0, 0],
+        last_received_t=0.0,
+    )
+    alloc = _FakeAllocator()
+    hc = HoverController(
+        _FakeImu(gyro=[0, 0, 0], acc=[0, 0, 0]), _FakeFan(), alloc,
+        HoverLaw(max_force=100.0, max_torque=100.0),
+        tf_client=tf, corrector=pc,
+        trajectory_subscriber=traj_sub, trajectory_controller=traj_ctrl,
+        trajectory_timeout=0.2,
+    )
+    hc.step(0.0)
+    assert hc.trajectory_active is True
+    # Attitude correction must still be nonzero even though translation is
+    # being driven by the trajectory controller.
+    assert any(abs(v) > 1e-6 for v in alloc.last_torque)

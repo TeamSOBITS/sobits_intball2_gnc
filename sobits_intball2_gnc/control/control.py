@@ -23,6 +23,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from std_srvs.srv import Trigger
 
 from sobits_intball2_gnc.control.ros.fan_duty_publisher import (
     DUTY_TOPIC,
@@ -31,11 +32,19 @@ from sobits_intball2_gnc.control.ros.fan_duty_publisher import (
 from sobits_intball2_gnc.control.ros.imu_subscriber import ImuSubscriber, IMU_TOPIC
 from sobits_intball2_gnc.control.ros.path_subscriber import PathSubscriber
 from sobits_intball2_gnc.control.ros.tf_client import TfClient
+from sobits_intball2_gnc.control.ros.trajectory_subscriber import TrajectorySubscriber
 from sobits_intball2_gnc.control.utils.hover_controller import (
     HOVER_MODES,
     HoverController,
 )
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
+
+# Phase 1 (docs/main_plan.md): manually step the hold target to the next
+# checkpoint. A service (not a topic) so the caller gets an explicit
+# success/failure back -- False means the array was already on its last
+# checkpoint (or none was ever received), so the caller can tell "no-op"
+# apart from "advanced".
+ADVANCE_CHECKPOINT_SERVICE = "/gnc/advance_checkpoint"
 
 # Period of the periodic "who owns the fans" status log [s] (0 disables it).
 DEFAULT_STATUS_LOG_PERIOD = 2.0
@@ -86,8 +95,21 @@ class ControlNode(Node):
                     "until they appear"
                 )
 
+        # Trajectory setpoint interface (Phase 3a, openspec/changes/
+        # add-trajectory-following): only meaningful alongside TF, same as
+        # the pose corrector.
+        self._trajectory_sub = None
+        if self._tf is not None:
+            self._trajectory_sub = TrajectorySubscriber(
+                self,
+                expected_frame=str(
+                    self.get_parameter("tf_correction.reference_frame").value
+                ),
+            )
+
         self._hover = HoverController.from_node(
-            self, self._imu, self._fan, self._allocator, self._tf
+            self, self._imu, self._fan, self._allocator, self._tf,
+            self._trajectory_sub,
         )
 
         # Checkpoint array interface (poses in the TF reference frame).
@@ -98,6 +120,12 @@ class ControlNode(Node):
             expected_frame=str(
                 self.get_parameter("tf_correction.reference_frame").value
             ),
+        )
+
+        # Manual checkpoint advance (Phase 1, docs/main_plan.md): no prior
+        # ROS interface called ControlNode.advance_checkpoint() at all.
+        self._advance_srv = self.create_service(
+            Trigger, ADVANCE_CHECKPOINT_SERVICE, self._on_advance_checkpoint
         )
 
         # Loop rate is owned/used here; it was declared by HoverController.
@@ -121,46 +149,100 @@ class ControlNode(Node):
             from std_msgs.msg import Float64MultiArray
 
             self._duty_rx_count = 0
+            self._duty_rx_zero_count = 0
+            self._tx_zero_count = 0
             self._last_duty_rx = 0
+            self._last_duty_rx_zero = 0
             self._last_duty_tx = 0
+            self._last_tx_zero = 0
             self._sub_duty = self.create_subscription(
                 Float64MultiArray, DUTY_TOPIC, self._on_duty_echo, 10
             )
             self._status_timer = self.create_timer(period, self._on_status_log)
 
+    @staticmethod
+    def _is_zero_duty(values, eps: float = 1e-6) -> bool:
+        """True when every duty in ``values`` is (near) zero."""
+        return all(abs(v) < eps for v in values)
+
     def _on_duty_echo(self, msg) -> None:
-        """Count duty messages seen on the wire (including our own)."""
+        """Count duty messages seen on the wire (including our own).
+
+        Zero-duty and non-zero-duty messages are counted separately: the
+        STAND_BY heartbeat from the bridged JAXA controller publishes an
+        all-zero duty array at ~1 Hz even with no competition, so counting it
+        as "foreign" alongside genuinely competing (non-zero) duty commands
+        produced false CONTESTED warnings (see docs/phase0_findings.md).
+        """
         self._duty_rx_count += 1
+        if self._is_zero_duty(msg.data):
+            self._duty_rx_zero_count += 1
 
     def advance_checkpoint(self) -> bool:
         """Step the hover hold target to the next checkpoint (free-path hook)."""
         return self._hover.advance_checkpoint()
+
+    def _on_advance_checkpoint(self, request, response):
+        """Trigger callback for ADVANCE_CHECKPOINT_SERVICE (Phase 1)."""
+        advanced = self.advance_checkpoint()
+        response.success = advanced
+        response.message = (
+            "advanced to next checkpoint" if advanced
+            else "no checkpoints received yet, or already on the last one"
+        )
+        return response
 
     def _on_status_log(self) -> None:
         """Periodically report whether this node actually drives the fans."""
         # Messages on the wire this period vs messages we sent this period.
         # foreign > 0 means someone else is actively publishing duties.
         rx = self._duty_rx_count
+        rx_zero = self._duty_rx_zero_count
         tx = self._fan.publish_count
+        tx_zero = self._tx_zero_count
         rx_delta = rx - self._last_duty_rx
+        rx_zero_delta = rx_zero - self._last_duty_rx_zero
         tx_delta = tx - self._last_duty_tx
-        self._last_duty_rx, self._last_duty_tx = rx, tx
-        foreign = max(0, rx_delta - tx_delta)
+        tx_zero_delta = tx_zero - self._last_tx_zero
+        self._last_duty_rx, self._last_duty_rx_zero = rx, rx_zero
+        self._last_duty_tx, self._last_tx_zero = tx, tx_zero
+
+        # Split the excess into zero-duty (benign STAND_BY heartbeat) and
+        # non-zero (genuinely competing) so a harmless idle heartbeat from the
+        # bridged JAXA controller doesn't get reported as CONTESTED.
+        foreign_zero = max(0, rx_zero_delta - tx_zero_delta)
+        foreign_nonzero = max(
+            0, (rx_delta - rx_zero_delta) - (tx_delta - tx_zero_delta)
+        )
+        foreign = foreign_zero + foreign_nonzero
 
         # A registered foreign publisher is normal (the JAXA controller keeps
         # its publisher open in STAND_BY); report it as context only.
         other_pubs = max(0, self.count_publishers(DUTY_TOPIC) - 1)
+        # Phase 0 diagnosis: force/torque split by source, pre-combination, to
+        # see whether the TF correction and the IMU law cancel each other out
+        # (see docs/main_plan.md Phase 0).
+        f_imu = ", ".join("%.4f" % v for v in self._hover.last_force_imu)
+        f_corr = ", ".join("%.4f" % v for v in self._hover.last_force_corr)
+        t_imu = ", ".join("%.4f" % v for v in self._hover.last_torque_imu)
+        t_corr = ", ".join("%.4f" % v for v in self._hover.last_torque_corr)
         summary = (
             "fan-control: ours=%d msgs, foreign=%d (other publishers=%d), "
-            "mode=%s, imu=%s, tf=%s, duty=[%s]"
+            "mode=%s, imu=%s, tf=%s, duty=[%s], "
+            "force_imu=[%s], force_corr=[%s], torque_imu=[%s], torque_corr=[%s]"
             % (tx_delta, foreign, other_pubs, self._mode,
                "ok" if self._imu.ready else "WAITING",
                self._hover.tf_status,
-               ", ".join("%.2f" % d for d in self._fan.duties))
+               ", ".join("%.2f" % d for d in self._fan.duties),
+               f_imu, f_corr, t_imu, t_corr)
         )
-        if foreign > 0:
+        if foreign_nonzero > 0:
             self.get_logger().warn(
                 summary + "  <-- FOREIGN duty messages: fan control is CONTESTED"
+            )
+        elif foreign_zero > 0:
+            self.get_logger().info(
+                summary + "  <-- benign zero-duty STAND_BY heartbeat only"
             )
         elif tx_delta == 0:
             self.get_logger().warn(
@@ -173,6 +255,8 @@ class ControlNode(Node):
         # time.monotonic() is deliberate: TF stamps are compared only against
         # other TF stamps, so this clock never has to match the TF publisher's.
         self._hover.step(time.monotonic())
+        if hasattr(self, "_tx_zero_count") and self._is_zero_duty(self._fan.duties):
+            self._tx_zero_count += 1
 
 
 def main(args=None) -> None:

@@ -3,12 +3,23 @@
 
 Reusable, ROS-agnostic core shared by the control logic. Builds the 6x8 wrench
 matrix ``A`` from the fan geometry (column j = [vec_j; (pos_j - cg) x vec_j]) and
-solves the least-squares ``f = A^+ y`` for the requested wrench
-``y = [Fx,Fy,Fz,Tx,Ty,Tz]``.
+solves for the non-negative per-fan thrust ``f >= 0`` that best achieves the
+requested wrench ``y = [Fx,Fy,Fz,Tx,Ty,Tz]`` via non-negative least squares
+(``scipy.optimize.nnls``).
 
 Because reverse thrust is physically impossible (the simulator clamps negative
-duty to zero force), negative per-fan thrust is clamped to zero and the result
-is scaled down so no duty exceeds 1.0, preserving the commanded direction.
+duty to zero force), the allocation must not produce negative per-fan thrust in
+the first place. An earlier version solved the *unconstrained* least squares
+problem (``f = A^+ y``) and clamped negative entries to zero after the fact;
+for this fan geometry, the unconstrained optimum for a pure force or torque
+command generally splits it across opposing fan pairs (one positive, one
+equal-and-opposite negative) to cancel unwanted coupling, so post-hoc clamping
+silently discarded half the requested wrench (up to ~70% for some combined
+force+torque directions -- see docs/phase0_findings.md). NNLS solves the
+constrained problem directly, so the geometry's full actuation authority (which
+does not require negative thrust to reach any of the wrenches checked so far)
+is actually used. Above ``fj_max`` per fan, the result is scaled down so no
+duty exceeds 1.0, preserving the commanded direction.
 
 The class has a plain-value constructor (unit-testable without ROS) plus
 ``declare_parameters(node)`` / ``from_node(node)`` helpers so the owning node
@@ -18,6 +29,8 @@ time into per-fan ``(pos, vec)`` pairs, because ROS2 parameters cannot represent
 an array of maps.
 """
 import math
+
+from scipy.optimize import nnls
 
 import numpy as np
 
@@ -90,7 +103,6 @@ class ThrustAllocator:
             torque = np.cross(pos - cg, vec)
             cols.append(np.concatenate([vec, torque]))
         self.A = np.column_stack(cols)          # 6 x N
-        self.A_pinv = np.linalg.pinv(self.A)     # N x 6
 
     @staticmethod
     def declare_parameters(node) -> None:
@@ -132,9 +144,10 @@ class ThrustAllocator:
         if not np.any(y):
             return [0.0] * self.fan_count
 
-        # Least-squares thrust, then enforce non-negativity (no reverse thrust).
-        f = self.A_pinv @ y
-        f = np.clip(f, 0.0, None)
+        # Non-negative least squares: the closest achievable wrench using only
+        # f >= 0 (no reverse thrust), solved directly rather than clamping an
+        # unconstrained solution (see module docstring).
+        f, _residual = nnls(self.A, y)
 
         # Saturation: scale down so the largest thrust is at most fj_max
         # (i.e. max duty 1.0), keeping force direction intact.
