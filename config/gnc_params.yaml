@@ -100,7 +100,18 @@
       # An unrecognized value fails at startup rather than falling back.
       mode: tf_imu
       control_rate: 50.0       # control loop rate [Hz]
-      kd_w: [0.02, 0.02, 0.02] # angular-rate damping gain (torque per rad/s)
+      # NOTE: kd_w damps the IMU's ABSOLUTE angular rate toward zero -- it is
+      # NOT the attitude loop's D term (see tf_correction.kd_att for that).
+      # An earlier revision tried reusing kd_w as the attitude D term, since
+      # it is summed with PoseCorrector's torque either way, but this made
+      # hold accuracy worse: iss_body itself rotates in the world (docs/
+      # phase0_findings.md observations 8/11), so holding a fixed relative
+      # attitude requires a non-zero absolute rate, and damping the absolute
+      # rate fights that needed motion (docs/phase0_5_findings.md). Left at
+      # its original guessed value; only relevant as a general anti-tumble
+      # term (most useful in imu-only mode, where there is no attitude
+      # target to track at all).
+      kd_w: [0.02, 0.02, 0.02]  # angular-rate damping gain (torque per rad/s)
       kp_a: [0.5, 0.5, 0.5]    # acceleration disturbance rejection gain (force per m/s^2)
       deadband_w: 0.01         # gyro deadband [rad/s] (below -> no torque)
       deadband_a: 0.02         # acc residual deadband [m/s^2] (below -> no force)
@@ -125,11 +136,69 @@
       timeout: 1.0             # stamp stalled this long -> pure IMU [s]
       smooth_window: 5         # Gaussian smoothing window [samples]; 1 disables
       smooth_sigma: 2.0        # Gaussian weight sigma [samples]
-      # Position gain is proportional only. Damping is the IMU law's job
-      # (hover_control.kp_a / kd_w); there is no velocity estimate from TF.
-      # Starting conservative -- raise once the real behavior is observed.
-      kp_pos: [0.05, 0.05, 0.05]   # position error -> force gain [N/m]
+      # kp_pos/kd_pos derived from a 2nd-order (mass-spring-damper) design,
+      # NOT guessed: the position loop is m*x_ddot = kp_pos*(target-x) -
+      # kd_pos*x_dot for a single decoupled axis, so
+      #   wn = sqrt(kp_pos/m), zeta = kd_pos / (2*sqrt(kp_pos*m))
+      # Measured vehicle mass m ~= 4.5 kg (docs/phase0_findings.md
+      # observation 7: despin + known-force step test, cross-checked twice).
+      # Target zeta=0.9 (near-critically damped), settling time ts~=10s ->
+      # wn = 4/(zeta*ts) = 0.444 rad/s -> kp_pos = m*wn^2, kd_pos = 2*zeta*m*wn.
+      # The prior guessed values (kp_pos=0.05, kd_pos=0.1) worked out to
+      # zeta~=0.105 -- almost undamped, matching the ~60s-period oscillation
+      # that was actually observed (see docs/phase0_findings.md observation 2).
+      kp_pos: [0.89, 0.89, 0.89]   # position error -> force gain [N/m]
+      # kp_att/kd_att/att_filter_alpha: Phase 0.5 (docs/phase0_5_findings.md)
+      # tried re-deriving these the same way as kp_pos/kd_pos, from measured
+      # per-axis moment of inertia (I = [0.0470, 0.0375, 0.0179] kg*m^2,
+      # x/y/z) via I*theta_err_ddot = -kp_att*(error) - kd_att*omega_err
+      # (omega_err = finite-difference rate of the quaternion error, NOT the
+      # IMU's absolute rate -- reusing kd_w for that made things worse, see
+      # docs/phase0_5_findings.md). Measured with the quaternion geodesic
+      # angle (NOT RPY, which is distorted by this vehicle's ~176 degree
+      # attitude offset -- see docs/phase0_5_findings.md observation B), the
+      # theoretical redesign in every variant tried (kd_w reuse, kd_att alone,
+      # kd_att + EMA filter) underperformed this original guessed value.
+      # Reverted here; kp_att/kd_att/att_filter_alpha are kept as declared
+      # parameters (PoseCorrector/HoverController) so Phase 3b can retune them
+      # once there is an actual moving q_des(t) to track, rather than a
+      # static hold target.
       kp_att: [0.01, 0.01, 0.01]   # attitude quaternion error -> torque gain [Nm]
+      # Attitude-loop damping (torque per rad/s of relative tracking-error
+      # rate, see PoseCorrector.kd_att / pose_control_law.attitude_error_to_torque).
+      # Zero (disabled) -- see kp_att's comment above.
+      kd_att: [0.0, 0.0, 0.0]      # relative angular-rate error -> torque gain [Nm/(rad/s)]
+      # EMA low-pass on the finite-difference omega_err fed to kd_att above,
+      # mirroring vel_filter_alpha. 1.0 = no filtering. See kp_att's comment.
+      att_filter_alpha: 1.0
+      # Damping term (finite-difference velocity of the TF-estimated hold
+      # target, see PoseCorrector). Was previously guessed/untuned; now
+      # derived alongside kp_pos above (2*zeta*m*wn).
+      kd_pos: [3.6, 3.6, 3.6]      # velocity -> force gain [N/(m/s)]
+      # EMA low-pass on the finite-difference velocity fed to kd_pos above.
+      # 1.0 = no filtering. The raw finite difference is noisy enough that it
+      # is suspected to be the main remaining gap to JAXA-level (mm) hold
+      # precision (docs/phase0_findings.md). Untuned Phase 0 experiment.
+      vel_filter_alpha: 0.3        # EMA blend weight for the new raw sample
       max_corr_force: 0.05     # correction force clamp (independent of IMU term) [N]
       max_corr_torque: 0.01    # correction torque clamp [Nm]
       checkpoint_topic: /gnc/checkpoints   # PoseArray (reference frame) path interface
+
+    # Phase 3a (docs/main_plan.md, openspec/changes/add-trajectory-following):
+    # follows a moving trajectory setpoint (p_des/v_des/a_des) published by the
+    # Guidance node on /gnc/trajectory_setpoint, in the reference frame
+    # (iss_body). Mutually exclusive with tf_correction's checkpoint hold: see
+    # HoverController -- trajectory following takes over the translation
+    # force entirely while setpoints are live, falling back to checkpoint
+    # hold once they go stale. Attitude (torque) is untouched by this and
+    # keeps coming from PoseCorrector regardless of mode (Phase 3b territory).
+    trajectory_controller:
+      # Measured despin + known-force step test (docs/phase0_findings.md
+      # observation 7, cross-checked twice: 4.46kg / 4.61kg).
+      mass: 4.5                # vehicle mass [kg]
+      max_force: 0.1           # output force clamp (per axis) [N], independent of tf_correction.max_corr_force
+      # Shorter than tf_correction.timeout (1.0s): TF is a near-passive oracle,
+      # but a trajectory setpoint carries an active feedforward (a_des) --
+      # riding a stale one is riskier, so the fallback to checkpoint hold
+      # should kick in quickly. ~10 missed messages at the 50Hz publish rate.
+      timeout: 0.2              # setpoint stalled this long -> fall back to checkpoint hold [s]

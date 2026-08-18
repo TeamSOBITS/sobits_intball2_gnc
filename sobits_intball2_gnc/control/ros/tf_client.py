@@ -24,7 +24,9 @@ import rclpy
 import rclpy.duration
 import rclpy.time
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 import tf2_ros
+from tf2_msgs.msg import TFMessage
 from tf2_ros import ConnectivityException, ExtrapolationException, LookupException
 
 DEFAULT_REFERENCE_FRAME = "iss_body"
@@ -33,6 +35,13 @@ DEFAULT_TARGET_FRAME = "body"
 # Lookups from the control loop must not wait: the /tf callbacks that fill the
 # buffer share this node's executor thread with the control timer.
 _NO_WAIT = rclpy.duration.Duration(seconds=0)
+
+# Same QoS tf2_ros.TransformListener uses for its (dynamic) /tf subscription.
+_TF_QOS = QoSProfile(
+    depth=100,
+    durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST,
+)
 
 
 class TfClient:
@@ -54,11 +63,28 @@ class TfClient:
         self.reference_frame = reference_frame
         self.target_frame = target_frame
         self._buffer = tf2_ros.Buffer()
-        self._listener = tf2_ros.TransformListener(self._buffer, node)
+        # Deliberately does NOT use tf2_ros.TransformListener, which also
+        # subscribes to /tf_static. The ROS1-side robot_state_publisher
+        # latches a one-time identity transform for base->body onto
+        # /tf_static (its URDF declares that edge as fixed; the vehicle's
+        # real pose is published separately, dynamically, onto /tf for the
+        # same edge). Because /tf_static uses transient_local durability, a
+        # freshly created listener can pick up that frozen identity sample
+        # before the first real /tf sample arrives, and lookup_transform then
+        # returns it without raising. Every edge this client needs
+        # (base->body, base->iss_body) is also published dynamically on
+        # /tf, so /tf_static is not needed here.
+        self._tf_sub = node.create_subscription(
+            TFMessage, "/tf", self._on_tf, _TF_QOS
+        )
         self._ready = False
         node.get_logger().info(
             "[TfClient] looking up %s <- %s" % (reference_frame, target_frame)
         )
+
+    def _on_tf(self, msg: TFMessage) -> None:
+        for transform in msg.transforms:
+            self._buffer.set_transform(transform, "tf_client")
 
     @property
     def ready(self) -> bool:

@@ -1,0 +1,336 @@
+Panels:
+  - Class: rviz_common/Displays
+    Help Height: 0
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /Status1
+        - /Path (trajectory setpoint, viz-only)1
+        - /Path (trajectory setpoint, viz-only)1/Topic1
+      Splitter Ratio: 0.5
+    Tree Height: 506
+  - Class: rviz_common/Selection
+    Name: Selection
+  - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+  - Class: rviz_common/Time
+    Experimental: false
+    Name: Time
+    SyncMode: 0
+    SyncSource: ""
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.029999999329447746
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 10
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/RobotModel
+      Collision Enabled: true
+      Description File: ""
+      Description Source: Topic
+      Description Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_description
+      Enabled: true
+      Links:
+        All Links Enabled: true
+        Expand Joint Details: false
+        Expand Link Details: false
+        Expand Tree: false
+        Link Tree Style: Links in Alphabetic Order
+        base:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        dock_body:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        iss_body:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+      Mass Properties:
+        Inertia: false
+        Mass: false
+      Name: RobotModel (ISS)
+      TF Prefix: ""
+      Update Interval: 0
+      Value: true
+      Visual Enabled: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: false
+        above_dock:
+          Value: true
+        above_dock_2:
+          Value: true
+        above_dock_3:
+          Value: true
+        airlock_sobits:
+          Value: true
+        base:
+          Value: true
+        body:
+          Value: true
+        cameraF_link:
+          Value: false
+        cameraL_link:
+          Value: false
+        cameraR_link:
+          Value: false
+        capture_point_1:
+          Value: true
+        capture_point_1_2:
+          Value: true
+        capture_point_1_3:
+          Value: true
+        capture_point_1_4:
+          Value: true
+        capture_point_1_5:
+          Value: true
+        capture_point_1_5_left:
+          Value: true
+        capture_point_1_5_right:
+          Value: true
+        capture_point_1_6:
+          Value: true
+        capture_point_1_7:
+          Value: true
+        capture_point_1_8:
+          Value: true
+        capture_point_2:
+          Value: true
+        capture_point_3:
+          Value: true
+        capture_point_8:
+          Value: true
+        custom_object_01_body:
+          Value: false
+        dock_body:
+          Value: true
+        equipment_sobits:
+          Value: true
+        imu_link:
+          Value: false
+        initial_point:
+          Value: true
+        inspection_entry_1:
+          Value: true
+        inspection_entry_2:
+          Value: true
+        inspection_entry_3:
+          Value: true
+        iss_body:
+          Value: true
+        nav_entry:
+          Value: true
+        near_dock:
+          Value: true
+        window_sobits:
+          Value: true
+        window_sobits_approach:
+          Value: true
+      Marker Scale: 1
+      Name: TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Tree:
+        base:
+          body:
+            cameraF_link:
+              {}
+            cameraL_link:
+              {}
+            cameraR_link:
+              {}
+            imu_link:
+              {}
+          custom_object_01_body:
+            {}
+          iss_body:
+            above_dock:
+              {}
+            above_dock_2:
+              {}
+            above_dock_3:
+              {}
+            airlock_sobits:
+              {}
+            capture_point_1:
+              {}
+            capture_point_1_2:
+              {}
+            capture_point_1_3:
+              {}
+            capture_point_1_4:
+              {}
+            capture_point_1_5:
+              {}
+            capture_point_1_5_left:
+              {}
+            capture_point_1_5_right:
+              {}
+            capture_point_1_6:
+              {}
+            capture_point_1_7:
+              {}
+            capture_point_1_8:
+              {}
+            capture_point_2:
+              {}
+            capture_point_3:
+              {}
+            capture_point_8:
+              {}
+            dock_body:
+              {}
+            equipment_sobits:
+              {}
+            initial_point:
+              {}
+            inspection_entry_1:
+              {}
+            inspection_entry_2:
+              {}
+            inspection_entry_3:
+              {}
+            nav_entry:
+              {}
+            near_dock:
+              {}
+            window_sobits:
+              {}
+            window_sobits_approach:
+              {}
+      Update Interval: 0
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 25; 255; 0
+      Enabled: true
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
+      Line Style: Lines
+      Line Width: 0.029999999329447746
+      Name: Path (trajectory setpoint, viz-only)
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /gnc/trajectory_path
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Image
+      Normalize Range: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /camera_main/image_raw
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: iss_body
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 3.3483541011810303
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.05999999865889549
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 11.771143913269043
+        Y: -4.15015172958374
+        Z: 6.006209850311279
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 0.5497956871986389
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
+      Yaw: 6.062256336212158
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 1011
+  Hide Left Dock: false
+  Hide Right Dock: true
+  Image:
+    collapsed: false
+  QMainWindow State: 000000ff00000000fd00000004000000000000015600000359fc0200000006fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001200530065006c0065006300740069006f006e010000003b0000027e0000000000000000fb0000000a00560069006500770073000000003b000000fc000000a000fffffffb0000001200530065006c0065006300740069006f006e010000003b0000027e0000000000000000fb000000100044006900730070006c006100790073010000003b00000235000000c700fffffffb0000000a0049006d00610067006501000002760000011e0000002800ffffff000000010000010f0000027efc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a005600690065007700730000000039000002b80000000000000000fb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e100000197000000030000039f0000003efc0100000002fb0000000800540069006d006501000000000000039f0000025300fffffffb0000000800540069006d00650100000000000004500000000000000000000002430000035900000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Selection:
+    collapsed: false
+  Time:
+    collapsed: false
+  Views:
+    collapsed: false
+  Width: 927
+  X: 66
+  Y: 32
