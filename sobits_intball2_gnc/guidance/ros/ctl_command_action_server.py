@@ -76,15 +76,32 @@ class CtlCommandActionServer:
             signature). Only ``CtlStatusType.MOVE_TO_ABSOLUTE_TARGET`` goals
             are accepted; anything else is rejected before ``execute_fn``
             runs (this server's scope, ``docs/future_design_notes.md`` 4).
+        expected_frame: Reference frame ``goal.target`` (a
+            ``geometry_msgs/PoseStamped``) must be expressed in. An empty
+            ``header.frame_id`` is accepted as "unspecified"; any other
+            mismatch rejects the goal before ``execute_fn`` runs -- the same
+            policy ``PoseArraySubscriber`` uses for ``/gnc/checkpoints``
+            (default ``""``: no check, matching this class's behavior before
+            this parameter existed).
         callback_group: Callback group for the action server (default: a new
             ``ReentrantCallbackGroup``, since ``execute_fn`` runs for the
             duration of the move and must not block other callbacks).
     """
 
     def __init__(self, node: Node, action_name: str, execute_fn,
-                 callback_group=None) -> None:
+                 expected_frame: str = "", callback_group=None) -> None:
         self._node = node
         self._execute_fn = execute_fn
+        self._expected_frame = expected_frame
+        # Only one execute_fn may run at a time: it drives a shared
+        # publisher/TF loop for the duration of the move, and this server's
+        # own callback_group is Reentrant (so execute_fn doesn't block other
+        # callbacks) -- without this flag, rclpy's ActionServer would happily
+        # accept and run a second goal CONCURRENTLY with the first, and both
+        # execute_fn calls would race on /gnc/trajectory_setpoint and TF. A
+        # client that wants to switch targets must cancel the current goal
+        # first (standard action cancel API); this server does not preempt.
+        self._executing = False
         self._server = ActionServer(
             node,
             CtlCommand,
@@ -99,12 +116,25 @@ class CtlCommandActionServer:
         )
 
     def _on_goal(self, goal_request) -> GoalResponse:
+        if self._executing:
+            self._node.get_logger().warn(
+                "[CtlCommandActionServer] rejecting goal: a move is already "
+                "in progress -- cancel it first"
+            )
+            return GoalResponse.REJECT
         if goal_request.type.type != CtlStatusType.MOVE_TO_ABSOLUTE_TARGET:
             self._node.get_logger().warn(
                 "[CtlCommandActionServer] rejecting goal: unsupported "
                 "CtlStatusType.type=%d (only MOVE_TO_ABSOLUTE_TARGET=%d is "
                 "served)" % (goal_request.type.type,
                              CtlStatusType.MOVE_TO_ABSOLUTE_TARGET)
+            )
+            return GoalResponse.REJECT
+        frame = goal_request.target.header.frame_id
+        if self._expected_frame and frame and frame != self._expected_frame:
+            self._node.get_logger().warn(
+                "[CtlCommandActionServer] rejecting goal: target frame '%s' "
+                "!= expected '%s'" % (frame, self._expected_frame)
             )
             return GoalResponse.REJECT
         return GoalResponse.ACCEPT
@@ -127,10 +157,14 @@ class CtlCommandActionServer:
              feedback.pose_to_go.orientation.z, feedback.pose_to_go.orientation.w) = q_to_go
             goal_handle.publish_feedback(feedback)
 
-        status = self._execute_fn(
-            p_target, q_target, feedback_cb,
-            lambda: goal_handle.is_cancel_requested,
-        )
+        self._executing = True
+        try:
+            status = self._execute_fn(
+                p_target, q_target, feedback_cb,
+                lambda: goal_handle.is_cancel_requested,
+            )
+        finally:
+            self._executing = False
 
         result = CtlCommand.Result()
         result.stamp = self._node.get_clock().now().to_msg()

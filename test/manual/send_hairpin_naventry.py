@@ -4,6 +4,13 @@ nav_entry bulge (~144.7 deg turn at --bulge-scale 1.5, vs. the ~89 deg
 near_dock<->above_dock_2 cobra maneuver used earlier), with q_des(t) facing
 the direction of travel.
 
+Consolidates the former send_hairpin_naventry_facing_direction.py and
+preview_hairpin_naventry.py into one script (docs/
+guidance_node_implementation_plan.md's test/manual/ cleanup): pass
+--path-only to preview the geometry (turn angle, leg lengths, RViz path)
+without ever sending /gnc/trajectory_setpoint, same flag name
+send_curve_via_naventry.py uses for the same purpose.
+
 Purpose: docs/trajectory_force_duration_investigation.md 6 section found
 that the theoretical kp_att recommendation derived from a trajectory's peak
 angular acceleration is specific to that trajectory's geometry (sharper turn
@@ -12,12 +19,10 @@ angular acceleration is specific to that trajectory's geometry (sharper turn
 a sharper turn using existing, already-flown-safely endpoints (near_dock,
 above_dock) plus an extended nav_entry-direction waypoint, chosen to be much
 closer than the far inspection_entry/capture_point locations while still
-meaningfully sharper. Geometry previewed and approved via
-preview_hairpin_naventry.py before this script was written.
+meaningfully sharper.
 
 Run WITH test/manual/measure_attitude_tracking_error.py in a separate
-process to measure the resulting tracking error, same as the existing
-send_curve_via_naventry_to_*_facing_direction.py scripts.
+process to measure the resulting tracking error.
 
 Manual verification script (test/manual/): requires a running sim + gnc
 launch, not collected by pytest. See test/manual/README.md.
@@ -56,11 +61,15 @@ CHECKPOINT_TOPIC = "/gnc/checkpoints"
 ALIGN_TOLERANCE_DEG = 3.0
 ALIGN_TIMEOUT_SEC = 60.0
 
-# near_dock / above_dock / nav_entry, from maps/iss_location.yaml (iss_body frame)
+# near_dock / above_dock / nav_entry, from maps/iss_location.yaml (iss_body
+# frame). Using above_dock (not above_dock_2) here -- combined with
+# near_dock and nav_entry it forms a naturally sharper (~127 deg) triangle
+# than the near_dock<->above_dock_2 pair (~89 deg) uses, with comparable leg
+# lengths (no need for a brand-new, unverified endpoint).
 NEAR_DOCK = np.array([10.936, -3.636, 4.121])
 ABOVE_DOCK = np.array([10.936, -3.636, 5.0])
 NAV_ENTRY = np.array([11.0, -4.3, 5.0])
-BULGE_SCALE = 1.5  # approved via preview_hairpin_naventry.py: ~144.7 deg turn
+BULGE_SCALE = 1.5  # ~144.7 deg turn
 
 
 def quintic(tau):
@@ -82,8 +91,14 @@ def bezier_d2(p0, c, p1):
     return 2 * (p1 - 2 * c + p0)
 
 
+def turn_angle_deg(p0, w, p1):
+    leg1 = w - p0
+    leg2 = p1 - w
+    cos_a = np.dot(leg1, leg2) / (np.linalg.norm(leg1) * np.linalg.norm(leg2))
+    return np.degrees(np.arccos(np.clip(cos_a, -1.0, 1.0)))
+
+
 def main():
-    global DURATION_SEC
     from rclpy.utilities import remove_ros_args
 
     parser = argparse.ArgumentParser()
@@ -93,17 +108,22 @@ def main():
     )
     parser.add_argument("--bulge-scale", type=float, default=BULGE_SCALE)
     parser.add_argument("--duration", type=float, default=DURATION_SEC)
+    parser.add_argument(
+        "--path-only", action="store_true",
+        help="Publish the RViz preview path (with turn-angle/leg-length "
+             "geometry logged) only; never send /gnc/trajectory_setpoint "
+             "(no vehicle motion). Ctrl-C to exit after previewing.",
+    )
     ns = parser.parse_args(remove_ros_args(args=sys.argv)[1:])
-    DURATION_SEC = ns.duration
+    duration_sec = ns.duration
 
     rclpy.init(args=sys.argv)
-    node_name = f"send_hairpin_naventry_facing_{int(time.monotonic() * 1000) % 1000000}"
+    node_name = f"send_hairpin_naventry_{int(time.monotonic() * 1000) % 1000000}"
     node = Node(
         node_name,
         parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)],
     )
     tf_client = TfClient(node, reference_frame=REFERENCE_FRAME, target_frame=TARGET_FRAME)
-    pub = node.create_publisher(MultiDOFJointTrajectory, TRAJECTORY_TOPIC, 1)
     path_pub = PathPublisher(node, TRAJECTORY_PATH_TOPIC, reference_frame=REFERENCE_FRAME)
 
     node.get_logger().info(f"[{node_name}] waiting for TF...")
@@ -117,13 +137,18 @@ def main():
     bulge = NAV_ENTRY - midpoint
     w = midpoint + ns.bulge_scale * bulge
     c = 2.0 * w - 0.5 * p0 - 0.5 * p1
+
+    angle = turn_angle_deg(p0, w, p1)
+    leg1_len = np.linalg.norm(w - p0)
+    leg2_len = np.linalg.norm(p1 - w)
     node.get_logger().info(
         f"[{node_name}] hairpin path (bulge_scale={ns.bulge_scale}) "
         f"p0={p0.tolist()} -> waypoint={w.tolist()} -> p1={p1.tolist()} "
-        f"over {DURATION_SEC}s, facing direction of travel"
+        f"turn_angle={angle:.1f}deg leg_lengths=[{leg1_len:.3f}, {leg2_len:.3f}]m "
+        f"over {duration_sec}s, facing direction of travel"
     )
 
-    n_samples = int(DURATION_SEC / PATH_SAMPLE_DT) + 1
+    n_samples = int(duration_sec / PATH_SAMPLE_DT) + 1
     preview = []
     for i in range(n_samples):
         tau = i / (n_samples - 1)
@@ -133,8 +158,25 @@ def main():
     path_pub.publish(preview)
     node.get_logger().info(f"[{node_name}] published curved path with {len(preview)} points")
 
-    # Pre-align to the curve's initial tangent direction (6-6:
-    # docs/trajectory_force_duration_investigation.md), so the measured
+    if ns.path_only:
+        node.get_logger().info(
+            f"[{node_name}] --path-only: not sending /gnc/trajectory_setpoint. "
+            "Path is latched for RViz; Ctrl-C when done previewing."
+        )
+        try:
+            while rclpy.ok():
+                rclpy.spin_once(node, timeout_sec=0.5)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            node.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
+        return
+
+    pub = node.create_publisher(MultiDOFJointTrajectory, TRAJECTORY_TOPIC, 1)
+
+    # Pre-align to the curve's initial tangent direction, so the measured
     # tracking error reflects curve-following only, not the unavoidable
     # startup-reorientation transient.
     b1_0 = bezier_d1(p0, c, p1, 0.0)
@@ -149,7 +191,8 @@ def main():
      chk_pose.orientation.z, chk_pose.orientation.w) = q_align.tolist()
     chk_msg.poses.append(chk_pose)
     match_deadline = time.monotonic() + 5.0
-    while rclpy.ok() and chk_pub.get_subscription_count() < 1 and time.monotonic() < match_deadline:
+    while (rclpy.ok() and chk_pub.get_subscription_count() < 1
+           and time.monotonic() < match_deadline):
         rclpy.spin_once(node, timeout_sec=0.05)
     if chk_pub.get_subscription_count() < 1:
         node.get_logger().warn(
@@ -171,10 +214,10 @@ def main():
             continue
         _cur_pos, cur_quat, _stamp = current_pose
         qe = np.dot(np.asarray(cur_quat, dtype=float), q_align)
-        angle = 2.0 * np.arccos(np.clip(abs(qe), 0.0, 1.0))
-        if angle <= align_tolerance_rad:
+        angle_now = 2.0 * np.arccos(np.clip(abs(qe), 0.0, 1.0))
+        if angle_now <= align_tolerance_rad:
             node.get_logger().info(
-                f"[{node_name}] pre-align converged ({np.degrees(angle):.2f} deg from target)"
+                f"[{node_name}] pre-align converged ({np.degrees(angle_now):.2f} deg from target)"
             )
             break
     else:
@@ -192,10 +235,10 @@ def main():
     try:
         while rclpy.ok():
             elapsed = (node.get_clock().now() - t_start).nanoseconds * 1e-9
-            tau = min(1.0, elapsed / DURATION_SEC)
+            tau = min(1.0, elapsed / duration_sec)
             s, ds_dtau, dds_dtau = quintic(tau)
-            ds_dt = ds_dtau / DURATION_SEC
-            dds_dt = dds_dtau / (DURATION_SEC ** 2)
+            ds_dt = ds_dtau / duration_sec
+            dds_dt = dds_dtau / (duration_sec ** 2)
 
             p_des = bezier(p0, c, p1, s)
             b1 = bezier_d1(p0, c, p1, s)

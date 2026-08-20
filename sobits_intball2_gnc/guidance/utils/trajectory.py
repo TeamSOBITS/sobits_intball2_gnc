@@ -21,7 +21,10 @@ handling needed for attitude).
 """
 import numpy as np
 
-from sobits_intball2_gnc.guidance.utils.attitude_reference import compute_q_des
+from sobits_intball2_gnc.guidance.utils.attitude_reference import (
+    IDENTITY_QUAT,
+    compute_q_des,
+)
 from sobits_intball2_gnc.guidance.utils.polynomial import evaluate_vector
 
 
@@ -51,6 +54,14 @@ class Trajectory:
             without this every first call would otherwise hit the "speed
             below threshold, no previous q_des" case (see
             docs/trajectory_force_duration_investigation.md 6-3).
+        face_travel: when ``False``, ``sample(t)`` never calls
+            :func:`attitude_reference.compute_q_des` and instead holds
+            ``q_des`` fixed at ``initial_q_des`` (or identity if not given)
+            for the entire trajectory -- for moves where facing the direction
+            of travel is undesired (e.g. a fast transit with no particular
+            heading requirement), so translation isn't gated by an attitude
+            reference or a pre-alignment step at all. Default ``True``
+            preserves the original "face direction of travel" behavior.
     """
 
     def __init__(
@@ -62,6 +73,7 @@ class Trajectory:
         forward_axis=(1.0, 0.0, 0.0),
         max_angular_rate=None,
         initial_q_des=None,
+        face_travel=True,
     ):
         self.waypoints = np.asarray(waypoints, dtype=float)
         self.segment_times = np.asarray(segment_times, dtype=float)
@@ -71,8 +83,10 @@ class Trajectory:
         self._attitude_speed_threshold = float(attitude_speed_threshold)
         self._forward_axis = forward_axis
         self._max_angular_rate = max_angular_rate
+        self._face_travel = bool(face_travel)
         self._last_q_des = (
-            None if initial_q_des is None else np.asarray(initial_q_des, dtype=float)
+            IDENTITY_QUAT.copy() if initial_q_des is None
+            else np.asarray(initial_q_des, dtype=float)
         )
         self._last_sample_t = None
 
@@ -91,6 +105,9 @@ class Trajectory:
             p = evaluate_vector(seg_coeffs, tau, order=0)
             v = evaluate_vector(seg_coeffs, tau, order=1)
             a = evaluate_vector(seg_coeffs, tau, order=2)
+
+        if not self._face_travel:
+            return p, v, a, self._last_q_des
 
         dt = None if self._last_sample_t is None else t - self._last_sample_t
         self._last_sample_t = t

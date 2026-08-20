@@ -527,3 +527,49 @@ def test_torque_falls_back_to_corrector_when_q_des_unset():
     # Attitude correction must still be nonzero even though translation is
     # being driven by the trajectory controller.
     assert any(abs(v) > 1e-6 for v in alloc.last_torque)
+
+
+def test_trajectory_controller_resets_on_reactivation():
+    """docs/guidance_node_implementation_plan.md decision 7: a Guidance node
+    issuing several back-to-back CtlCommand goals goes trajectory_active ->
+    stale -> trajectory_active again for each new move. Without a reset on
+    the rising edge, TrajectoryController.compute() would finite-difference
+    the new move's first position against the PREVIOUS move's last position
+    (_last_pos), producing a bogus velocity spike."""
+    pc = _corrector(smooth_window=1, max_corr_force=100.0)
+    pc.update(-1.0, ([0.0, 0.0, 0.0], _IDENTITY, 50.0))
+    traj_ctrl = TrajectoryController(max_force=100.0, kp_pos=[0.0, 0.0, 0.0],
+                                      kd_pos=[1.0, 1.0, 1.0])
+    traj_sub = _FakeTrajectorySub(
+        p_des=[0.0, 0.0, 0.0], v_des=[0, 0, 0], a_des=[0, 0, 0],
+        last_received_t=0.0,
+    )
+    tf = _FakeTf(pose=([0.0, 0.0, 0.0], _IDENTITY, 0.0))
+    alloc = _FakeAllocator()
+    hc = HoverController(
+        _FakeImu(gyro=[0, 0, 0], acc=[0, 0, 0]), _FakeFan(), alloc,
+        HoverLaw(max_force=100.0),
+        tf_client=tf, corrector=pc,
+        trajectory_subscriber=traj_sub, trajectory_controller=traj_ctrl,
+        trajectory_timeout=0.2,
+    )
+
+    # First move: TF at [0,0,0] then jumps far away right before it goes stale
+    # (simulating the vehicle having actually traveled during the move).
+    hc.step(0.0)
+    tf.pose = ([9.0, 9.0, 9.0], _IDENTITY, 1.0)
+    hc.step(1.0)
+    traj_sub.last_received_t = -10.0
+    hc.step(2.0)  # goes stale -> falls back
+    assert hc.trajectory_active is False
+
+    # Second move starts at a totally different position (e.g. a new
+    # CtlCommand goal's TF pose). Without the reset, compute()'s finite
+    # difference would see (0,0,0) - (9,9,9) over dt, a huge bogus velocity.
+    traj_sub.last_received_t = 3.0
+    tf.pose = ([0.0, 0.0, 0.0], _IDENTITY, 3.0)
+    hc.step(3.0)
+    assert hc.trajectory_active is True
+    # kd_pos * vel_now should be ~0 on this first tick of the new move, not a
+    # huge spurious value from the stale _last_pos.
+    assert all(abs(v) < 1e-6 for v in alloc.last_force)

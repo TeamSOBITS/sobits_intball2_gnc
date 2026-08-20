@@ -256,6 +256,17 @@ class HoverController:
                 # update() below) instead of the stale pre-trajectory
                 # target, so translation doesn't jump. See docs/phase3.md.
                 self._corrector.set_checkpoints([])
+            if trajectory_active and not self._was_trajectory_active:
+                # Rising edge: TrajectoryController is a single long-lived
+                # instance (constructed once in from_node()), so without this
+                # it would still carry the PREVIOUS move's velocity/attitude-
+                # rate finite-difference state (_last_pos/_last_qe_vec) into
+                # this new one. A Guidance node issuing several back-to-back
+                # CtlCommand goals (docs/guidance_node_implementation_plan.md)
+                # is exactly the case that exercises this repeatedly -- reset
+                # so the first tick of a new move isn't computed against a
+                # stale prior-move state.
+                self._trajectory_ctrl.reset()
             self._was_trajectory_active = trajectory_active
 
             pose = self._tf.get_pose()

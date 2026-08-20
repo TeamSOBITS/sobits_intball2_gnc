@@ -45,6 +45,12 @@ setup(
             'sobits_intball2_gnc.guidance.ros.multi_dof_joint_trajectory_publisher:main',
             'ctl_command_action_server = '
             'sobits_intball2_gnc.guidance.ros.ctl_command_action_server:main',
+            'checkpoint_publisher = '
+            'sobits_intball2_gnc.guidance.ros.checkpoint_publisher:main',
+            'move_to_client = '
+            'sobits_intball2_gnc.guidance.ros.move_to_client:main',
+            # Guidance-system orchestrator (the single guidance node).
+            'guidance = sobits_intball2_gnc.guidance.guidance:main',
         ],
     },
 )
