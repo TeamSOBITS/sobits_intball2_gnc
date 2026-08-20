@@ -19,23 +19,27 @@ simulator publishes with Navigation OFF. Nothing here touches
 Navigation OFF that controller stays in STAND_BY and never competes for
 ``/ctl/duty``.
 """
-import time
-
 import rclpy
 from rclpy.node import Node
 from std_srvs.srv import Trigger
 
+from sobits_intball2_gnc.common.ros.tf_client import TfClient
 from sobits_intball2_gnc.control.ros.fan_duty_publisher import (
     DUTY_TOPIC,
     FanDutyPublisher,
 )
 from sobits_intball2_gnc.control.ros.imu_subscriber import ImuSubscriber, IMU_TOPIC
-from sobits_intball2_gnc.control.ros.path_subscriber import PathSubscriber
-from sobits_intball2_gnc.control.ros.tf_client import TfClient
-from sobits_intball2_gnc.control.ros.trajectory_subscriber import TrajectorySubscriber
+from sobits_intball2_gnc.control.ros.multi_dof_joint_trajectory_subscriber import (
+    MultiDOFJointTrajectorySubscriber,
+)
+from sobits_intball2_gnc.control.ros.pose_array_subscriber import PoseArraySubscriber
 from sobits_intball2_gnc.control.utils.hover_controller import (
     HOVER_MODES,
     HoverController,
+)
+from sobits_intball2_gnc.control.utils.singleton_lock import (
+    SingletonLockError,
+    acquire_singleton_lock,
 )
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
 
@@ -100,7 +104,7 @@ class ControlNode(Node):
         # the pose corrector.
         self._trajectory_sub = None
         if self._tf is not None:
-            self._trajectory_sub = TrajectorySubscriber(
+            self._trajectory_sub = MultiDOFJointTrajectorySubscriber(
                 self,
                 expected_frame=str(
                     self.get_parameter("tf_correction.reference_frame").value
@@ -113,7 +117,7 @@ class ControlNode(Node):
         )
 
         # Checkpoint array interface (poses in the TF reference frame).
-        self._path = PathSubscriber(
+        self._path = PoseArraySubscriber(
             self,
             str(self.get_parameter("tf_correction.checkpoint_topic").value),
             on_path=self._hover.set_checkpoints,
@@ -252,9 +256,14 @@ class ControlNode(Node):
             self.get_logger().info(summary + "  <-- fan control is OURS")
 
     def _on_timer(self) -> None:
-        # time.monotonic() is deliberate: TF stamps are compared only against
-        # other TF stamps, so this clock never has to match the TF publisher's.
-        self._hover.step(time.monotonic())
+        # self.get_clock().now() (not time.monotonic()) so this loop's own
+        # notion of elapsed time is on the same clock as the TF stamps it
+        # compares itself against: with use_sim_time=true and /clock bridged
+        # from the simulator, both are sim time, so a Gazebo real-time-factor
+        # drop under CPU load no longer desyncs "how much time we think
+        # passed" from "how far the vehicle actually got to move" -- see
+        # docs/recording_cpu_load_control_degradation.md.
+        self._hover.step(self.get_clock().now().nanoseconds * 1e-9)
         if hasattr(self, "_tx_zero_count") and self._is_zero_duty(self._fan.duties):
             self._tx_zero_count += 1
 
@@ -297,6 +306,16 @@ def main(args=None) -> None:
     # No functional flags (configuration is via ROS2 parameters); parsing the
     # non-ROS args still provides `-h` and rejects unknown arguments.
     parser.parse_args(remove_ros_args(args=argv)[1:])
+
+    # Refuse to start a second control_node in this container: a leftover
+    # process silently fighting the new one over /ctl/duty caused a real
+    # incident (docs/main_plan.md, docs/trajectory_force_duration_investigation.md
+    # 6-1). Held for the whole process lifetime; released automatically on exit.
+    try:
+        lock_file = acquire_singleton_lock()  # noqa: F841
+    except SingletonLockError as exc:
+        print("control: %s" % exc, file=sys.stderr)
+        sys.exit(1)
 
     rclpy.init(args=argv)
     node = ControlNode()

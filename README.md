@@ -28,6 +28,7 @@
         <li><a href="#インストール方法">インストール方法</a></li>
       </ul>
     </li>
+    <li><a href="#実行方法">実行方法</a></li>
     <li><a href="#マイルストーン">マイルストーン</a></li>
   </ol>
 </details>
@@ -43,7 +44,7 @@ ROS2 Humble に対応しています．
 
 | 役割 | 内容 | 詳細 |
 |---|---|---|
-| **G (Guidance)** | 目標軌道 `p_des(t), v_des(t), a_des(t), q_des(t)` を生成 | 骨格のみ（未実装）: [sobits_intball2_gnc/guidance/README.md](sobits_intball2_gnc/guidance/README.md) |
+| **G (Guidance)** | 目標軌道 `p_des(t), v_des(t), a_des(t), q_des(t)` を生成 | `min_snap.py`のコアロジックのみ未実装: [sobits_intball2_gnc/guidance/README.md](sobits_intball2_gnc/guidance/README.md) |
 | **N (Navigation)** | 自己位置推定 | [sobits_intball2_gnc/navigation/README.md](sobits_intball2_gnc/navigation/README.md) |
 | **C (Control)** | 目標軌道を追従する force/torque を計算し，8 duty へ配分 | [sobits_intball2_gnc/control/README.md](sobits_intball2_gnc/control/README.md) |
 
@@ -60,7 +61,7 @@ sobits_intball2_gnc/
 ├── sobits_intball2_gnc/
 │   ├── navigation/                  # Navigation（N）: 詳細は navigation/README.md
 │   ├── control/                     # Control（C）: 詳細は control/README.md
-│   └── guidance/                    # Guidance（G）: 骨格のみ、詳細は guidance/README.md
+│   └── guidance/                    # Guidance（G）: min_snap.pyのコアロジックのみ未実装、詳細は guidance/README.md
 ├── test/                            # 各ロジックの単体テスト（ROS 不要）
 ├── package.xml
 ├── setup.py
@@ -113,6 +114,24 @@ sobits_intball2_gnc/
    colcon build --packages-select sobits_intball2_gnc
    source ~/colcon_ws/install/setup.bash
    ```
+
+<p align="right">(<a href="#readme-top">上に戻る</a>)</p>
+
+## 実行方法
+
+制御ノード本体（`hover_control.launch.py`）と，RViz・TF可視化などのデバッグ支援一式（`gnc_bringup.launch.py`）は別のlaunchファイルに分かれています．通常は両方を起動します．
+
+```sh
+ros2 launch sobits_intball2_gnc hover_control.launch.py
+ros2 launch sobits_intball2_gnc gnc_bringup.launch.py
+```
+
+| launchファイル | 役割 |
+|---|---|
+| `hover_control.launch.py` | `control`ノードを`config/gnc_params.yaml`のパラメータで起動．Navigation OFF（自己位置推定はTFツリーから取得）．`params_file:=<path>`で別パラメータファイルを指定可能． |
+| `gnc_bringup.launch.py` | ISS/ib2の`robot_state_publisher`（TFフレーム・メッシュ表示），GNC用RViz設定（`rviz/gnc.rviz`），`location_broadcaster`を起動．`use_rviz:=false`でRViz無効化可能． |
+
+各ノードを個別に`ros2 run`で実行する方法（単体テスト・デバッグ用）は各モジュールのREADME（[control](sobits_intball2_gnc/control/README.md)・[guidance](sobits_intball2_gnc/guidance/README.md)・[navigation](sobits_intball2_gnc/navigation/README.md)）を参照してください．
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 

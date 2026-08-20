@@ -3,7 +3,7 @@
 from the current position (expected: near above_dock_2), through the named
 'nav_entry' waypoint, to the named 'near_dock' location -- with quintic
 (min-jerk) timing along the curve parameter. Publishes the visualization
-path via TrajectoryPathPublisher.
+path via PathPublisher.
 
 Curve: B(s) = (1-s)^2*P0 + 2(1-s)s*C + s^2*P1, s in [0,1]. The control point
 C is solved so the curve passes exactly through the WAYPOINT at s=0.5:
@@ -25,20 +25,24 @@ import time
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from trajectory_msgs.msg import MultiDOFJointTrajectory, MultiDOFJointTrajectoryPoint
 from geometry_msgs.msg import Transform, Twist
 
-from sobits_intball2_gnc.control.ros.tf_client import TfClient
-from sobits_intball2_gnc.guidance.ros.trajectory_path_publisher import (
-    TrajectoryPathPublisher,
-)
+from sobits_intball2_gnc.common.ros.tf_client import TfClient
+from sobits_intball2_gnc.guidance.ros.path_publisher import PathPublisher
 
 TRAJECTORY_TOPIC = "/gnc/trajectory_setpoint"
+TRAJECTORY_PATH_TOPIC = "/gnc/trajectory_path"
 PATH_SAMPLE_DT = 0.1
 REFERENCE_FRAME = "iss_body"
 TARGET_FRAME = "body"
 RATE_HZ = 50.0
-DURATION_SEC = 25.0
+# See send_curve_via_naventry_to_above_dock2.py for why this was raised from
+# 25.0: peak required force scales as 1/T^2, and the curve's bow can't be
+# reduced (cobra-maneuver intent) nor the timing reshaped to help (the plain
+# quintic was already near-optimal for peak acceleration at fixed T).
+DURATION_SEC = 40.0
 
 # nav_entry / near_dock, from maps/iss_location.yaml (iss_body frame),
 # cross-checked live via `ros2 run tf2_ros tf2_echo iss_body <frame>`.
@@ -80,10 +84,13 @@ def main():
 
     rclpy.init(args=sys.argv)
     node_name = f"send_curve_via_naventry_{int(time.monotonic() * 1000) % 1000000}"
-    node = Node(node_name)
+    node = Node(
+        node_name,
+        parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)],
+    )
     tf_client = TfClient(node, reference_frame=REFERENCE_FRAME, target_frame=TARGET_FRAME)
     pub = node.create_publisher(MultiDOFJointTrajectory, TRAJECTORY_TOPIC, 1)
-    path_pub = TrajectoryPathPublisher(node, reference_frame=REFERENCE_FRAME)
+    path_pub = PathPublisher(node, TRAJECTORY_PATH_TOPIC, reference_frame=REFERENCE_FRAME)
 
     node.get_logger().info(f"[{node_name}] waiting for TF...")
     if not tf_client.wait_for_frame(timeout_sec=8.0):
@@ -131,10 +138,13 @@ def main():
         return
 
     dt = 1.0 / RATE_HZ
-    t_start = time.monotonic()
+    # sim clock (not time.monotonic()) so tau tracks simulated time, not
+    # wall-clock time -- under RTF<1 a wall-clock tau races ahead of what the
+    # vehicle can actually achieve in sim time.
+    t_start = node.get_clock().now()
     try:
         while rclpy.ok():
-            elapsed = time.monotonic() - t_start
+            elapsed = (node.get_clock().now() - t_start).nanoseconds * 1e-9
             tau = min(1.0, elapsed / DURATION_SEC)
             s, ds_dtau, dds_dtau = quintic(tau)
             ds_dt = ds_dtau / DURATION_SEC

@@ -36,10 +36,15 @@ setup(
             # ros/ wrapper manual-test entry points.
             'fan_duty_publisher = sobits_intball2_gnc.control.ros.fan_duty_publisher:main',
             'imu_subscriber = sobits_intball2_gnc.control.ros.imu_subscriber:main',
-            'tf_client = sobits_intball2_gnc.control.ros.tf_client:main',
-            'path_subscriber = sobits_intball2_gnc.control.ros.path_subscriber:main',
-            'trajectory_subscriber = sobits_intball2_gnc.control.ros.trajectory_subscriber:main',
-            'trajectory_path_publisher = sobits_intball2_gnc.guidance.ros.trajectory_path_publisher:main',
+            'tf_client = sobits_intball2_gnc.common.ros.tf_client:main',
+            'pose_array_subscriber = sobits_intball2_gnc.control.ros.pose_array_subscriber:main',
+            'multi_dof_joint_trajectory_subscriber = '
+            'sobits_intball2_gnc.control.ros.multi_dof_joint_trajectory_subscriber:main',
+            'path_publisher = sobits_intball2_gnc.guidance.ros.path_publisher:main',
+            'multi_dof_joint_trajectory_publisher = '
+            'sobits_intball2_gnc.guidance.ros.multi_dof_joint_trajectory_publisher:main',
+            'ctl_command_action_server = '
+            'sobits_intball2_gnc.guidance.ros.ctl_command_action_server:main',
         ],
     },
 )

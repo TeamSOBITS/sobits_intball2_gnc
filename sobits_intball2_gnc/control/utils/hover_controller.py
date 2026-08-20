@@ -19,19 +19,22 @@ compatibility):
   -- pure feedforward+feedback translation controller for a moving Guidance
   setpoint (Phase 3a, ``openspec/changes/add-trajectory-following``).
 - :class:`HoverController` -- DI orchestration logic: reads the injected
-  ``ImuSubscriber`` and (optional) ``TfClient``, combines the IMU law with the
+  ``ImuSubscriber`` and (optional) ``TfClient`` (common/ros), combines the IMU law with the
   pose correction, allocates via the injected :class:`ThrustAllocator`, and
   publishes via the injected ``FanDutyPublisher``. It performs no ROS I/O.
 
-  When a ``TrajectorySubscriber`` is injected and its setpoint is live (a
+  When a ``MultiDOFJointTrajectorySubscriber`` is injected and its setpoint is live (a
   message arrived within ``trajectory_controller.timeout``), translation is
   driven entirely by :class:`TrajectoryController` instead of
   :class:`PoseCorrector`'s checkpoint hold -- the two never contribute force
   in the same tick (see ``docs/phase3.md`` / the openspec change for the full
-  contract). Attitude (torque) always comes from :class:`PoseCorrector`
-  regardless of which mode is active: it is still called every tick so its
-  torque output keeps working, only its *force* return value is discarded
-  while trajectory following is active.
+  contract). Attitude (torque) follows the same split (Phase 3b): while
+  trajectory following is active and a ``q_des`` has been received,
+  :class:`TrajectoryController` also supplies the torque; otherwise (or while
+  ``q_des`` is still unset, e.g. before Guidance's first setpoint)
+  :class:`PoseCorrector`'s checkpoint/hold attitude torque is used.
+  :class:`PoseCorrector` is still called every tick regardless, so its
+  liveness/hold state keeps tracking even when its output is discarded.
 """
 import time
 
@@ -77,11 +80,11 @@ class HoverController:
         fan_publisher: injected ``FanDutyPublisher`` (duty output).
         allocator: injected :class:`ThrustAllocator`.
         law: :class:`HoverLaw` instance (IMU control law).
-        tf_client: optional ``TfClient``. None -> pure IMU hover; the node
+        tf_client: optional ``TfClient`` (common/ros). None -> pure IMU hover; the node
             decides this from ``hover_control.mode`` and injects the result.
         corrector: optional :class:`PoseCorrector` (used when ``tf_client`` is
             given).
-        trajectory_subscriber: optional injected ``TrajectorySubscriber``
+        trajectory_subscriber: optional injected ``MultiDOFJointTrajectorySubscriber``
             (source of the Guidance setpoint). Only meaningful alongside
             ``tf_client``/``corrector``; ignored in IMU-only mode.
         trajectory_controller: optional :class:`TrajectoryController`, paired
@@ -202,6 +205,8 @@ class HoverController:
             trajectory_ctrl = TrajectoryController(
                 mass=g("mass"), kp_pos=g("kp_pos"), kd_pos=g("kd_pos"),
                 vel_filter_alpha=g("vel_filter_alpha"), max_force=g("max_force"),
+                kp_att=g("kp_att"), kd_att=g("kd_att"),
+                att_filter_alpha=g("att_filter_alpha"), max_torque=g("max_torque"),
             )
         return cls(imu_subscriber, fan_publisher, allocator, law,
                    tf_client, corrector, trajectory_subscriber, trajectory_ctrl,
@@ -261,12 +266,17 @@ class HoverController:
             f_corr, t_corr = self._corrector.update(t, pose)
 
             if trajectory_active and pose is not None:
-                pos_now, quat_now, _stamp = pose
+                pos_now, quat_now, stamp = pose
                 f_corr = self._trajectory_ctrl.compute(
-                    t, pos_now, quat_now,
+                    stamp, pos_now, quat_now,
                     self._trajectory_sub.p_des, self._trajectory_sub.v_des,
                     self._trajectory_sub.a_des,
                 )
+                q_des = self._trajectory_sub.q_des
+                if q_des is not None:
+                    t_corr = self._trajectory_ctrl.compute_attitude(
+                        stamp, quat_now, q_des,
+                    )
 
             self._last_force_corr, self._last_torque_corr = f_corr, t_corr
             force = np.clip(

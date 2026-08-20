@@ -18,15 +18,15 @@ import time
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from trajectory_msgs.msg import MultiDOFJointTrajectory, MultiDOFJointTrajectoryPoint
 from geometry_msgs.msg import Transform, Twist
 
-from sobits_intball2_gnc.control.ros.tf_client import TfClient
-from sobits_intball2_gnc.guidance.ros.trajectory_path_publisher import (
-    TrajectoryPathPublisher,
-)
+from sobits_intball2_gnc.common.ros.tf_client import TfClient
+from sobits_intball2_gnc.guidance.ros.path_publisher import PathPublisher
 
 TRAJECTORY_TOPIC = "/gnc/trajectory_setpoint"
+TRAJECTORY_PATH_TOPIC = "/gnc/trajectory_path"
 PATH_SAMPLE_DT = 0.1  # seconds between path-visualization waypoints
 REFERENCE_FRAME = "iss_body"
 TARGET_FRAME = "body"
@@ -45,10 +45,13 @@ def quintic(tau):
 
 def main():
     rclpy.init(args=sys.argv)
-    node = Node("send_trajectory")
+    node = Node(
+        "send_trajectory",
+        parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)],
+    )
     tf_client = TfClient(node, reference_frame=REFERENCE_FRAME, target_frame=TARGET_FRAME)
     pub = node.create_publisher(MultiDOFJointTrajectory, TRAJECTORY_TOPIC, 1)
-    path_pub = TrajectoryPathPublisher(node, reference_frame=REFERENCE_FRAME)
+    path_pub = PathPublisher(node, TRAJECTORY_PATH_TOPIC, reference_frame=REFERENCE_FRAME)
 
     node.get_logger().info("[send_trajectory] waiting for TF...")
     if not tf_client.wait_for_frame(timeout_sec=5.0):
@@ -72,10 +75,13 @@ def main():
     path_pub.publish(samples)
 
     dt = 1.0 / RATE_HZ
-    t_start = time.monotonic()
+    # sim clock (not time.monotonic()) so tau tracks simulated time, not
+    # wall-clock time -- under RTF<1 a wall-clock tau races ahead of what the
+    # vehicle can actually achieve in sim time.
+    t_start = node.get_clock().now()
     try:
         while rclpy.ok():
-            elapsed = time.monotonic() - t_start
+            elapsed = (node.get_clock().now() - t_start).nanoseconds * 1e-9
             tau = min(1.0, elapsed / DURATION_SEC)
             s, ds, dds = quintic(tau)
             p_des = p0 + (p1 - p0) * s

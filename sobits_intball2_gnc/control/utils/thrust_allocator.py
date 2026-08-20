@@ -3,9 +3,9 @@
 
 Reusable, ROS-agnostic core shared by the control logic. Builds the 6x8 wrench
 matrix ``A`` from the fan geometry (column j = [vec_j; (pos_j - cg) x vec_j]) and
-solves for the non-negative per-fan thrust ``f >= 0`` that best achieves the
-requested wrench ``y = [Fx,Fy,Fz,Tx,Ty,Tz]`` via non-negative least squares
-(``scipy.optimize.nnls``).
+solves for the per-fan thrust ``0 <= f <= fj_max`` that best achieves the
+requested wrench ``y = [Fx,Fy,Fz,Tx,Ty,Tz]`` via bounded least squares
+(``scipy.optimize.lsq_linear``).
 
 Because reverse thrust is physically impossible (the simulator clamps negative
 duty to zero force), the allocation must not produce negative per-fan thrust in
@@ -15,11 +15,30 @@ for this fan geometry, the unconstrained optimum for a pure force or torque
 command generally splits it across opposing fan pairs (one positive, one
 equal-and-opposite negative) to cancel unwanted coupling, so post-hoc clamping
 silently discarded half the requested wrench (up to ~70% for some combined
-force+torque directions -- see docs/phase0_findings.md). NNLS solves the
-constrained problem directly, so the geometry's full actuation authority (which
-does not require negative thrust to reach any of the wrenches checked so far)
-is actually used. Above ``fj_max`` per fan, the result is scaled down so no
-duty exceeds 1.0, preserving the commanded direction.
+force+torque directions -- see docs/phase0_findings.md). A later version moved
+to non-negative least squares (``scipy.optimize.nnls``) followed by a uniform
+rescale of all 8 fans whenever the raw solution exceeded ``fj_max`` on any one
+fan, to keep the commanded *direction* intact -- but that rescale punished
+every fan equally, including ones producing an easily-achievable force that had
+nothing to do with the fan that actually saturated. In practice, this fan
+geometry's short moment arms (~0.05-0.07m) mean even a small torque request
+(well within ``max_torque``) drives the raw NNLS solution to demand per-fan
+thrust far above ``fj_max``, so the uniform rescale crushed co-requested force
+by 40-90%+ even though that force alone was nowhere near saturating (see
+docs/archive/achieved/trajectory_force_duration_investigation.md and the
+2026-08-20 cobra-maneuver investigation that found translation drifting
+alongside attitude, which it previously did not). Two fixes, applied together:
+
+1. ``lsq_linear`` solves the ``0 <= f <= fj_max`` bounded problem directly, so
+   there is no post-hoc rescale step to crush unrelated fans -- the solver
+   itself finds the best achievable trade-off within real per-fan limits.
+2. The 6-element wrench is weighted before solving: force rows (N) by
+   ``1/force_weight_ref`` and torque rows (N*m) by ``1/torque_weight_ref``, so
+   the two channels' residuals are compared on the same relative (fraction of
+   their own reference budget) footing instead of raw units -- without this,
+   a request expressed as coincidentally similar raw N/N*m numbers biases the
+   least-squares fit toward whichever axis happens to have larger raw
+   magnitude, independent of which one actually matters more.
 
 The class has a plain-value constructor (unit-testable without ROS) plus
 ``declare_parameters(node)`` / ``from_node(node)`` helpers so the owning node
@@ -30,7 +49,7 @@ an array of maps.
 """
 import math
 
-from scipy.optimize import nnls
+from scipy.optimize import lsq_linear
 
 import numpy as np
 
@@ -38,6 +57,13 @@ import numpy as np
 DEFAULT_KJ = 4.082482905
 DEFAULT_FJ_MAX = 0.06
 DEFAULT_CG = [0.001489, 0.001363, 0.000249]
+# Weighting references for the force/torque channels (see module docstring
+# point 2). Mirror trajectory_controller.max_force/max_torque in
+# config/gnc_params.yaml -- the largest force/torque this vehicle is ever
+# commanded to want, so a full-scale error on either channel counts the same
+# in the weighted least-squares fit.
+DEFAULT_FORCE_WEIGHT_REF = 0.1   # [N]
+DEFAULT_TORQUE_WEIGHT_REF = 0.32  # [N*m]
 DEFAULT_FAN_POSITIONS = [
     0.045, 0.070, 0.0555,     # fan1
     0.045, -0.070, 0.0555,    # fan2
@@ -77,7 +103,17 @@ class ThrustAllocator:
         cg: center of gravity [m], 3 elements.
         fan_positions: flat [x,y,z, ...] per-fan mounting positions [m].
         fan_vectors: flat [vx,vy,vz, ...] per-fan thrust unit vectors.
+        force_weight_ref: force-channel weighting reference [N] for the
+            least-squares fit (see module docstring point 2).
+        torque_weight_ref: torque-channel weighting reference [N*m], same
+            purpose as ``force_weight_ref``.
     """
+
+    # Tikhonov weight breaking ties toward minimal total thrust among
+    # solutions that equally satisfy the (weighted) wrench request -- see
+    # allocate()'s comment. Small enough to not measurably compete with
+    # actually satisfying the request.
+    _MIN_THRUST_REG = 1e-4
 
     def __init__(
         self,
@@ -86,9 +122,17 @@ class ThrustAllocator:
         cg=DEFAULT_CG,
         fan_positions=DEFAULT_FAN_POSITIONS,
         fan_vectors=DEFAULT_FAN_VECTORS,
+        force_weight_ref: float = DEFAULT_FORCE_WEIGHT_REF,
+        torque_weight_ref: float = DEFAULT_TORQUE_WEIGHT_REF,
     ) -> None:
         self.kj = float(kj)
         self.fj_max = float(fj_max)
+        # Per-row weights: force rows by 1/force_weight_ref, torque rows by
+        # 1/torque_weight_ref, so both channels' residuals are compared as a
+        # fraction of their own reference budget rather than raw N vs. N*m.
+        self._weight = np.array(
+            [1.0 / float(force_weight_ref)] * 3 + [1.0 / float(torque_weight_ref)] * 3
+        )
         cg = np.asarray(cg, dtype=float)
         positions = _reshape_triplets(fan_positions)
         vectors = _reshape_triplets(fan_vectors)
@@ -113,6 +157,8 @@ class ThrustAllocator:
             ("thrust_allocator.cg", DEFAULT_CG),
             ("thrust_allocator.fan_positions", DEFAULT_FAN_POSITIONS),
             ("thrust_allocator.fan_vectors", DEFAULT_FAN_VECTORS),
+            ("thrust_allocator.force_weight_ref", DEFAULT_FORCE_WEIGHT_REF),
+            ("thrust_allocator.torque_weight_ref", DEFAULT_TORQUE_WEIGHT_REF),
         ):
             if not node.has_parameter(name):
                 node.declare_parameter(name, default)
@@ -131,6 +177,8 @@ class ThrustAllocator:
             cg=g("thrust_allocator.cg"),
             fan_positions=g("thrust_allocator.fan_positions"),
             fan_vectors=g("thrust_allocator.fan_vectors"),
+            force_weight_ref=g("thrust_allocator.force_weight_ref"),
+            torque_weight_ref=g("thrust_allocator.torque_weight_ref"),
         )
 
     def allocate(self, force, torque) -> list:
@@ -144,16 +192,30 @@ class ThrustAllocator:
         if not np.any(y):
             return [0.0] * self.fan_count
 
-        # Non-negative least squares: the closest achievable wrench using only
-        # f >= 0 (no reverse thrust), solved directly rather than clamping an
-        # unconstrained solution (see module docstring).
-        f, _residual = nnls(self.A, y)
-
-        # Saturation: scale down so the largest thrust is at most fj_max
-        # (i.e. max duty 1.0), keeping force direction intact.
-        f_max = float(f.max()) if f.size else 0.0
-        if f_max > self.fj_max:
-            f = f * (self.fj_max / f_max)
+        # Bounded least squares directly on 0 <= f <= fj_max (no post-hoc
+        # rescale -- see module docstring point 1), weighted so the force and
+        # torque rows are compared as a fraction of their own reference budget
+        # rather than raw N vs. N*m (point 2). Weighting a row of A and the
+        # corresponding entry of y by the same factor leaves the underlying
+        # equation unchanged; it only changes which rows the least-squares fit
+        # prioritizes when the bounded problem can't satisfy all of them.
+        #
+        # This 6x8 system is underdetermined (8 fans, 6 wrench components), so
+        # many non-negative f achieve the same wrench exactly -- unlike NNLS,
+        # lsq_linear has no built-in bias toward a sparse/minimal one, and can
+        # pick a solution that spends far more total thrust than necessary
+        # (all 8 fans near max instead of the ~4-6 NNLS would use). A small
+        # Tikhonov term (``+ lambda * ||f||^2``, via extra all-zero-target rows
+        # weighted by sqrt(lambda)) breaks ties toward the lowest-total-thrust
+        # solution without measurably biasing away from satisfying the primary
+        # wrench request.
+        Aw = self.A * self._weight[:, np.newaxis]
+        yw = y * self._weight
+        reg = math.sqrt(self._MIN_THRUST_REG) * np.eye(self.fan_count)
+        A_aug = np.vstack([Aw, reg])
+        y_aug = np.concatenate([yw, np.zeros(self.fan_count)])
+        result = lsq_linear(A_aug, y_aug, bounds=(0.0, self.fj_max))
+        f = result.x
 
         return [self._force_to_duty(fj) for fj in f]
 

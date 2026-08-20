@@ -29,6 +29,16 @@
       kj: 4.082482905          # thrust -> duty coefficient: duty = kj * sqrt(f)
       fj_max: 0.06             # max thrust per fan [N] (duty = 1.0)
       cg: [0.001489, 0.001363, 0.000249]   # center of gravity [m]
+      # Weighting references for the bounded least-squares allocation (2026-08-20,
+      # see thrust_allocator.py module docstring): a request expressed as raw
+      # [Fx,Fy,Fz,Tx,Ty,Tz] mixes N and N*m, so without normalizing by each
+      # channel's own reference budget, even a small torque request (this fan
+      # geometry's short ~0.05-0.07m moment arms make torque numerically
+      # expensive) dominated the least-squares fit and crushed co-requested
+      # force by 40-90%+. Mirror trajectory_controller.max_force/max_torque
+      # below so a full-scale error on either channel counts the same.
+      force_weight_ref: 0.1    # [N], mirrors trajectory_controller.max_force
+      torque_weight_ref: 0.32  # [N*m], mirrors trajectory_controller.max_torque
       # 8 fans, flattened [x1,y1,z1, x2,y2,z2, ...] (body frame).
       # pos = mounting position [m], vec = thrust unit vector.
       fan_positions:
@@ -190,15 +200,125 @@
     # (iss_body). Mutually exclusive with tf_correction's checkpoint hold: see
     # HoverController -- trajectory following takes over the translation
     # force entirely while setpoints are live, falling back to checkpoint
-    # hold once they go stale. Attitude (torque) is untouched by this and
-    # keeps coming from PoseCorrector regardless of mode (Phase 3b territory).
+    # hold once they go stale. Phase 3b adds the same split for attitude: while
+    # a setpoint is live AND a q_des has been received, TrajectoryController
+    # also supplies the torque (kp_att/kd_att/att_filter_alpha/max_torque
+    # below, seeded from tf_correction's own values -- untuned against a
+    # moving q_des(t), same caveat as tf_correction's). Otherwise attitude
+    # torque keeps coming from PoseCorrector's checkpoint/hold target.
     trajectory_controller:
       # Measured despin + known-force step test (docs/phase0_findings.md
       # observation 7, cross-checked twice: 4.46kg / 4.61kg).
       mass: 4.5                # vehicle mass [kg]
+      # Tried raising to 0.2 (2026-08-19) to give feedforward more headroom
+      # on a curved trajectory that was measuring ~50mm peak tracking error
+      # at 0.1N. Made it WORSE, not better: same curve measured ~590mm peak
+      # error at 0.2N, with visible overshoot/oscillation (y stuck near
+      # nav_entry while z overshot past the target) rather than convergence.
+      # The 0.1N clamp was apparently providing implicit damping that kp/kd
+      # rely on; raising it without retuning those gains destabilizes
+      # tracking instead of improving it. Reverted to 0.1 pending a real
+      # gain retune (see docs/future_design_notes.md).
+      # 6-14 (docs/trajectory_force_duration_investigation.md): treating the
+      # 144.7 deg hairpin maneuver (6-12) as the worst case to design for,
+      # the peak |a_des| for that curve at DURATION_SEC=40s is ~0.0211 m/s^2
+      # (numerically differentiated from the curve's own kinematics, not a
+      # closed-loop measurement) -> required max_force ~0.0949N at this
+      # mass. Tried 0.75x that (~0.0712N, deliberately below the no-clamp
+      # requirement) alongside the kp_att jump below -- reverted along with
+      # kp_att/kd_att/max_torque after that combination produced a
+      # non-converging (68 deg final error) run; see the note below.
       max_force: 0.1           # output force clamp (per axis) [N], independent of tf_correction.max_corr_force
       # Shorter than tf_correction.timeout (1.0s): TF is a near-passive oracle,
       # but a trajectory setpoint carries an active feedforward (a_des) --
       # riding a stale one is riskier, so the fallback to checkpoint hold
       # should kick in quickly. ~10 missed messages at the 50Hz publish rate.
       timeout: 0.2              # setpoint stalled this long -> fall back to checkpoint hold [s]
+      # Phase 3b (docs/trajectory_force_duration_investigation.md 6節): a
+      # curved trajectory with a facing-direction-of-travel q_des(t) showed
+      # torque_corr pinned at tf_correction's static-hold clamp (0.01 Nm) --
+      # same "clamp acting as implicit damping" failure mode as max_force
+      # above (3節), but for attitude. First step (kp_att 3x, max_torque 2x,
+      # 6-1/6-2) stopped the clamp saturation, but 6-3 through 6-5 then showed
+      # -- by measuring the actual geodesic tracking-error angle, not just
+      # clamp saturation, and cross-checking across several q_des(t)
+      # generation strategies (instantaneous direction, rate-limited,
+      # lookahead) -- a ~20-28 degree tracking error persists through the
+      # curve's body regardless of how q_des(t) is generated. That result
+      # isolates the remaining error to the controller's own bandwidth being
+      # too low, not the reference. Second step (9x, 6-6) plus pre-alignment
+      # (avoids the unavoidable startup-mismatch transient, see
+      # ALIGN_TOLERANCE_DEG in the naventry test scripts) got the curve-body
+      # error down to ~1-2 deg average, but a ~20-28 deg peak remained right
+      # at nav_entry's peak-curvature crossing regardless of q_des(t)
+      # generation strategy (6-7 re-confirmed lookahead doesn't help post-gain
+      # -increase either). Softening the maneuver itself (longer DURATION_SEC)
+      # was rejected -- defeats the point of testing an aggressive maneuver --
+      # so this third step pushed the gain further (kp_att ~1.7x, kd_att
+      # scaled with it, max_torque given more headroom). Round-trip
+      # re-verification (6-9) confirmed the ~20-30 deg peak is a real,
+      # nav_entry-body phenomenon (not an end-of-trajectory artifact), and
+      # derived a theoretical kp_att lower bound (e_ss ~= I*theta_ref''/kp_att,
+      # target error 5 deg) of ~8-11 -- ~55-74x this value. Per the
+      # small-steps caution above, a fourth step (2x, 6-10) reduced the
+      # peak by ~28-32% (24.3/29.7 deg -> 16.6/21.5 deg) round-trip, still
+      # well short of theory. A fifth step (2x, 6-11) improved further on
+      # the near_dock->above_dock_2 curve, but 6-12 found that curve's
+      # ~89 deg turn isn't the worst case: a sharper 144.7 deg hairpin
+      # (near_dock<->above_dock via an extended nav_entry bulge) measured a
+      # peak angular accel of 55.88 rad/s^2 -> theoretical kp_att >= 30.10,
+      # ~3x the 89-deg curve's requirement, and produced an 82 deg tracking
+      # error at kp_att=0.60 (6-13 confirmed 0.60 itself doesn't hurt gentle/
+      # straight-line tracking, so headroom to push further is available).
+      # 6-14: treating the 144.7 deg hairpin as the design worst case, tried
+      # jumping to 0.75x that theoretical kp_att (22.57, under-provisioned
+      # on purpose). First attempt kept kd_att = kp_att/3 (the ratio used at
+      # every prior, much smaller step) -- WRONG: damping ratio
+      # zeta = kd_att/(2*sqrt(kp_att*I)) scales as sqrt(kp_att) under a
+      # linear kd_att/kp_att ratio, so the 37.6x jump in kp_att drove zeta
+      # from ~0.6 (fine at kp_att=0.60) to ~3.65 (badly overdamped),
+      # slowing the dominant pole and making tracking WORSE (82 -> 95 deg
+      # peak). Corrected kd_att to hold zeta~0.6 (kd_att=2*0.6*sqrt(kp_att*I)
+      # = 1.24) -- but at kp_att=22.57 and max_torque=12.04 (kept at the
+      # prior kp_att*8/15 ratio), a realistic tens-of-degrees error already
+      # demands kp_att*error far beyond max_torque (e.g. 30 deg error alone
+      # needs ~11.8 Nm, near the clamp), so the controller was saturated
+      # almost continuously -- not operating as the linear PD the zeta
+      # analysis assumed. That produced torque_corr chattering between
+      # +/-max_torque (sign flips every ~2s) and a non-converging run (68
+      # deg final error, never settled). Reverted kp_att/kd_att/max_torque
+      # (and max_force above) to the last verified-safe values (6-11/6-13:
+      # kp_att=0.60 round-trip verified on both the 89 and 144.7 deg curves
+      # without runaway, plus a straight-line check for gentle-curve
+      # side effects) pending a redesign that keeps max_torque headroom
+      # ahead of kp_att*(realistic peak error), not just a fixed ratio to
+      # kp_att.
+      # 6-17: 6-16 found the fan hardware's real torque ceiling
+      # (0.0030-0.0082 Nm, docs 6-15) is far below every max_torque value
+      # tried here (even 0.32) -- duty saturation (physical, not this
+      # clamp) was always the true bottleneck for any meaningfully large
+      # error. At DURATION_SEC=100s the 144.7 deg hairpin's required peak
+      # accel (~0.057 rad/s^2, clean analytic) finally fits under the
+      # hardware ceiling with a little margin, and a round-trip at
+      # kp_att=0.60 confirmed the vehicle completes the maneuver (converges
+      # to ~1.6 deg final) but with a large transient lag (132 deg peak).
+      # Doubling kp_att to 1.20 (kd_att scaled via 2*0.6*sqrt(kp_att*I) to
+      # hold zeta=0.6) did NOT meaningfully help (131 deg peak, mean error
+      # actually got slightly worse, 15.9 vs 11.9 deg) -- 144.7 deg is
+      # provisionally out of reach by gain tuning alone even with the
+      # hardware margin 100s provides. Reverted to the 6-11/6-13
+      # verified-safe kp_att=0.60/kd_att=0.20/max_torque=0.32. The team
+      # provisionally adopted a 90 deg deflection-angle design limit (see
+      # 6-18) instead of continuing to chase 144.7 deg.
+      # 6-19: swept kp_att=0.90 (kd_att=0.25 via 2*0.6*sqrt(kp_att*I)) on the
+      # original 89 deg cobra maneuver (near_dock<->above_dock_2), safely
+      # within the provisional 90 deg design limit (6-18), to see whether
+      # the 24->17->13 deg improvement trend (6-9 through 6-11) continues
+      # past 0.60. Result: near_dock->above_dock_2 13.0 deg (~same as 0.60's
+      # 12.9), above_dock_2->near_dock 26.5 deg (WORSE than 0.60's 21.5) --
+      # no improvement, and the round-trip asymmetry from 6-11 reappeared.
+      # kp_att=0.60 looks like the sweet spot for this curve; reverted.
+      kp_att: [0.60, 0.60, 0.60]   # attitude quaternion error -> torque gain [Nm], sweet spot for the 89 deg curve (6-9/6-11/6-19)
+      kd_att: [0.20, 0.20, 0.20]   # relative angular-rate error -> torque gain [Nm/(rad/s)]; scaled with kp_att
+      att_filter_alpha: 1.0        # EMA blend weight for the finite-difference omega_err estimate (1.0 = no filtering)
+      max_torque: 0.32             # output torque clamp (per axis) [Nm], last verified-safe value (6-11/6-13)

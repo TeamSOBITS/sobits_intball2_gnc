@@ -17,6 +17,11 @@ Two consequences shape this wrapper:
   timestamp is returned as-is (it may be on a simulation clock unrelated to this
   process's clock) and is only meaningful when compared to another timestamp
   from this same source.
+
+Shared between ``control`` (position/attitude feedback) and ``guidance``
+(Action Server feedback, e.g. ``pose_to_go``): the ``/tf_static`` race
+workaround below must stay in one place, not be duplicated per package (see
+``docs/archive/achieved/tf_race_investigation.md``).
 """
 import time
 
@@ -24,7 +29,7 @@ import rclpy
 import rclpy.duration
 import rclpy.time
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 import tf2_ros
 from tf2_msgs.msg import TFMessage
 from tf2_ros import ConnectivityException, ExtrapolationException, LookupException
@@ -36,11 +41,14 @@ DEFAULT_TARGET_FRAME = "body"
 # buffer share this node's executor thread with the control timer.
 _NO_WAIT = rclpy.duration.Duration(seconds=0)
 
-# Same QoS tf2_ros.TransformListener uses for its (dynamic) /tf subscription.
-_TF_QOS = QoSProfile(
+# Default QoS for the /tf subscription: best-effort (this package's default
+# for streaming state topics), volatile, with enough depth to buffer a burst
+# of transforms without dropping the ones the control loop needs.
+DEFAULT_QOS = QoSProfile(
     depth=100,
     durability=DurabilityPolicy.VOLATILE,
     history=HistoryPolicy.KEEP_LAST,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
 )
 
 
@@ -51,6 +59,8 @@ class TfClient:
         node: The rclpy Node that owns this client.
         reference_frame: Parent/reference frame (default ``iss_body``).
         target_frame: Child/body frame (default ``body``).
+        qos_profile: QoS for the ``/tf`` subscription (default: best-effort,
+            see ``DEFAULT_QOS``).
     """
 
     def __init__(
@@ -58,6 +68,7 @@ class TfClient:
         node: Node,
         reference_frame: str = DEFAULT_REFERENCE_FRAME,
         target_frame: str = DEFAULT_TARGET_FRAME,
+        qos_profile: QoSProfile = DEFAULT_QOS,
     ) -> None:
         self._node = node
         self.reference_frame = reference_frame
@@ -75,7 +86,7 @@ class TfClient:
         # (base->body, base->iss_body) is also published dynamically on
         # /tf, so /tf_static is not needed here.
         self._tf_sub = node.create_subscription(
-            TFMessage, "/tf", self._on_tf, _TF_QOS
+            TFMessage, "/tf", self._on_tf, qos_profile
         )
         self._ready = False
         node.get_logger().info(

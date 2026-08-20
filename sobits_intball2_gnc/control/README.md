@@ -1,181 +1,70 @@
 # control （Control: GNCの「C」）
 
-目標軌道（現状は静止した保持目標のみ）を追従する force/torque を計算し、8基のファンへ配分するモジュールです。IMU（`/imu/imu`）のジャイロ・加速度で姿勢を安定させ（角速度減衰＝無回転維持・並進加速度外乱抑制），必要に応じてTF補正・経路チェックポイントを重ねます。
+目標軌道を追従する force/torque を計算し、8基のファンへ配分するモジュールです。IMU姿勢制御をベースに、必要に応じてTF補正・経路チェックポイント・軌道追従を重ねます。
 
-## パッケージ構成
-
-制御系は `ros/`（ROS 入出力ラッパ）・`utils/`（ROS 非依存のロジック）・`control.py`（統括ノード）の3層に分離しています．ROS の I/O とロジックと設定読み込みを分け，各ロジックを単体テスト可能にしています．制御系のノードは統括ノード `control.py` の**唯一の1ノード**で動作します（1ファイル1ノード）．
+## 構成
 
 ```
 control/
-├── control.py                    # 統括ノード（唯一の rclpy ノード）：入出力とロジックを結線し制御ループを回す
-├── ros/                          # ROS 入出力ラッパ（Node を継承せず、渡されたノードに購読/配信を張る）
-│   ├── fan_duty_publisher.py         # 8基ファンの duty を /ctl/duty へ配信
-│   ├── imu_subscriber.py             # /imu/imu（ib2_msgs/IMU）を購読
-│   ├── tf_client.py                  # TF からの自己位置取得（iss_body <- body）。/tf_static は購読しない
-│   │                                  # （base->body の静的/動的二重配信レースの回避、下記TF補正の節を参照）
-│   ├── path_subscriber.py            # /gnc/checkpoints（PoseArray）を購読
-│   └── trajectory_subscriber.py      # /gnc/trajectory_setpoint（MultiDOFJointTrajectory）を購読（Phase 3a）
-└── utils/                        # ROS 非依存のロジック（素値コンストラクタで単体テスト可能）
-    ├── quat_math.py                  # クォータニオン純粋関数（deadband/quat_conj/quat_mul/quat_rotate）
-    ├── pose_control_law.py           # 位置誤差→力、姿勢誤差→トルクの純粋計算（静止目標・移動目標どちらにも使える）
-    ├── hover_law.py                  # HoverLaw（IMU単独の姿勢ダンピング＋加速度外乱抑制）
-    ├── pose_corrector.py             # PoseCorrector（TF取り込み・平滑化・生存判定・保持目標/checkpoint管理）
-    ├── hover_controller.py           # HoverController（HoverLaw + PoseCorrector + TrajectoryController を束ねるDIオーケストレーション）
-    ├── trajectory_controller.py      # TrajectoryController（Phase 3a、feedforward+feedbackで移動目標を追従）
-    ├── thrust_allocator.py           # wrench（力・トルク）→ 8ファン duty 配分（NNLSベース）
-    └── direction_controller.py       # 進行方向ベクトル → wrench（将来の自由経路移動用）
+├── control.py    # 統括ノード（唯一の rclpy ノード）
+├── ros/          # ROS 入出力ラッパ
+│   ├── fan_duty_publisher.py
+│   ├── imu_subscriber.py
+│   ├── pose_array_subscriber.py                  # /gnc/checkpoints 購読
+│   └── multi_dof_joint_trajectory_subscriber.py   # /gnc/trajectory_setpoint 購読
+└── utils/        # ROS非依存のロジック（単体テスト可能）
+    ├── quat_math.py
+    ├── pose_control_law.py
+    ├── hover_law.py
+    ├── pose_corrector.py
+    ├── hover_controller.py       # 全体を束ねるオーケストレーション
+    ├── trajectory_controller.py
+    ├── thrust_allocator.py
+    ├── direction_controller.py
+    └── singleton_lock.py
 ```
 
-> [!NOTE]
-> パラメータは **ROS2 パラメータ**として [config/gnc_params.yaml](../../config/gnc_params.yaml) で管理します．各パラメータは、それを使うモジュール自身が宣言・取得するため，モジュール単体でも構築・テストできます．ファン幾何は ROS2 param が「マップの配列」を表現できないため，`fan_positions`／`fan_vectors` のフラットな数値配列で保持します．
+TF自己位置取得（`TfClient`）は`control/`と`guidance/`で共有するため`common/ros/tf_client.py`にあります。
 
-## ファン直接制御方法
+パラメータは全て[config/gnc_params.yaml](../../config/gnc_params.yaml)で管理します。
 
-Navigationを使わず，`/ctl/duty`へ直接publishして8基のファンを個別に駆動できます．自律移動・ホバリングをユーザプログラムで実装するための最低レベル制御です（`ros/fan_duty_publisher.py` の手動テスト用 CLI）．
-```sh
-ros2 run sobits_intball2_gnc fan_duty_publisher [引数]
-```
+## ファン直接制御
 
-> [!NOTE]
-> - ファン番号は `1`〜`8`，デューティ比は `0.0`〜`1.0`（範囲外は自動でクランプ）．
-> - 逆回転（逆推力）はできません．負のdutyを送るとファンが停止するだけです．逆方向の力が必要な場合は逆向きペアのファン（fan1↔fan8, fan2↔fan5, fan3↔fan6, fan4↔fan7）を駆動してください．
-> - Navigationが**OFF**の状態で使用してください（ON時は制御器と競合します）．
-
-### 引数一覧
-
-| 引数 | 説明 | デフォルト値 |
-| --- | --- | --- |
-| `--fan` | 制御するファン番号（1-8）。`--duty`と併用 | なし |
-| `--duty` | デューティ比（0.0-1.0）。`--fan`と併用 | `0.0` |
-| `--set` | ファン毎に指定（`FAN:DUTY`形式を複数）例: `1:0.5 3:0.2` | なし |
-| `--all` | 全8基を同一デューティ比に設定 | なし |
-| `--duration` | publishを継続する秒数 | `1.0` |
-
-> `--fan` / `--set` / `--all` は排他です（いずれか1つを指定）．引数なしで起動するとヘルプを表示します．
-
-### 使用例
+Navigation OFFの状態で、`/ctl/duty`へ直接publishして8基のファンを個別に駆動できます。
 
 ```sh
-# fan1 を duty=0.5 で 2秒間 駆動
-ros2 run sobits_intball2_gnc fan_duty_publisher --fan 1 --duty 0.5 --duration 2
-
-# ファン毎に個別指定（fan1=0.5, fan3=0.2）
-ros2 run sobits_intball2_gnc fan_duty_publisher --set 1:0.5 3:0.2 --duration 2
-
-# 全ファンを duty=0.3 で 1秒間 駆動
-ros2 run sobits_intball2_gnc fan_duty_publisher --all 0.3 --duration 1
-
-# 逆向きペアで往復（並進をおおよそ初期位置に戻す: 押す→2倍戻す→止める）
-ros2 run sobits_intball2_gnc fan_duty_publisher --fan 1 --duty 0.3 --duration 1 && \
-ros2 run sobits_intball2_gnc fan_duty_publisher --fan 8 --duty 0.3 --duration 2 && \
-ros2 run sobits_intball2_gnc fan_duty_publisher --fan 1 --duty 0.3 --duration 1
+ros2 run sobits_intball2_gnc fan_duty_publisher --help
 ```
 
-他のノードから利用する場合は，`FanDutyPublisher`（ROS 入出力ラッパ）に自分の `rclpy` ノードを渡して使えます（Node は継承しません）．
-```python
-import rclpy
-from rclpy.node import Node
-from sobits_intball2_gnc.control.ros.fan_duty_publisher import FanDutyPublisher
-
-rclpy.init()
-node = Node("my_node")
-fan = FanDutyPublisher(node)      # 渡したノードに /ctl/duty パブリッシャを張る
-fan.set_duties({1: 0.5, 3: 0.2})  # ファン毎に一括設定
-fan.set_all_duty(0.3)             # 全ファン一括
-fan.set_duty_array([0.1]*8)       # 8基まとめて設定（配分結果の publish に使用）
-duty = fan.force_to_duty(0.02)    # 推力[N] → デューティ比 換算
-```
-
-推力配分（wrench → 8 duty）のロジックは ROS 非依存の `ThrustAllocator` として単体で使えます（非負制約付き最小二乗法＝NNLSベースで、方向によらず要求した力・トルクをそのまま達成できます）．
-```python
-from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
-
-alloc = ThrustAllocator()                       # 既定のファン幾何/係数で構築
-duties = alloc.allocate([0.05, 0, 0], [0, 0, 0])  # +X 並進力 → 8ファン duty
-```
-
-> [!NOTE]
-> ファン関連パラメータ（推力換算係数 `kj`，ファン配置，制御ゲイン等）はすべて **ROS2 パラメータ**として [config/gnc_params.yaml](../../config/gnc_params.yaml) に集約されています．各モジュールが自分の使うパラメータを宣言・取得するため，`kj` はファン配信と推力配分で共有される単一情報源です（`config` を渡さない場合は各モジュールの既定値で動作します）．
-
-## 進行方向制御（ライブラリ）
-
-進みたい**進行方向ベクトル（機体座標系）**を，推力配分（`ThrustAllocator`）により8基のファンへの並進力に変換するロジックです．Navigation を使わない自前の自由経路移動の土台で，現在は独立ノードではなく ROS 非依存の `utils/direction_controller.py` として提供されます（正規化 → `force_magnitude` 倍 → `max_force` でクランプ → wrench）．
-
-```python
-from sobits_intball2_gnc.control.utils.direction_controller import direction_to_force
-
-force = direction_to_force([1.0, 0.0, 0.0], force_magnitude=0.02, max_force=0.1)  # +X 並進力
-```
-
-`DirectionController(allocator, fan_publisher, ...)` に `ThrustAllocator` と `FanDutyPublisher` を注入すれば，`step(direction)` で「方向 → 配分 → `/ctl/duty` 配信」まで実行できます．将来の自由経路飛行プログラムから利用します．
-
-## ホバリング制御（統括ノード `control`）
-
-制御系の中心となる統括ノードです．IMU（`/imu/imu`）のジャイロ・加速度で姿勢を安定させ（角速度減衰＝無回転維持・並進加速度外乱抑制），必要に応じて TF 補正・経路チェックポイントを重ねます．入出力ラッパとロジックを結線する**唯一の rclpy ノード**です．
+## ホバリング制御（起動方法）
 
 ```sh
-# パラメータファイルを与えて起動（TF 補正が有効）
+# パラメータファイルを与えて起動（TF補正が有効）
 ros2 run sobits_intball2_gnc control --ros-args \
   --params-file $(ros2 pkg prefix sobits_intball2_gnc)/share/sobits_intball2_gnc/config/gnc_params.yaml
 
-# パラメータファイルなしで起動（各モジュールの既定値＝純 IMU ホバリング）
+# パラメータファイルなしで起動（純IMUホバリング）
 ros2 run sobits_intball2_gnc control
 ```
-- `ib2_msgs/msg/IMU` の `/imu/imu` を購読し，`config/gnc_params.yaml` のゲイン（`hover_control.kd_w`, `hover_control.kp_a` 等）で補正 wrench を計算 → 推力配分 → `/ctl/duty` に出力します．
-- パラメータは ROS2 パラメータとして与えます（`ros2 param list /control_node` で確認可能）．
 
-> [!NOTE]
-> - IMU のみの場合は姿勢・位置の絶対参照がなく，**「無回転・外乱抑制の維持」**です（姿勢・位置はゆっくりドリフトします）．下記の **TF 補正**を有効にするとドリフトを抑制できます．
-> - **将来の自由経路移動**は，`HoverController` のフィードフォワード並進力フック（`compute(..., feedforward_force=...)`）に進行方向の力を与えることで，ホバリング制御の上に積み上げて実装できます．
+- モードは`config/gnc_params.yaml`の`hover_control.mode`で切替（`imu`=純IMU / `tf_imu`=TF補正あり、既定）。
+- IMUのみの場合は絶対参照がなく、姿勢・位置はゆっくりドリフトします。TF補正はこのドリフトを抑えます。
+- TFの配信が`timeout`秒止まると自動的に純IMUホバリングへ縮退し、復帰すると再度捕捉します。
+- TF（`iss_body`<-`body`）はシミュレータ限定のオラクルで、実機には存在しません。
 
-### TF 補正（自己位置によるドリフト抑制）
+## 経路チェックポイントIF
 
-`config/gnc_params.yaml` の `hover_control.mode: tf_imu`（同梱の設定ファイルの既定）で，TF ツリー
-（`iss_body` <- `body`）から取得した自己位置によるドリフト補正が有効になります．**IMU 制御が主力**のまま，
-平滑化した位置・姿勢の保持目標からの誤差を低ゲインの補正 wrench として加算します
-（補正は `max_corr_force`/`max_corr_torque` で独立にクランプされ，IMU 項を上回りません）．
-
-- **前提**: Navigation は **OFF** のままで構いません．TF は Nav OFF でも配信されます（実測済み）．
-  JAXA の制御器（`ctl_only`）は STAND_BY のままなので `/ctl/duty` の競合も起きません．
-- 位置補正は P+D 制御です（`kp_pos`/`kd_pos`）．速度は TF 位置の有限差分から推定し，EMA フィルタ
-  （`vel_filter_alpha`）で平滑化します．
-- TF は `poll_rate` で参照され，**ガウシアンフィルタ**（窓長 `smooth_window`・σ `smooth_sigma`）で
-  平滑化されます．`smooth_window: 1` で平滑化を無効にできます．
-- TF は pull 型なので，配信が止まってもルックアップはバッファの値を返し続けます．このため
-  **スタンプが進んでいるか**で生死を判定します．スタンプが `timeout` 秒進まないと自動で
-  **純 IMU ホバリングへ縮退**し，復帰すると保持目標を再捕捉して補正を再開します．
-- `hover_control.mode: imu` にすると TF を一切参照しない純 IMU ホバリングになります．
-- `TfClient`（`ros/tf_client.py`）は `/tf_static` を購読せず，`/tf`（動的トピック）のみを直接購読してバッファへ手動投入します．シミュレータ側の`robot_state_publisher`が`base->body`を起動時の恒等変換として`/tf_static`にも配信しており，新規リスナーがその凍結値を実際の動的位置より先に受け取ってしまうレースがあったため（`iss_body<-body`は`base`経由の2ホップ解決）．このクライアントが必要とするエッジは全て動的`/tf`側に流れているため，`/tf_static`を無視しても支障はありません．
-
-> [!NOTE]
-> シミュレータは `/clock` を publish しないため，`use_sim_time` は設定しません．TF のスタンプは
-> スタンプ同士でのみ比較され，ノードのクロックとは突き合わせません．
->
-> TF（`iss_body`<-`body`）はシミュレータが配信する近似真値で，**実機には存在しません**．実機化する際は
-> 何らかのセンサーフュージョン（カメラ・マーカー等）による自己位置推定に置き換える必要があります．
-
-### 経路チェックポイントIF（将来の自由経路飛行の受け口）
-
-`/gnc/checkpoints`（`geometry_msgs/PoseArray`，`tf_correction.reference_frame` 座標系＝既定 `iss_body`）に経路のチェックポイント配列を publish すると，先頭のポーズが保持目標に切り替わります．空配列でクリアされ，現在位置を保持目標として再捕捉します．
-
-`header.frame_id` は基準フレームと照合され，不一致の配列は**全体が破棄**されます（空文字列は「未指定」として受理）．
+`/gnc/checkpoints`（`geometry_msgs/PoseArray`、frame_idは`iss_body`）に配列をpublishすると、先頭のポーズが保持目標になります。空配列で現在位置を再捕捉します。
 
 ```sh
-# 例: チェックポイント1点を保持目標に設定
 ros2 topic pub --once /gnc/checkpoints geometry_msgs/msg/PoseArray \
   "{header: {frame_id: iss_body}, poses: [{position: {x: 0.5, y: 0.0, z: 0.0}, orientation: {w: 1.0}}]}"
 ```
 
-将来の自由経路飛行プログラムは，配列を publish → 到達判定しつつ `ControlNode.advance_checkpoint()` を呼ぶことで経路を進みます（到達判定・軌道生成はこのパッケージのスコープ外）．
+## 軌道追従IF
 
-### 軌道追従IF（Phase 3a、Guidance未実装時のスタンドイン可）
+`/gnc/trajectory_setpoint`（`trajectory_msgs/MultiDOFJointTrajectory`）に目標位置・速度・加速度をpublishすると、`TrajectoryController`がフィードフォワード＋フィードバックで追従します。前提は`hover_control.mode: tf_imu`。
 
-`/gnc/trajectory_setpoint`（`trajectory_msgs/MultiDOFJointTrajectory`，`tf_correction.reference_frame` 座標系）に，時間の関数として変化する目標位置・速度・加速度（`points[0]` のみ使用）を publish すると，`TrajectoryController` がフィードフォワード（`m * a_des`）＋フィードバック（`kp_pos`/`kd_pos`，`PoseCorrector` と同じP+D則を共有）で追従します．
+setpointが届いている間はcheckpointホールドより優先され、途切れると自動的にcheckpointホールドへ戻ります。
 
-- **前提**: `hover_control.mode: tf_imu`（TF必須）．Navigation は checkpoint 同様 **OFF** のままで構いません．
-- **checkpointホールドとの関係**: 排他制御は `HoverController` が行います．トラジェクトリのsetpointが `trajectory_controller.timeout` 秒以内に届いている間は**checkpointホールドより優先**され，途切れると自動的にcheckpointホールド（現在の保持目標）へフォールバックします．両者が同時に力を出すことはありません．
-- 速度はTF位置の有限差分＋EMAフィルタ（`vel_filter_alpha`）で独自に推定します（`PoseCorrector`の速度推定とは別インスタンス）．
-- 質量 `mass`／ゲイン／クランプ／タイムアウトはすべて `config/gnc_params.yaml` の `trajectory_controller.*` で設定します．
-
-Guidance（軌道生成，`guidance/`）は未実装のため，現状はこのトピックへ直接publishするスタンドインスクリプトで動作確認します．`fan_duty_publisher` のような `console_scripts` 化はしておらず，`test/manual/`（例: `send_trajectory.py`，直線min-jerk軌道。`send_curve_via_naventry_to_near_dock.py`，2次ベジェ曲線でwaypointを経由）が実質的な使用例・手動検証ツールです．シム起動中に直接 `python3` で実行します（詳細: `test/manual/README.md`）．
+Guidanceは未実装のため、現状は`test/manual/`のスタンドインスクリプト（`send_trajectory.py`等）で動作確認します（詳細: `test/manual/README.md`）。
