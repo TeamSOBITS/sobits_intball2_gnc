@@ -9,25 +9,37 @@ directly with `python3`:
 
 ```sh
 export PYTHONPATH="/root/colcon_ws/src/sobits_intball2_gnc:$PYTHONPATH"
-python3 test/manual/send_curve_via_naventry_to_near_dock.py
+python3 test/manual/send_curve_via_naventry.py near_dock
 ```
 
-They exist because Guidance (`guidance/`, waypoints -> smooth trajectory) is
-not implemented yet -- each script stands in for it by publishing a
-hand-computed trajectory directly to `/gnc/trajectory_setpoint`, the same
-interface Guidance will eventually use.
+Guidance (`guidance/guidance.py`) is now implemented
+(`docs/guidance_node_implementation_plan.md`): for a plain move-to-target
+(straight line, current pose -> one target), use
+`guidance/ros/move_to_client.py` against a running `guidance` node instead of
+a manual script -- it resolves the target from TF by name and sends a real
+`CtlCommand` goal through the production path (segment-time allocation,
+Hermite trajectory generation, optional pre-/post-alignment), not a
+hand-computed stand-in.
+
+The scripts below remain because they exercise things Guidance doesn't do
+yet: a controlled Bezier curve through an explicit intermediate waypoint
+(Guidance only ever plans current-pose -> single target, see
+`docs/guidance_node_implementation_plan.md` decision 1), a hairpin maneuver,
+or direct multi-point checkpoint chaining.
+
+(The former `send_to_nav_entry.py`, a single hardcoded checkpoint, was
+removed -- use `ros2 run sobits_intball2_gnc checkpoint_publisher --pos ... --quat ...`,
+which also fixes that script's fixed-`sleep(1.0)` subscriber-match race by
+polling `get_subscription_count()` instead.)
 
 ## Scripts
 
 | Script | Publishes to | Description |
 |---|---|---|
 | `send_checkpoints.py` | `/gnc/checkpoints` | 4-point checkpoint array, cumulative per-axis offsets from the current TF pose |
-| `send_to_nav_entry.py` | `/gnc/checkpoints` | Single checkpoint at the named `nav_entry` location |
-| `send_trajectory.py` | `/gnc/trajectory_setpoint` | Straight-line min-jerk (quintic) trajectory, small offset from the current pose |
-| `send_to_above_dock2.py` | `/gnc/trajectory_setpoint` | Straight-line min-jerk trajectory to the named `above_dock_2` location |
-| `send_to_nav_entry_trajectory.py` | `/gnc/trajectory_setpoint` | Straight-line min-jerk trajectory to the named `nav_entry` location |
-| `send_curved_to_above_dock2.py` | `/gnc/trajectory_setpoint` | Quadratic Bezier curve to `above_dock_2` (control point offset perpendicular to the straight-line direction, for a visible arc) |
-| `send_curve_via_naventry_to_near_dock.py` | `/gnc/trajectory_setpoint` | Quadratic Bezier curve from the current pose, through `nav_entry` (exactly, at the curve's midpoint), to `near_dock`. Supports `--path-only` to publish the RViz preview path (`/gnc/trajectory_path`) without ever sending a setpoint -- use this to check a path visually before letting the vehicle move |
+| `send_curved.py` | `/gnc/trajectory_setpoint` | Quadratic Bezier curve (no explicit intermediate waypoint, just a fixed perpendicular bulge) from the current pose to a named target, resolved live via TF. Replaces the former `send_curved_to_above_dock2.py` (fixed target attitude) and `send_curved_facing_direction_of_travel.py` (facing direction of travel): `python3 send_curved.py above_dock_2 [--bow-offset 0.6] [--facing-direction]` |
+| `send_curve_via_naventry.py` | `/gnc/trajectory_setpoint` | Quadratic Bezier curve from the current pose, through a named waypoint (default `nav_entry`, exactly at the curve's midpoint), to a named target -- both resolved live via TF. Replaces the former per-destination/per-mode `send_curve_via_naventry_to_{near_dock,above_dock2}[_facing_direction].py` scripts: `python3 send_curve_via_naventry.py near_dock [--waypoint nav_entry] [--facing-direction] [--path-only]`. `--path-only` publishes the RViz preview path (`/gnc/trajectory_path`) without ever sending a setpoint -- use this to check a path visually before letting the vehicle move |
+| `send_hairpin_naventry.py` | `/gnc/trajectory_setpoint` | Sharper (~144.7 deg) `near_dock`<->`above_dock` hairpin turn via a scaled-up `nav_entry` bulge, facing direction of travel. Replaces the former `send_hairpin_naventry_facing_direction.py` and `preview_hairpin_naventry.py`: `python3 send_hairpin_naventry.py [--bulge-scale 1.5] [--reverse] [--path-only]`. `--path-only` logs the turn angle/leg lengths and publishes the RViz preview path without sending a setpoint |
 
 ## Common pattern
 

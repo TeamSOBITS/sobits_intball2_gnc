@@ -92,6 +92,25 @@
         - 0.415
         - 0.509      # fan8
 
+    # Guidance node (docs/guidance_node_implementation_plan.md): drives the
+    # CtlCommand action server's execute_fn.
+    guidance:
+      # forward_axis (body frame, see attitude_reference.compute_q_des) for
+      # each "which camera faces the direction of travel" option
+      # (face_travel_camera). Measured via TF (2026-08-20): body -> cameraF_link
+      # is an identity rotation (main camera's optical axis is body +X);
+      # body -> cameraL_link is a +90 deg yaw (Z-axis) rotation, so
+      # cameraL_link's own +X (optical axis) axis expressed in the body frame
+      # is body +Y.
+      camera_forward_axis:
+        main: [1.0, 0.0, 0.0]
+        stereo: [0.0, 1.0, 0.0]
+      target_speed: 0.5        # cruise speed for HeuristicSegmentTimeAllocator [m/s]
+      attitude_speed_threshold: 0.02  # passed to Trajectory (see trajectory.py)
+      align_tolerance_deg: 3.0     # pre-/post-alignment convergence tolerance [deg]
+      align_timeout: 60.0           # pre-/post-alignment safety cap [s]
+      rate: 50.0                    # /gnc/trajectory_setpoint publish rate [Hz]
+
     control:
       # Period of the periodic "who owns the fans" status log [s].
       # Logs /ctl/duty publisher count, IMU/Nav liveness, JAXA ctl status and
