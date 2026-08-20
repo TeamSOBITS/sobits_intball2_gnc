@@ -1,29 +1,41 @@
 #!/usr/bin/env python3
-"""Trajectory setpoint subscriber for IntBall2 (`/gnc/trajectory_setpoint`).
+"""MultiDOFJointTrajectory subscriber for IntBall2 (`/gnc/trajectory_setpoint`).
 
 ROS I/O wrapper (does not subclass Node): receives a single-point moving
 target (``trajectory_msgs/MultiDOFJointTrajectory``, ``points[0]`` only,
 expressed in the TF reference frame) from the Guidance node, and exposes the
 latest ``p_des``/``v_des``/``a_des``/``q_des`` for the trajectory controller
-(Phase 3a, see ``openspec/changes/add-trajectory-following``).
+(Phase 3a, see ``openspec/changes/archive/2026-08-18-add-trajectory-following``).
 
 The array's ``frame_id`` is validated against the expected reference frame,
-same policy as ``PathSubscriber``: a message in the wrong frame is discarded
-wholesale rather than silently followed to the wrong place.
+same policy as ``PoseArraySubscriber``: a message in the wrong frame is
+discarded wholesale rather than silently followed to the wrong place.
 
 Unlike TF (a pull source), this is a push subscription: liveness is judged
-by comparing the caller's monotonic clock against ``last_received_t``, not by
-polling. The caller decides the staleness timeout (see
-``trajectory_controller.timeout`` in ``config/gnc_params.yaml``) and computes
-it against ``last_received_t``.
+by comparing the caller's clock against ``last_received_t``, not by polling.
+The caller decides the staleness timeout (see ``trajectory_controller.timeout``
+in ``config/gnc_params.yaml``) and computes it against ``last_received_t``.
+``last_received_t`` is stamped with this node's ROS clock (not
+``time.monotonic()``) so it is directly comparable to the ``t`` ``ControlNode``
+passes into ``HoverController.step()``, which is the same node's ROS clock --
+with ``use_sim_time=true`` and ``/clock`` bridged from the simulator, both are
+sim time (see docs/recording_cpu_load_control_degradation.md).
 """
-import time
-
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from trajectory_msgs.msg import MultiDOFJointTrajectory
 
 TRAJECTORY_TOPIC = "/gnc/trajectory_setpoint"
+
+# Default QoS for this package's streaming state topics: best-effort, small
+# buffer of the latest samples (see docs/future_design_notes.md 6-2).
+DEFAULT_QOS = QoSProfile(
+    depth=5,
+    durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+)
 
 
 def frame_accepted(frame: str, expected_frame: str) -> bool:
@@ -34,12 +46,12 @@ def frame_accepted(frame: str, expected_frame: str) -> bool:
     functions get unit tests, ROS I/O wrappers do not). An empty
     ``expected_frame`` accepts anything ("unspecified" caller); an empty
     incoming ``frame`` is also accepted (message didn't set one). Any other
-    mismatch is rejected -- same policy as ``PathSubscriber``.
+    mismatch is rejected -- same policy as ``PoseArraySubscriber``.
     """
     return not expected_frame or not frame or frame == expected_frame
 
 
-class TrajectorySubscriber:
+class MultiDOFJointTrajectorySubscriber:
     """Subscribe to a single-point ``MultiDOFJointTrajectory`` setpoint.
 
     Args:
@@ -48,10 +60,13 @@ class TrajectorySubscriber:
         expected_frame: Reference frame the setpoint must be expressed in. An
             empty ``frame_id`` is accepted as "unspecified"; any other
             mismatch rejects the whole message.
+        qos_profile: QoS for the subscription (default: best-effort, see
+            ``DEFAULT_QOS``).
     """
 
     def __init__(self, node: Node, topic: str = TRAJECTORY_TOPIC,
-                 expected_frame: str = "") -> None:
+                 expected_frame: str = "",
+                 qos_profile: QoSProfile = DEFAULT_QOS) -> None:
         self._node = node
         self._expected_frame = expected_frame
         self._p_des = None
@@ -60,10 +75,10 @@ class TrajectorySubscriber:
         self._q_des = None
         self._last_received_t = None  # caller's monotonic clock, set on accept
         self._sub = node.create_subscription(
-            MultiDOFJointTrajectory, topic, self._callback, 1
+            MultiDOFJointTrajectory, topic, self._callback, qos_profile
         )
         node.get_logger().info(
-            "[TrajectorySubscriber] subscribing %s (frame: %s)"
+            "[MultiDOFJointTrajectorySubscriber] subscribing %s (frame: %s)"
             % (topic, expected_frame or "<any>")
         )
 
@@ -73,13 +88,14 @@ class TrajectorySubscriber:
             # Reject wholesale: a setpoint in the wrong frame is worse than
             # sticking with the last valid one.
             self._node.get_logger().warn(
-                "[TrajectorySubscriber] discarding setpoint in frame '%s': "
-                "expected '%s'" % (frame, self._expected_frame)
+                "[MultiDOFJointTrajectorySubscriber] discarding setpoint in "
+                "frame '%s': expected '%s'" % (frame, self._expected_frame)
             )
             return
         if not msg.points:
             self._node.get_logger().warn(
-                "[TrajectorySubscriber] discarding setpoint with no points"
+                "[MultiDOFJointTrajectorySubscriber] discarding setpoint with "
+                "no points"
             )
             return
 
@@ -94,7 +110,7 @@ class TrajectorySubscriber:
                         transform.rotation.z, transform.rotation.w]
         self._v_des = [velocity.linear.x, velocity.linear.y, velocity.linear.z]
         self._a_des = [accel.linear.x, accel.linear.y, accel.linear.z]
-        self._last_received_t = time.monotonic()
+        self._last_received_t = self._node.get_clock().now().nanoseconds * 1e-9
 
     @property
     def ready(self) -> bool:
@@ -127,14 +143,14 @@ class TrajectorySubscriber:
 
     @property
     def last_received_t(self):
-        """Monotonic time (this process's clock) of the last accepted setpoint, or None."""
+        """This node's ROS clock time of the last accepted setpoint, or None."""
         return self._last_received_t
 
 
 def main(args=None) -> None:
     """Standalone manual test: report received trajectory setpoints.
 
-    Run with ``ros2 run sobits_intball2_gnc trajectory_subscriber [options]``.
+    Run with ``ros2 run sobits_intball2_gnc multi_dof_joint_trajectory_subscriber [options]``.
     """
     import argparse
     import sys
@@ -142,24 +158,24 @@ def main(args=None) -> None:
 
     argv = sys.argv if args is None else args
     parser = argparse.ArgumentParser(
-        prog="trajectory_subscriber",
-        description="Manual test for TrajectorySubscriber: log setpoints "
-                    "received on the trajectory topic.",
+        prog="multi_dof_joint_trajectory_subscriber",
+        description="Manual test for MultiDOFJointTrajectorySubscriber: log "
+                    "setpoints received on the trajectory topic.",
     )
     parser.add_argument("--topic", default=TRAJECTORY_TOPIC,
                         help="trajectory setpoint topic (default: %(default)s)")
     ns = parser.parse_args(remove_ros_args(args=argv)[1:])
 
     rclpy.init(args=argv)
-    node = Node("trajectory_subscriber_test")
-    sub = TrajectorySubscriber(node, ns.topic)
+    node = Node("multi_dof_joint_trajectory_subscriber_test")
+    sub = MultiDOFJointTrajectorySubscriber(node, ns.topic)
     try:
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=0.5)
             if sub.ready:
                 node.get_logger().info(
-                    f"[TrajectorySubscriber] p_des={sub.p_des} v_des={sub.v_des} "
-                    f"a_des={sub.a_des} q_des={sub.q_des}"
+                    f"[MultiDOFJointTrajectorySubscriber] p_des={sub.p_des} "
+                    f"v_des={sub.v_des} a_des={sub.a_des} q_des={sub.q_des}"
                 )
     except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         pass

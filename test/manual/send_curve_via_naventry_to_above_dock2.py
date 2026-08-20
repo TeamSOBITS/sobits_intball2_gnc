@@ -1,18 +1,31 @@
 #!/usr/bin/env python3
 """Send a CURVED (quadratic Bezier) trajectory to /gnc/trajectory_setpoint
-targeting the absolute 'above_dock_2' named location, with quintic
+from the current position (expected: near 'near_dock'), through the named
+'nav_entry' waypoint, to the named 'above_dock_2' location -- with quintic
 (min-jerk) timing along the curve parameter. Publishes the visualization
-path via PathPublisher.
+path via PathPublisher. Reverse route of
+send_curve_via_naventry_to_near_dock.py.
 
-Curve: B(s) = (1-s)^2*P0 + 2(1-s)s*C + s^2*P1, s in [0,1], where C is the
-straight-line midpoint offset perpendicular to the P0->P1 direction to
-produce a visible arc. Position/velocity/acceleration in time use the same
-quintic s(tau) timing law as send_trajectory.py, combined via the chain
-rule (v = dB/ds * ds/dt, a = d2B/ds2*(ds/dt)^2 + dB/ds*d2s/dt2).
+Curve: B(s) = (1-s)^2*P0 + 2(1-s)s*C + s^2*P1, s in [0,1]. The control point
+C is solved so the curve passes exactly through the WAYPOINT at s=0.5:
+    B(0.5) = 0.25*P0 + 0.5*C + 0.25*P1 = WAYPOINT
+    => C = 2*WAYPOINT - 0.5*P0 - 0.5*P1
+Since the quintic timing law also satisfies s(tau=0.5)=0.5 by symmetry, the
+vehicle passes through the waypoint at the midpoint of DURATION_SEC. Position/
+velocity/acceleration in time use the same quintic s(tau) timing law as
+send_trajectory.py, combined via the chain rule (v = dB/ds * ds/dt,
+a = d2B/ds2*(ds/dt)^2 + dB/ds*d2s/dt2).
+
+Unlike the near_dock run, this script also samples the actual TF pose
+alongside the commanded p_des at a fixed interval and logs the tracking
+error, so an in-flight deviation from the planned curve (as opposed to just
+the final position) can be confirmed rather than inferred after the fact
+from the control node's force_corr saturation.
 
 Manual verification script (test/manual/): requires a running sim + gnc
 launch, not collected by pytest. See test/manual/README.md.
 """
+import argparse
 import sys
 import time
 
@@ -32,12 +45,23 @@ PATH_SAMPLE_DT = 0.1
 REFERENCE_FRAME = "iss_body"
 TARGET_FRAME = "body"
 RATE_HZ = 50.0
-DURATION_SEC = 15.0
+# 25.0 measured ~50-590mm tracking error (docs/future_design_notes.md):
+# reshaping the quintic timing to slow through the nav_entry apex doesn't
+# help under a fixed duration (the plain quintic was already near-optimal
+# for peak acceleration at fixed T; slowing down mid-curve pushes the peak
+# elsewhere and makes it worse). Since the curve's bow itself must stay
+# sharp (cobra-maneuver intent, not a gentler curve), the only lever left is
+# duration: peak required force scales as 1/T^2, so 25->40s cuts the
+# ~0.135N peak feedforward to ~0.053N, leaving ~47% margin under the 0.1N
+# clamp for feedback on top.
+DURATION_SEC = 40.0
+ERROR_LOG_PERIOD_SEC = 1.0
 
-# above_dock_2, from maps/iss_location.yaml (iss_body frame)
-TARGET_POS = [11.3, -3.636, 5.5]
-TARGET_QUAT = [-0.707106, 0.707106, 0.0, 0.0]  # x,y,z,w
-BOW_OFFSET_M = 0.6  # perpendicular bulge of the curve's midpoint control point
+# nav_entry / above_dock_2, from maps/iss_location.yaml (iss_body frame),
+# cross-checked live via `ros2 run tf2_ros tf2_echo iss_body <frame>`.
+WAYPOINT_POS = [11.000, -4.300, 5.000]  # nav_entry
+TARGET_POS = [11.3, -3.636, 5.5]  # above_dock_2
+TARGET_QUAT = [-0.707106, 0.707106, 0.0, 0.0]  # x,y,z,w (same at all 3 locations)
 
 
 def quintic(tau):
@@ -45,23 +69,6 @@ def quintic(tau):
     ds = 30 * tau**2 - 60 * tau**3 + 30 * tau**4
     dds = 60 * tau - 180 * tau**2 + 120 * tau**3
     return s, ds, dds
-
-
-def make_control_point(p0, p1, bow_offset):
-    mid = (p0 + p1) / 2.0
-    direction = p1 - p0
-    norm = np.linalg.norm(direction)
-    if norm < 1e-6:
-        return mid
-    direction = direction / norm
-    # Pick an arbitrary vector not parallel to `direction` to build a
-    # perpendicular via cross product.
-    helper = np.array([0.0, 0.0, 1.0])
-    if abs(np.dot(direction, helper)) > 0.9:
-        helper = np.array([0.0, 1.0, 0.0])
-    perp = np.cross(direction, helper)
-    perp = perp / np.linalg.norm(perp)
-    return mid + perp * bow_offset
 
 
 def bezier(p0, c, p1, s):
@@ -77,8 +84,19 @@ def bezier_d2(p0, c, p1):
 
 
 def main():
+    from rclpy.utilities import remove_ros_args
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--path-only", action="store_true",
+        help="Publish the RViz preview path only; never send /gnc/trajectory_setpoint "
+             "(no vehicle motion). Keeps the node alive so the latched path stays "
+             "visible until Ctrl-C.",
+    )
+    ns = parser.parse_args(remove_ros_args(args=sys.argv)[1:])
+
     rclpy.init(args=sys.argv)
-    node_name = f"send_curved_to_above_dock2_{int(time.monotonic() * 1000) % 1000000}"
+    node_name = f"send_curve_via_naventry_to_above_dock2_{int(time.monotonic() * 1000) % 1000000}"
     node = Node(
         node_name,
         parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)],
@@ -96,11 +114,13 @@ def main():
 
     p0 = np.asarray(pos)
     q0 = quat
+    w = np.asarray(WAYPOINT_POS)
     p1 = np.asarray(TARGET_POS)
     q1 = TARGET_QUAT
-    c = make_control_point(p0, p1, BOW_OFFSET_M)
+    c = 2.0 * w - 0.5 * p0 - 0.5 * p1
     node.get_logger().info(
         f"[{node_name}] curved path p0={p0.tolist()} -> control={c.tolist()} "
+        f"(passes through nav_entry={w.tolist()} at t={DURATION_SEC / 2:.1f}s) "
         f"-> p1={p1.tolist()} (above_dock_2) over {DURATION_SEC}s"
     )
 
@@ -114,11 +134,31 @@ def main():
     path_pub.publish(samples)
     node.get_logger().info(f"[{node_name}] published curved path with {len(samples)} points")
 
+    if ns.path_only:
+        node.get_logger().info(
+            f"[{node_name}] --path-only: not sending /gnc/trajectory_setpoint. "
+            "Path is latched for RViz; Ctrl-C when done previewing."
+        )
+        try:
+            while rclpy.ok():
+                rclpy.spin_once(node, timeout_sec=0.5)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            node.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
+        return
+
     dt = 1.0 / RATE_HZ
     # sim clock (not time.monotonic()) so tau tracks simulated time, not
     # wall-clock time -- under RTF<1 a wall-clock tau races ahead of what the
-    # vehicle can actually achieve in sim time.
+    # vehicle can actually achieve in sim time. last_error_log stays on
+    # time.monotonic() since it only throttles a log message's wall-clock
+    # cadence, unrelated to trajectory timing.
     t_start = node.get_clock().now()
+    last_error_log = time.monotonic()
+    max_error = 0.0
     try:
         while rclpy.ok():
             elapsed = (node.get_clock().now() - t_start).nanoseconds * 1e-9
@@ -150,9 +190,27 @@ def main():
             msg.points.append(point)
             pub.publish(msg)
 
+            rclpy.spin_once(node, timeout_sec=0.0)
+
+            now = time.monotonic()
+            if now - last_error_log >= ERROR_LOG_PERIOD_SEC:
+                last_error_log = now
+                actual = tf_client.get_pose()
+                if actual is not None:
+                    p_now = np.asarray(actual[0])
+                    error = float(np.linalg.norm(p_now - p_des))
+                    max_error = max(max_error, error)
+                    node.get_logger().info(
+                        f"[{node_name}] t={elapsed:5.1f}s tau={tau:.2f} "
+                        f"p_des={np.round(p_des, 3).tolist()} "
+                        f"p_now={np.round(p_now, 3).tolist()} "
+                        f"tracking_error={error * 1000:.1f}mm (max so far: {max_error * 1000:.1f}mm)"
+                    )
+                else:
+                    node.get_logger().warn(f"[{node_name}] no TF pose available for error check")
+
             if tau >= 1.0:
                 node.get_logger().info(f"[{node_name}] trajectory complete, still publishing final point")
-            rclpy.spin_once(node, timeout_sec=0.0)
             time.sleep(dt)
     except KeyboardInterrupt:
         pass

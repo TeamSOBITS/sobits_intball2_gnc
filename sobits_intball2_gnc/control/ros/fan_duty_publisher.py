@@ -16,11 +16,21 @@ from typing import Mapping
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile
 from std_msgs.msg import Float64MultiArray, MultiArrayDimension
 
 DUTY_TOPIC = "/ctl/duty"
 DEFAULT_KJ = 4.082482905
 DEFAULT_FAN_COUNT = 8
+
+# NOT this package's usual best-effort default (docs/future_design_notes.md
+# 6-2): the existing subscriber on /ctl/duty (the ROS1 bridge to the thr
+# plugin) requests RELIABLE, and a BEST_EFFORT publisher can't deliver to a
+# RELIABLE subscriber -- confirmed live (2026-08-19): switching this to
+# qos_profile_sensor_data silently dropped every duty message, so the
+# vehicle never actually moved. Reliability rule stays the default (depth 1,
+# same as before); only qos_profile is now overridable.
+DEFAULT_QOS = QoSProfile(depth=1)
 
 
 class FanDutyPublisher:
@@ -28,16 +38,18 @@ class FanDutyPublisher:
 
     Args:
         node: The rclpy Node that owns this publisher.
+        qos_profile: QoS for the publisher (default: best-effort, see
+            ``DEFAULT_QOS``).
     """
 
-    def __init__(self, node: Node) -> None:
+    def __init__(self, node: Node, qos_profile: QoSProfile = DEFAULT_QOS) -> None:
         self._node = node
         self.declare_parameters(node)
         self._kj = float(node.get_parameter("thrust_allocator.kj").value)
         self._fan_count = int(node.get_parameter("fan_duty_publisher.fan_count").value)
         self._duties = [0.0] * self._fan_count
         self._publish_count = 0
-        self._pub = node.create_publisher(Float64MultiArray, DUTY_TOPIC, 1)
+        self._pub = node.create_publisher(Float64MultiArray, DUTY_TOPIC, qos_profile)
         node.get_logger().info(
             "[FanDutyPublisher] initialized (kj=%.6f, fans=%d), publishing to %s"
             % (self._kj, self._fan_count, DUTY_TOPIC)

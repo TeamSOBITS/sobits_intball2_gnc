@@ -1,8 +1,9 @@
 """GNC bring-up launch: everything needed to observe/debug the GNC stack
 beyond the control node itself.
 
-Currently starts the ISS model (robot_state_publisher, so the ISS TF frames
--- iss_body, dock_body, etc. -- render) and, unless disabled, RViz with a
+Currently starts the ISS and ib2 models (robot_state_publisher for each, so
+the ISS TF frames -- iss_body, dock_body, etc. -- and the ib2 mesh render)
+and, unless disabled, RViz with a
 GNC-specific config (TF tree + the trajectory visualization path,
 ``/gnc/trajectory_path``). Modeled after nav2's bringup launch: RViz is one
 togglable piece of this launch, not its purpose -- as the GNC stack grows
@@ -45,6 +46,12 @@ def generate_launch_description() -> LaunchDescription:
     with open(urdf_path, "r") as infp:
         robot_desc = infp.read()
 
+    ib2_urdf_path = os.path.join(
+        get_package_share_directory("intball2_programs"), "urdf", "ib2.urdf"
+    )
+    with open(ib2_urdf_path, "r") as infp:
+        ib2_robot_desc = infp.read()
+
     rviz_config_path = os.path.join(
         get_package_share_directory("sobits_intball2_gnc"),
         "rviz",
@@ -59,6 +66,18 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{"robot_description": robot_desc, "publish_frequency": 50.0}],
     )
 
+    # ib2's own robot_state_publisher, remapped off robot_description so it
+    # doesn't clash with iss_state_publisher's -- same pattern as
+    # intball2_programs' iss_model.launch.py.
+    ib2_state_publisher = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        name="ib2_state_publisher",
+        output="screen",
+        parameters=[{"robot_description": ib2_robot_desc, "publish_frequency": 50.0}],
+        remappings=[("robot_description", "ib2_description")],
+    )
+
     rviz_node = Node(
         package="rviz2",
         executable="rviz2",
@@ -68,4 +87,19 @@ def generate_launch_description() -> LaunchDescription:
         condition=IfCondition(LaunchConfiguration("use_rviz")),
     )
 
-    return LaunchDescription([use_rviz_arg, iss_state_publisher, rviz_node])
+    location_broadcaster_node = Node(
+        package="sobits_intball2_gnc",
+        executable="location_broadcaster",
+        name="location_broadcaster",
+        output="screen",
+    )
+
+    return LaunchDescription(
+        [
+            use_rviz_arg,
+            iss_state_publisher,
+            ib2_state_publisher,
+            rviz_node,
+            location_broadcaster_node,
+        ]
+    )

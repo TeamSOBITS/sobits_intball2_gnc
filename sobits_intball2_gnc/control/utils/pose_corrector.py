@@ -133,8 +133,13 @@ class PoseCorrector:
         self._cp_index = None
         # Velocity estimate for kd_pos: finite difference of the smoothed
         # position between successive update() calls (Phase 0 damping trial).
+        # Timed on the TF stamp (not the caller's wall-clock t), since the
+        # position delta itself comes from TF-stamped samples -- mixing a
+        # wall-clock dt with a TF-clock position delta produces spurious
+        # velocity spikes when the two clocks drift apart under scheduling
+        # delay. See docs/recording_cpu_load_control_degradation.md.
         self._last_smoothed_pos = None
-        self._last_smoothed_t = None
+        self._last_smoothed_stamp = None
         # EMA state for the filtered velocity (see vel_filter_alpha). Starts
         # at zero, matching the raw finite difference's own zero on the first
         # sample after (re)acquisition (no prior sample to difference against).
@@ -224,7 +229,7 @@ class PoseCorrector:
         # Also forget the velocity estimate: the gap left by the TF loss
         # would otherwise be read back as a large, spurious velocity.
         self._last_smoothed_pos = None
-        self._last_smoothed_t = None
+        self._last_smoothed_stamp = None
         self._vel_filtered = np.zeros(3)
         self._last_qe_vec = None
         self._omega_filtered = np.zeros(3)
@@ -285,16 +290,21 @@ class PoseCorrector:
     def update(self, t, pose):
         """Ingest one polled pose and return (force_body, torque) lists.
 
-        ``t`` is the caller's monotonic time in seconds; ``pose`` is
+        ``t`` is the caller's monotonic time in seconds, used for liveness
+        classification and poll-rate gating only. ``pose`` is
         ``(pos, quat, stamp)`` from the TF client, or None when the lookup
-        failed. Returns zeros whenever the pose is unusable, so the caller
-        degrades to pure IMU hover without special-casing.
+        failed; the velocity/omega finite differences are timed on ``stamp``
+        instead of ``t`` since the position/quaternion deltas themselves are
+        TF-stamped (see the ``_last_smoothed_stamp`` comment in ``__init__``).
+        Returns zeros whenever the pose is unusable, so the caller degrades
+        to pure IMU hover without special-casing.
         """
         zeros = ([0.0] * 3, [0.0] * 3)
         if not self._classify(t, pose):
             self._drop()
             return zeros
 
+        stamp = float(pose[2])
         self._ingest(t, pose[0], pose[1])
         if not self._buf:
             return zeros
@@ -307,16 +317,20 @@ class PoseCorrector:
             target_pos, target_quat = pos_s, quat_s
 
         # Velocity estimate for kd_pos: finite difference of the smoothed
-        # position since the last update() call. Zero on the first sample
-        # (or right after a TF loss, see _drop()) since there is no prior
-        # sample to difference against.
+        # position since the last update() call, timed on the TF stamp (not
+        # the caller's wall-clock t) since pos_s itself is TF-stamped -- see
+        # the _last_smoothed_stamp comment in __init__. Zero on the first
+        # sample (or right after a TF loss, see _drop()) since there is no
+        # prior sample to difference against, and negative (stamp went
+        # backwards, e.g. a simulator restart adopted by _classify) since
+        # that is not a real elapsed time.
         vel = np.zeros(3)
         dt = 0.0
         if self._last_smoothed_pos is not None:
-            dt = t - self._last_smoothed_t
+            dt = stamp - self._last_smoothed_stamp
             if dt > 1e-6:
                 vel = (pos_s - self._last_smoothed_pos) / dt
-        self._last_smoothed_pos, self._last_smoothed_t = pos_s, t
+        self._last_smoothed_pos, self._last_smoothed_stamp = pos_s, stamp
 
         # EMA low-pass on the raw finite-difference velocity (vel_filter_alpha
         # defaults to 1.0 = no filtering, matching prior behavior).

@@ -7,8 +7,13 @@ accelerometer readings so the hover controller can read them each control tick.
 """
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data, QoSProfile
 
 IMU_TOPIC = "/imu/imu"
+
+# This package's default QoS for streaming sensor topics (best-effort), see
+# docs/future_design_notes.md 6-2.
+DEFAULT_QOS = qos_profile_sensor_data
 
 
 class ImuSubscriber:
@@ -17,14 +22,17 @@ class ImuSubscriber:
     Args:
         node: The rclpy Node that owns this subscriber.
         topic: IMU topic name.
+        qos_profile: QoS for the subscription (default: best-effort, see
+            ``DEFAULT_QOS``).
     """
 
-    def __init__(self, node: Node, topic: str = IMU_TOPIC) -> None:
+    def __init__(self, node: Node, topic: str = IMU_TOPIC,
+                 qos_profile: QoSProfile = DEFAULT_QOS) -> None:
         self._node = node
         self._gyro = None   # [gx, gy, gz]
         self._acc = None    # [ax, ay, az]
         from ib2_msgs.msg import IMU
-        self._sub = node.create_subscription(IMU, topic, self._callback, 10)
+        self._sub = node.create_subscription(IMU, topic, self._callback, qos_profile)
         node.get_logger().info(f"[ImuSubscriber] subscribing {topic}")
 
     def _callback(self, msg) -> None:

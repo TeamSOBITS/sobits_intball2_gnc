@@ -304,7 +304,7 @@ class _FakeAllocator:
 
 
 class _FakeTf:
-    """Stands in for TfClient: returns whatever pose the test sets."""
+    """Stands in for TfClient (common/ros): returns whatever pose the test sets."""
 
     def __init__(self, pose=None):
         self.pose = pose
@@ -368,7 +368,7 @@ def test_missing_pose_leaves_imu_term_untouched():
 
 
 class _FakeTrajectorySub:
-    """Stands in for TrajectorySubscriber: settable setpoint + liveness."""
+    """Stands in for MultiDOFJointTrajectorySubscriber: settable setpoint + liveness."""
 
     def __init__(self, p_des=None, v_des=None, a_des=None,
                  last_received_t=None):
@@ -465,7 +465,44 @@ def test_fallback_recaptures_hold_target_without_jump():
     assert all(abs(v) < 1e-6 for v in alloc.last_force)
 
 
-def test_torque_keeps_coming_from_corrector_during_trajectory():
+def test_trajectory_controller_supplies_torque_when_q_des_is_live():
+    # Phase 3b: once a q_des has been received, attitude torque comes from
+    # TrajectoryController.compute_attitude, not PoseCorrector's hold target.
+    quat_off = [0.3, 0.0, 0.0, 0.954]  # not aligned with either target
+    pc = _corrector(smooth_window=1, kp_att=[10.0, 10.0, 10.0],
+                    max_corr_torque=1.0)
+    pc.update(-1.0, ([0.0, 0.0, 0.0], _IDENTITY, 50.0))  # captures IDENTITY as hold attitude
+    tf = _FakeTf(pose=([0.0, 0.0, 0.0], quat_off, 100.0))
+    traj_ctrl = TrajectoryController(max_force=10.0, kp_att=[1.0, 1.0, 1.0],
+                                      max_torque=1.0)
+    traj_sub = _FakeTrajectorySub(
+        p_des=[0.0, 0.0, 0.0], v_des=[0, 0, 0], a_des=[0, 0, 0],
+        last_received_t=0.0,
+    )
+    traj_sub.q_des = _IDENTITY  # Guidance's setpoint, distinct from pc's hold
+    alloc = _FakeAllocator()
+    hc = HoverController(
+        _FakeImu(gyro=[0, 0, 0], acc=[0, 0, 0]), _FakeFan(), alloc,
+        HoverLaw(max_force=100.0, max_torque=100.0),
+        tf_client=tf, corrector=pc,
+        trajectory_subscriber=traj_sub, trajectory_controller=traj_ctrl,
+        trajectory_timeout=0.2,
+    )
+    hc.step(0.0)
+    assert hc.trajectory_active is True
+    # kp_att differs (1.0 vs pc's 10.0): matching traj_ctrl's smaller torque
+    # (not clamped the same way pc's would be) confirms the source.
+    expected = TrajectoryController(
+        max_force=10.0, kp_att=[1.0, 1.0, 1.0], max_torque=1.0,
+    ).compute_attitude(0.0, quat_off, _IDENTITY)
+    assert all(math.isclose(a, e, abs_tol=1e-9)
+               for a, e in zip(alloc.last_torque, expected))
+
+
+def test_torque_falls_back_to_corrector_when_q_des_unset():
+    # Before Guidance's first setpoint (q_des still None), attitude torque
+    # must keep coming from PoseCorrector even while translation is driven by
+    # the trajectory controller.
     quat_off = [0.3, 0.0, 0.0, 0.954]  # not aligned with the hold attitude
     pc = _corrector(smooth_window=1, kp_att=[10.0, 10.0, 10.0],
                     max_corr_torque=1.0)
@@ -476,6 +513,7 @@ def test_torque_keeps_coming_from_corrector_during_trajectory():
         p_des=[0.0, 0.0, 0.0], v_des=[0, 0, 0], a_des=[0, 0, 0],
         last_received_t=0.0,
     )
+    traj_sub.q_des = None
     alloc = _FakeAllocator()
     hc = HoverController(
         _FakeImu(gyro=[0, 0, 0], acc=[0, 0, 0]), _FakeFan(), alloc,

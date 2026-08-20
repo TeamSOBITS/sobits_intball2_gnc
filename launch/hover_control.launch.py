@@ -8,9 +8,14 @@ different tuning without editing the installed file.
 Runs with Navigation OFF: self-position comes from the TF tree, so nothing here
 needs the JAXA navigation stack.
 
-``use_sim_time`` is deliberately not set. The simulator publishes no ``/clock``,
-so enabling it would freeze the node's clock at zero. TF stamps are only ever
-compared against other TF stamps, which makes the node clock irrelevant.
+``use_sim_time`` is enabled (2026-08-19): the simulator's ``/clock`` is now
+bridged from ROS1 (see ``/root/bridge/bridge_topics.yaml``), so this node's ROS
+clock tracks simulation time. Previously it did not, and the control loop used
+``time.monotonic()`` (wall-clock) for its own timing while comparing against
+TF stamps (sim time) -- under CPU load, Gazebo's real-time factor drops below
+1 and the two clocks desync, which was traced to a control-loop tracking
+failure (see docs/recording_cpu_load_control_degradation.md). Aligning this
+node to sim time removes that mismatch.
 
     ros2 launch sobits_intball2_gnc hover_control.launch.py
     ros2 launch sobits_intball2_gnc hover_control.launch.py params_file:=/abs/path.yaml
@@ -43,7 +48,7 @@ def generate_launch_description() -> LaunchDescription:
         # Must match the node name in code so the params file's `/**` (or a
         # named block) is applied to it.
         name="control_node",
-        parameters=[LaunchConfiguration("params_file")],
+        parameters=[LaunchConfiguration("params_file"), {"use_sim_time": True}],
         output="screen",
         emulate_tty=True,
     )

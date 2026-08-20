@@ -15,7 +15,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseArray, Pose
 
-from sobits_intball2_gnc.control.ros.tf_client import TfClient
+from sobits_intball2_gnc.common.ros.tf_client import TfClient
 
 CHECKPOINT_TOPIC = "/gnc/checkpoints"
 REFERENCE_FRAME = "iss_body"
