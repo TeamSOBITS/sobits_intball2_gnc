@@ -32,6 +32,7 @@ from sobits_intball2_gnc.guidance.segment_time.heuristic_segment_time_allocator 
 from sobits_intball2_gnc.guidance.trajectory_generation import (
     hermite_spline_trajectory_generator as _hermite,
 )
+from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle
 from sobits_intball2_gnc.guidance.utils.attitude_reference import (
     compute_camera_relative_quat,
     compute_q_des,
@@ -47,12 +48,7 @@ DEFAULT_CAMERA_FORWARD_AXIS = {
     "stereo": (0.0, 1.0, 0.0),
 }
 
-
-def _geodesic_angle(q_a, q_b):
-    """Angle [rad] between two orientations, robust to the double cover."""
-    dot = np.clip(abs(np.dot(np.asarray(q_a, dtype=float),
-                             np.asarray(q_b, dtype=float))), 0.0, 1.0)
-    return 2.0 * np.arccos(dot)
+_geodesic_angle = geodesic_angle
 
 
 class GuidanceExecutor:

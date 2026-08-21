@@ -68,8 +68,10 @@ HOVER_DYNAMIC_KEYS = frozenset(
      "max_force", "max_torque"}
 )
 TF_CORRECTION_DYNAMIC_KEYS = frozenset(
-    {"kp_pos", "kd_pos", "kp_att", "kd_att", "vel_filter_alpha",
-     "att_filter_alpha", "max_corr_force", "max_corr_torque", "timeout"}
+    {"kp_pos", "kd_pos", "kp_att_align", "kd_att_align",
+     "kp_att_hold", "kd_att_hold", "vel_filter_alpha",
+     "att_filter_alpha", "max_corr_force", "max_corr_torque", "timeout",
+     "align_tolerance_deg", "align_settle_time", "align_gain_max_duration"}
 )
 TRAJECTORY_DYNAMIC_KEYS = frozenset(
     {"kp_pos", "kd_pos", "vel_filter_alpha", "max_force", "kp_att", "kd_att",

@@ -224,7 +224,7 @@
       # once there is an actual moving q_des(t) to track, rather than a
       # static hold target.
       #
-      # 2026-08-21 attempt: tried raising this to trajectory_controller's
+      # 2026-08-21 first attempt: tried raising this to trajectory_controller's
       # verified-safe values (kp_att/kd_att/max_corr_torque = 0.60/0.20/0.32)
       # to fix align_at_arrival not converging within align_timeout=60s on
       # large (~90-100 deg) residuals (docs/movement_mode_design.md). Tested
@@ -235,17 +235,71 @@
       # control loop, not for tf_correction's static-hold P+D loop (different
       # plant behavior, e.g. the finite-difference velocity estimate feeding
       # kd_pos/kd_att here), so it doesn't transfer as directly as assumed.
-      # Reverted to the original guess below. Needs a proper from-scratch
-      # tuning pass for tf_correction's attitude gain if large-residual
-      # align_at_arrival convergence is still wanted -- not attempted yet.
-      kp_att: [0.01, 0.01, 0.01]   # attitude quaternion error -> torque gain [Nm]
+      # Reverted at the time.
+      #
+      # 2026-08-21 second attempt (adopted below): re-derived from-scratch via
+      # the same zeta=0.9 mass-spring-damper design as kp_pos/kd_pos above,
+      # then widened per docs/2026-08-21_tf_correction_align_optimization.md
+      # (6節: kp_att=0.20 fixed + kd_att at 3x the theoretical zeta=0.9 value
+      # beat every angle-dependent gain map tried, across small/mid/large
+      # single-axis angles and composite rotations, in isolated
+      # test/manual/diagnose_align_gains.py runs). Initial real-move_to
+      # round-trips with this gain showed severe sustained oscillation in
+      # both pre_align and align_at_arrival (docs/
+      # 2026-08-21_align_torque_budget_crush_hypothesis.md) -- but that
+      # investigation's decisive final check found the live control_node's
+      # gains at the time had never actually been confirmed to be this value
+      # (likely stale from an earlier, un-logged experiment); re-verifying
+      # with these exact values freshly set via `ros2 param get` beforehand,
+      # a capture_point_2<->nav_entry round trip converged cleanly (no
+      # oscillation) for both pre_align (~82 deg in ~4s) and align_at_arrival
+      # (~172 deg in ~16s). See that doc for the full trace data and the
+      # "always ros2 param get before trusting a move_to result" lesson.
+      # Caveat: verified on only one waypoint pair/rotation so far -- treat
+      # as provisionally adopted, re-check on other routes before treating as
+      # final.
+      #
+      # 2026-08-21: split into separate align-only/hold-only gains per
+      # docs/2026-08-21_tf_correction_align_optimization.md 5節's
+      # recommendation (untried noise sensitivity risk for hold, since sim TF
+      # is a noise-free oracle) -- see
+      # docs/archive/achieved/2026-08-21_tf_correction_align_hold_gain_split_design.md for the
+      # switch mechanism (PoseCorrector picks align vs hold gain based on TF
+      # convergence, see align_tolerance_deg/align_settle_time/
+      # align_gain_max_duration below). Both variants start at the same
+      # verified value below -- the split itself is not meant to change
+      # behavior; only future re-tuning of kp_att_hold/kd_att_hold for hold's
+      # noise sensitivity would.
+      kp_att_align: [0.20, 0.20, 0.20]   # attitude quaternion error -> torque gain [Nm], align phase
+      kp_att_hold: [0.20, 0.20, 0.20]    # same, hold phase (untuned separately yet)
       # Attitude-loop damping (torque per rad/s of relative tracking-error
-      # rate, see PoseCorrector.kd_att / pose_control_law.attitude_error_to_torque).
-      # Zero (disabled) -- see kp_att's comment above.
-      kd_att: [0.0, 0.0, 0.0]      # relative angular-rate error -> torque gain [Nm/(rad/s)]
+      # rate, see PoseCorrector.kd_att_align/kd_att_hold /
+      # pose_control_law.attitude_error_to_torque). 3x the theoretical
+      # zeta=0.9 value (2*0.9*sqrt(kp_att*I) per axis, I=[0.0470, 0.0375,
+      # 0.0179] kg*m^2 x/y/z) -- see kp_att_align's comment above.
+      kd_att_align: [0.4635, 0.4077, 0.264]   # relative angular-rate error -> torque gain [Nm/(rad/s)], align phase
+      kd_att_hold: [0.4635, 0.4077, 0.264]    # same, hold phase (untuned separately yet)
+      # Angle threshold [deg] below which PoseCorrector considers an
+      # is_align=True checkpoint converged and switches from the align gain
+      # to the hold gain above. Independent of guidance.align_tolerance_deg
+      # (this only picks a gain, not whether GuidanceExecutor reports the
+      # move as done) -- need not match it exactly.
+      align_tolerance_deg: 3.0
+      # Minimum unbroken time [s] within align_tolerance_deg before switching
+      # to the hold gain -- mirrors guidance.align_settle_time's hysteresis so
+      # a single noisy near-miss sample doesn't trigger an early switch (see
+      # docs/archive/achieved/2026-08-21_pre_align_skipped_low_speed_bug.md).
+      align_settle_time: 0.5
+      # Safety-net upper bound [s] on how long the align gain is used for one
+      # checkpoint, in case TF noise/loss keeps the angle check above from
+      # ever reporting convergence. Deliberately generous -- a backstop, not
+      # the primary switch trigger.
+      align_gain_max_duration: 30.0
       # EMA low-pass on the finite-difference omega_err fed to kd_att above,
-      # mirroring vel_filter_alpha. 1.0 = no filtering. See kp_att's comment.
-      att_filter_alpha: 1.0
+      # mirroring vel_filter_alpha. 0.3 verified alongside kp_att/kd_att above
+      # (docs/2026-08-21_align_torque_budget_crush_hypothesis.md); replaces
+      # the prior 1.0 (no filtering).
+      att_filter_alpha: 0.3
       # Damping term (finite-difference velocity of the TF-estimated hold
       # target, see PoseCorrector). Was previously guessed/untuned; now
       # derived alongside kp_pos above (2*zeta*m*wn).
@@ -256,7 +310,7 @@
       # precision (docs/phase0_findings.md). Untuned Phase 0 experiment.
       vel_filter_alpha: 0.3        # EMA blend weight for the new raw sample
       max_corr_force: 0.05     # correction force clamp (independent of IMU term) [N]
-      max_corr_torque: 0.01    # correction torque clamp [Nm] (2026-08-21 attempt to raise this reverted, see kp_att comment)
+      max_corr_torque: 0.3     # correction torque clamp [Nm] (2026-08-21, adopted alongside kp_att/kd_att above -- see that comment)
       checkpoint_topic: /gnc/checkpoints   # PoseArray (reference frame) path interface
 
     # Phase 3a (docs/main_plan.md, openspec/changes/add-trajectory-following):

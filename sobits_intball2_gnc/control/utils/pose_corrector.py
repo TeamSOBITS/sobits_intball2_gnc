@@ -14,7 +14,11 @@ from sobits_intball2_gnc.control.utils.pose_control_law import (
     attitude_error_to_torque,
     position_error_to_force,
 )
-from sobits_intball2_gnc.control.utils.quat_math import quat_conj, quat_mul
+from sobits_intball2_gnc.control.utils.quat_math import (
+    geodesic_angle,
+    quat_conj,
+    quat_mul,
+)
 
 # TF-based correction. Defaults are re-derived for a pull source reading the
 # Gazebo TF tree (near-truth, ~300 Hz) -- they are NOT the old navigation
@@ -27,7 +31,15 @@ DEFAULT_TF = {
     "smooth_window": 5,
     "smooth_sigma": 2.0,
     "kp_pos": [0.05, 0.05, 0.05],
-    "kp_att": [0.01, 0.01, 0.01],
+    # kp_att/kd_att are split into an align variant (used while a checkpoint
+    # set via the external /gnc/checkpoints path -- pre_align/align_at_arrival
+    # -- has not yet converged) and a hold variant (used once converged, and
+    # for any internally re-captured checkpoint that was never "align" in the
+    # first place). See docs/archive/achieved/2026-08-21_tf_correction_align_hold_gain_split_design.md.
+    # Both default to the same placeholder value; align/hold divergence is a
+    # future tuning step, not part of the split itself.
+    "kp_att_align": [0.01, 0.01, 0.01],
+    "kp_att_hold": [0.01, 0.01, 0.01],
     # Position-loop damping (force per m/s of estimated hold-target velocity).
     # Defaults to zero (pure P control, matching prior behavior); Phase 0
     # found the position loop has no damping in practice (HoverLaw's kp_a
@@ -52,7 +64,8 @@ DEFAULT_TF = {
     # rate fights the needed tracking motion. Damping the relative error
     # rate instead vanishes once tracking is locked, regardless of how fast
     # the reference frame itself turns.
-    "kd_att": [0.0, 0.0, 0.0],
+    "kd_att_align": [0.0, 0.0, 0.0],
+    "kd_att_hold": [0.0, 0.0, 0.0],
     # EMA low-pass on the finite-difference omega_err fed to kd_att, mirroring
     # vel_filter_alpha above. 1.0 means no filtering. docs/phase0_5_findings.md
     # observation B: the theoretically-derived kp_att/kd_att underperformed
@@ -64,6 +77,25 @@ DEFAULT_TF = {
     "max_corr_force": 0.05,
     "max_corr_torque": 0.01,
     "checkpoint_topic": "/gnc/checkpoints",
+    # Below: align/hold gain-switch state machine, see
+    # docs/archive/achieved/2026-08-21_tf_correction_align_hold_gain_split_design.md. Only
+    # meaningful for checkpoints set with is_align=True (the external
+    # /gnc/checkpoints path, i.e. GuidanceExecutor's pre_align/
+    # align_at_arrival). Independent of guidance's own
+    # guidance.align_tolerance_deg/align_settle_time -- this only decides
+    # which gain PoseCorrector applies, not whether GuidanceExecutor reports
+    # the align as done, so the two need not match exactly.
+    "align_tolerance_deg": 3.0,
+    # Minimum unbroken time within align_tolerance_deg before switching to
+    # the hold gain, mirroring guidance.align_settle_time's hysteresis (see
+    # docs/archive/achieved/2026-08-21_pre_align_skipped_low_speed_bug.md --
+    # a single noisy near-miss sample must not trigger the switch early).
+    "align_settle_time": 0.5,
+    # Safety-net upper bound on how long the align gain is used for one
+    # checkpoint, in case TF noise/loss prevents the angle check above from
+    # ever reporting convergence. Deliberately generous -- this is a backstop,
+    # not the primary switch trigger.
+    "align_gain_max_duration": 30.0,
 }
 
 # PoseCorrector.status values.
@@ -101,24 +133,34 @@ class PoseCorrector:
         smooth_sigma=DEFAULT_TF["smooth_sigma"],
         timeout=DEFAULT_TF["timeout"],
         kp_pos=DEFAULT_TF["kp_pos"],
-        kp_att=DEFAULT_TF["kp_att"],
+        kp_att_align=DEFAULT_TF["kp_att_align"],
+        kp_att_hold=DEFAULT_TF["kp_att_hold"],
         kd_pos=DEFAULT_TF["kd_pos"],
         vel_filter_alpha=DEFAULT_TF["vel_filter_alpha"],
-        kd_att=DEFAULT_TF["kd_att"],
+        kd_att_align=DEFAULT_TF["kd_att_align"],
+        kd_att_hold=DEFAULT_TF["kd_att_hold"],
         att_filter_alpha=DEFAULT_TF["att_filter_alpha"],
         max_corr_force=DEFAULT_TF["max_corr_force"],
         max_corr_torque=DEFAULT_TF["max_corr_torque"],
+        align_tolerance_deg=DEFAULT_TF["align_tolerance_deg"],
+        align_settle_time=DEFAULT_TF["align_settle_time"],
+        align_gain_max_duration=DEFAULT_TF["align_gain_max_duration"],
     ) -> None:
         self.poll_rate = float(poll_rate)
         self.window = max(1, int(smooth_window))
         self.sigma = float(smooth_sigma)
         self.timeout = float(timeout)
         self.kp_pos = np.asarray(kp_pos, dtype=float)
-        self.kp_att = np.asarray(kp_att, dtype=float)
+        self.kp_att_align = np.asarray(kp_att_align, dtype=float)
+        self.kp_att_hold = np.asarray(kp_att_hold, dtype=float)
         self.kd_pos = np.asarray(kd_pos, dtype=float)
-        self.kd_att = np.asarray(kd_att, dtype=float)
+        self.kd_att_align = np.asarray(kd_att_align, dtype=float)
+        self.kd_att_hold = np.asarray(kd_att_hold, dtype=float)
         self.vel_filter_alpha = float(vel_filter_alpha)
         self.att_filter_alpha = float(att_filter_alpha)
+        self.align_tolerance_rad = np.radians(float(align_tolerance_deg))
+        self.align_settle_time = float(align_settle_time)
+        self.align_gain_max_duration = float(align_gain_max_duration)
         self.max_corr_force = float(max_corr_force)
         self.max_corr_torque = float(max_corr_torque)
 
@@ -136,6 +178,16 @@ class PoseCorrector:
         # someone has (re)targeted the hold since a point they recorded --
         # see the trajectory-end race note on set_checkpoints() below.
         self._checkpoint_version = 0
+        # Whether the currently active checkpoint was set with is_align=True
+        # (see set_checkpoints()).
+        self._is_align = False
+        # Align/hold gain-switch state, re-derived from _is_align each time
+        # _checkpoint_version changes (see the version check at the top of
+        # update()). _align_active True -> use the align gain this tick.
+        self._gain_state_version = None
+        self._align_active = False
+        self._align_start_t = None
+        self._within_tolerance_since = None
         # Velocity estimate for kd_pos: finite difference of the smoothed
         # position between successive update() calls (Phase 0 damping trial).
         # Timed on the TF stamp (not the caller's wall-clock t), since the
@@ -258,15 +310,25 @@ class PoseCorrector:
 
     # --- hold target / checkpoints -----------------------------------------
 
-    def set_checkpoints(self, poses) -> None:
+    def set_checkpoints(self, poses, is_align=False) -> None:
         """Replace the checkpoint array. ``poses`` is a list of (pos, quat).
 
         A non-empty list makes its first entry the active hold target; an
         empty list clears checkpoints and re-captures the hover pose.
 
+        ``is_align``: pass True when this checkpoint is a one-shot align
+        target (``GuidanceExecutor``'s pre_align/align_at_arrival, via the
+        external ``/gnc/checkpoints`` path) so the align gain is used until
+        TF reports convergence (or the safety-net duration elapses); see
+        ``update()``. Leave False for hold targets, including re-captures --
+        an empty ``poses`` list is always treated as a hold target regardless
+        of the argument, since there is nothing to align to.
+
         Every call bumps :attr:`checkpoint_version`, including internal ones
         (e.g. ``HoverController``'s own re-capture-on-trajectory-end) -- see
         that call site for why the version needs to reflect *all* callers.
+        The align/hold gain state is (re-)derived lazily from ``is_align`` on
+        the next ``update()`` call, keyed off that same version bump.
         """
         self._checkpoints = [
             (np.asarray(p, dtype=float), np.asarray(q, dtype=float))
@@ -274,10 +336,12 @@ class PoseCorrector:
         ]
         if self._checkpoints:
             self._cp_index = 0
+            self._is_align = bool(is_align)
         else:
             self._cp_index = None
             self._hold_pos = None  # re-capture from current smoothed pose
             self._hold_quat = None
+            self._is_align = False
         self._checkpoint_version += 1
 
     @property
@@ -381,15 +445,48 @@ class PoseCorrector:
             + (1.0 - self.att_filter_alpha) * self._omega_filtered
         )
 
+        # Align/hold gain switch (see set_checkpoints()'s is_align and
+        # docs/archive/achieved/2026-08-21_tf_correction_align_hold_gain_split_design.md).
+        # Re-derived whenever the checkpoint changed since the last tick;
+        # reset here (not in set_checkpoints()) because only update() has a
+        # timestamp to start the align clock from.
+        if self._gain_state_version != self._checkpoint_version:
+            self._gain_state_version = self._checkpoint_version
+            self._align_active = self._is_align
+            self._align_start_t = t
+            self._within_tolerance_since = None
+        if self._align_active:
+            angle = geodesic_angle(target_quat, quat_s)
+            if angle <= self.align_tolerance_rad:
+                if self._within_tolerance_since is None:
+                    self._within_tolerance_since = t
+                elif (t - self._within_tolerance_since) >= self.align_settle_time:
+                    self._align_active = False
+            else:
+                self._within_tolerance_since = None
+            # Safety net: TF noise/loss could keep the angle check above from
+            # ever reporting convergence -- don't stay on the align gain
+            # forever regardless.
+            if self._align_active and (t - self._align_start_t) >= self.align_gain_max_duration:
+                self._align_active = False
+        kp_att, kd_att = (
+            (self.kp_att_align, self.kd_att_align) if self._align_active
+            else (self.kp_att_hold, self.kd_att_hold)
+        )
+
         torque = attitude_error_to_torque(
-            self.kp_att, self.kd_att, target_quat, quat_s, self._omega_filtered,
+            kp_att, kd_att, target_quat, quat_s, self._omega_filtered,
             self.max_corr_torque,
         )
         return f_body.tolist(), torque.tolist()
 
-    def set_gains(self, kp_pos=None, kd_pos=None, kp_att=None, kd_att=None,
+    def set_gains(self, kp_pos=None, kd_pos=None,
+                  kp_att_align=None, kd_att_align=None,
+                  kp_att_hold=None, kd_att_hold=None,
                   vel_filter_alpha=None, att_filter_alpha=None,
                   max_corr_force=None, max_corr_torque=None,
+                  align_tolerance_deg=None, align_settle_time=None,
+                  align_gain_max_duration=None,
                   timeout=None) -> None:
         """Update gains/thresholds in place (dynamic reconfiguration).
 
@@ -402,14 +499,24 @@ class PoseCorrector:
             self.kp_pos = np.asarray(kp_pos, dtype=float)
         if kd_pos is not None:
             self.kd_pos = np.asarray(kd_pos, dtype=float)
-        if kp_att is not None:
-            self.kp_att = np.asarray(kp_att, dtype=float)
-        if kd_att is not None:
-            self.kd_att = np.asarray(kd_att, dtype=float)
+        if kp_att_align is not None:
+            self.kp_att_align = np.asarray(kp_att_align, dtype=float)
+        if kd_att_align is not None:
+            self.kd_att_align = np.asarray(kd_att_align, dtype=float)
+        if kp_att_hold is not None:
+            self.kp_att_hold = np.asarray(kp_att_hold, dtype=float)
+        if kd_att_hold is not None:
+            self.kd_att_hold = np.asarray(kd_att_hold, dtype=float)
         if vel_filter_alpha is not None:
             self.vel_filter_alpha = float(vel_filter_alpha)
         if att_filter_alpha is not None:
             self.att_filter_alpha = float(att_filter_alpha)
+        if align_tolerance_deg is not None:
+            self.align_tolerance_rad = np.radians(float(align_tolerance_deg))
+        if align_settle_time is not None:
+            self.align_settle_time = float(align_settle_time)
+        if align_gain_max_duration is not None:
+            self.align_gain_max_duration = float(align_gain_max_duration)
         if max_corr_force is not None:
             self.max_corr_force = float(max_corr_force)
         if max_corr_torque is not None:

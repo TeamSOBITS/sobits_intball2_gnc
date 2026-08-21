@@ -62,7 +62,8 @@ def main():
             return
         pos, quat, stamp = pose
         r, p, y = rpy(quat)
-        rows.append((stamp, pos[0], pos[1], pos[2], r, p, y))
+        rows.append((stamp, pos[0], pos[1], pos[2], r, p, y,
+                     quat[0], quat[1], quat[2], quat[3]))
 
     timer = node.create_timer(1.0 / args.rate_hz, tick)
 
@@ -77,12 +78,12 @@ def main():
     def on_feedback(fb):
         pass  # position/attitude already captured by the tick() timer
 
-    result = client.send_goal(pos, quat, feedback_cb=on_feedback, timeout_sec=15.0)
+    result = client.send_goal(pos, quat, feedback_cb=on_feedback, timeout_sec=90.0)
     timer.cancel()
 
     with open(args.out_csv, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["stamp", "x", "y", "z", "roll", "pitch", "yaw"])
+        w.writerow(["stamp", "x", "y", "z", "roll", "pitch", "yaw", "qx", "qy", "qz", "qw"])
         w.writerows(rows)
 
     if result is None:
