@@ -75,3 +75,26 @@ class HoverLaw:
         force = np.clip(force, -self.max_force, self.max_force)
         torque = np.clip(torque, -self.max_torque, self.max_torque)
         return force.tolist(), torque.tolist()
+
+    def set_gains(self, kd_w=None, kp_a=None, deadband_w=None, deadband_a=None,
+                  acc_bias_alpha=None, max_force=None, max_torque=None) -> None:
+        """Update gains in place (dynamic reconfiguration).
+
+        Any argument left as ``None`` keeps its current value. Only affects
+        the next :meth:`compute` call onward -- the control loop's timing
+        (rate) and internal EMA state (``_acc_bias``) are untouched.
+        """
+        if kd_w is not None:
+            self.kd_w = np.asarray(kd_w, dtype=float)
+        if kp_a is not None:
+            self.kp_a = np.asarray(kp_a, dtype=float)
+        if deadband_w is not None:
+            self.deadband_w = float(deadband_w)
+        if deadband_a is not None:
+            self.deadband_a = float(deadband_a)
+        if acc_bias_alpha is not None:
+            self.acc_bias_alpha = float(acc_bias_alpha)
+        if max_force is not None:
+            self.max_force = float(max_force)
+        if max_torque is not None:
+            self.max_torque = float(max_torque)

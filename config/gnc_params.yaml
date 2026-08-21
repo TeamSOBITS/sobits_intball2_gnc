@@ -109,7 +109,32 @@
       attitude_speed_threshold: 0.02  # passed to Trajectory (see trajectory.py)
       align_tolerance_deg: 3.0     # pre-/post-alignment convergence tolerance [deg]
       align_timeout: 60.0           # pre-/post-alignment safety cap [s]
+      # Minimum unbroken time within align_tolerance_deg before _align_to
+      # declares convergence -- a single in-tolerance TF sample isn't enough
+      # evidence of settling: an underdamped correction swings through the
+      # target, and without this a mid-swing pass gets mistaken for arrival
+      # (observed for pre_align, see docs/archive/achieved/
+      # 2026-08-21_pre_align_skipped_low_speed_bug.md). Untuned initial
+      # guess -- revisit against the observed oscillation period.
+      align_settle_time: 0.5        # [s]
       rate: 50.0                    # /gnc/trajectory_setpoint publish rate [Hz]
+      # Attitude-reference mode for the in-trajectory q_des(t) (docs/
+      # movement_mode_design.md): "fixed" (don't rotate while moving),
+      # "face_travel" (face direction of travel, compute_q_des), or
+      # "look_at" (accepted but not yet implemented -- falls back to
+      # face_travel with a warning, see GuidanceNode._execute_fn).
+      attitude_reference_mode: face_travel
+      pre_align: true               # pre-align to the initial tangent before departure (only takes effect when attitude_reference_mode == face_travel)
+      align_at_arrival: true        # re-align on arrival (target computed per align_at_arrival_mode below)
+      face_travel_camera: main      # which camera axis faces the direction of travel when attitude_reference_mode == face_travel ("main"/"stereo", see camera_forward_axis above)
+      # TF frame to face when attitude_reference_mode == "look_at" (not yet
+      # implemented). Latched at goal receipt.
+      look_at_target_frame: ""
+      # On arrival, align so this camera's axis faces where the goal's
+      # q_target implies -- "main" aligns to q_target as-is; any other
+      # camera (e.g. "stereo") aligns so that camera's axis faces where the
+      # main camera would have under q_target (compute_camera_relative_quat).
+      align_at_arrival_camera: main
 
     control:
       # Period of the periodic "who owns the fans" status log [s].
@@ -117,7 +142,13 @@
       # the current duty array. Set 0.0 to disable.
       status_log_period: 2.0
 
-    direction_control:
+    # Translation-only direction-vector control (control/utils/
+    # translation_direction_controller.py). Not yet wired to any node -- a
+    # future teleoperation building block. Named "translation_direction_
+    # control", not "direction_control": this class only ever commands a
+    # translation force, no attitude/rotation, so the generic name would
+    # overstate its scope once a real teleope orchestrator exists alongside it.
+    translation_direction_control:
       control_rate: 50.0       # publish rate [Hz]
       force_magnitude: 0.02    # commanded translation force per direction cmd [N]
       max_force: 0.1           # clamp on commanded force magnitude [N]
@@ -192,6 +223,21 @@
       # parameters (PoseCorrector/HoverController) so Phase 3b can retune them
       # once there is an actual moving q_des(t) to track, rather than a
       # static hold target.
+      #
+      # 2026-08-21 attempt: tried raising this to trajectory_controller's
+      # verified-safe values (kp_att/kd_att/max_corr_torque = 0.60/0.20/0.32)
+      # to fix align_at_arrival not converging within align_timeout=60s on
+      # large (~90-100 deg) residuals (docs/movement_mode_design.md). Tested
+      # live via ros2 param set on control_node: pre-alignment (same
+      # _align_to/checkpoint path) visibly misbehaved in sim and was aborted
+      # by the user before reaching steady state -- trajectory_controller's
+      # gain was verified safe for its own feedforward+feedback moving-target
+      # control loop, not for tf_correction's static-hold P+D loop (different
+      # plant behavior, e.g. the finite-difference velocity estimate feeding
+      # kd_pos/kd_att here), so it doesn't transfer as directly as assumed.
+      # Reverted to the original guess below. Needs a proper from-scratch
+      # tuning pass for tf_correction's attitude gain if large-residual
+      # align_at_arrival convergence is still wanted -- not attempted yet.
       kp_att: [0.01, 0.01, 0.01]   # attitude quaternion error -> torque gain [Nm]
       # Attitude-loop damping (torque per rad/s of relative tracking-error
       # rate, see PoseCorrector.kd_att / pose_control_law.attitude_error_to_torque).
@@ -210,7 +256,7 @@
       # precision (docs/phase0_findings.md). Untuned Phase 0 experiment.
       vel_filter_alpha: 0.3        # EMA blend weight for the new raw sample
       max_corr_force: 0.05     # correction force clamp (independent of IMU term) [N]
-      max_corr_torque: 0.01    # correction torque clamp [Nm]
+      max_corr_torque: 0.01    # correction torque clamp [Nm] (2026-08-21 attempt to raise this reverted, see kp_att comment)
       checkpoint_topic: /gnc/checkpoints   # PoseArray (reference frame) path interface
 
     # Phase 3a (docs/main_plan.md, openspec/changes/add-trajectory-following):

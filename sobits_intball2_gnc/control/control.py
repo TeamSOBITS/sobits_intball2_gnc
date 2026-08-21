@@ -20,6 +20,7 @@ Navigation OFF that controller stays in STAND_BY and never competes for
 ``/ctl/duty``.
 """
 import rclpy
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from std_srvs.srv import Trigger
 
@@ -54,6 +55,29 @@ ADVANCE_CHECKPOINT_SERVICE = "/gnc/advance_checkpoint"
 DEFAULT_STATUS_LOG_PERIOD = 2.0
 # How long to wait for the configured TF frames at startup [s].
 TF_STARTUP_TIMEOUT = 5.0
+
+# Category-A dynamic parameters
+# (docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md):
+# pure gains/clamps/thresholds that can be changed at runtime without
+# restarting the node, because they don't change the control law's structure
+# and aren't baked into any other derived/precomputed state (unlike, e.g.,
+# thrust_allocator's fan geometry -> self.A, or hover_control.mode, which are
+# category C). Keys are the part of the parameter name after the first ".".
+HOVER_DYNAMIC_KEYS = frozenset(
+    {"kd_w", "kp_a", "deadband_w", "deadband_a", "acc_bias_alpha",
+     "max_force", "max_torque"}
+)
+TF_CORRECTION_DYNAMIC_KEYS = frozenset(
+    {"kp_pos", "kd_pos", "kp_att", "kd_att", "vel_filter_alpha",
+     "att_filter_alpha", "max_corr_force", "max_corr_torque", "timeout"}
+)
+TRAJECTORY_DYNAMIC_KEYS = frozenset(
+    {"kp_pos", "kd_pos", "vel_filter_alpha", "max_force", "kp_att", "kd_att",
+     "att_filter_alpha", "max_torque", "timeout"}
+)
+THRUST_ALLOCATOR_DYNAMIC_KEYS = frozenset(
+    {"force_weight_ref", "torque_weight_ref"}
+)
 
 
 class ControlNode(Node):
@@ -164,6 +188,15 @@ class ControlNode(Node):
             )
             self._status_timer = self.create_timer(period, self._on_status_log)
 
+        # Dynamic reconfiguration for Category-A parameters (gains/clamps/
+        # thresholds; see
+        # docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md).
+        # Every other declared parameter (geometry, mass, loop rates, mode,
+        # frame names, ...) is Category B/C and is intentionally left unhandled
+        # below -- rclpy accepts the value (there is no read_only guard) but
+        # nothing re-reads it, matching "static, restart to change".
+        self.add_on_set_parameters_callback(self._on_set_parameters)
+
     @staticmethod
     def _is_zero_duty(values, eps: float = 1e-6) -> bool:
         """True when every duty in ``values`` is (near) zero."""
@@ -181,6 +214,55 @@ class ControlNode(Node):
         self._duty_rx_count += 1
         if self._is_zero_duty(msg.data):
             self._duty_rx_zero_count += 1
+
+    def _set_status_log_period(self, period: float) -> None:
+        """Change the status-log timer's period, or disable/re-enable it.
+
+        The subscription/counters the status log needs are only created at
+        startup when the initial period is > 0 (see ``__init__``); enabling
+        the log from a startup value of 0.0 would be missing that
+        infrastructure, so it is rejected rather than silently no-op'd.
+        """
+        if not hasattr(self, "_status_timer"):
+            if period > 0.0:
+                raise ValueError(
+                    "control.status_log_period was 0.0 (disabled) at "
+                    "startup; enabling it requires a restart"
+                )
+            return
+        if period <= 0.0:
+            self.destroy_timer(self._status_timer)
+            del self._status_timer
+            return
+        self.destroy_timer(self._status_timer)
+        self._status_timer = self.create_timer(period, self._on_status_log)
+
+    def _on_set_parameters(self, params) -> SetParametersResult:
+        """Route Category-A parameter changes to the relevant setter.
+
+        Runs on the same (single-threaded, ``rclpy.spin``) thread as the
+        control-loop timer, so there is no data race with ``_on_timer``; see
+        docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md.
+        """
+        for p in params:
+            prefix, _, key = p.name.partition(".")
+            try:
+                if prefix == "hover_control" and key in HOVER_DYNAMIC_KEYS:
+                    self._hover.set_hover_gains(**{key: p.value})
+                elif prefix == "tf_correction" and key in TF_CORRECTION_DYNAMIC_KEYS:
+                    self._hover.set_tf_correction_gains(**{key: p.value})
+                elif prefix == "trajectory_controller" and key in TRAJECTORY_DYNAMIC_KEYS:
+                    self._hover.set_trajectory_gains(**{key: p.value})
+                elif prefix == "thrust_allocator" and key in THRUST_ALLOCATOR_DYNAMIC_KEYS:
+                    self._allocator.set_weights(**{key: p.value})
+                elif p.name == "control.status_log_period":
+                    self._set_status_log_period(float(p.value))
+                # Any other declared parameter is Category B/C (latched or
+                # static) -- accepted (rclpy still stores the new value) but
+                # intentionally not applied to any running object.
+            except (ValueError, TypeError) as exc:
+                return SetParametersResult(successful=False, reason=str(exc))
+        return SetParametersResult(successful=True)
 
     def advance_checkpoint(self) -> bool:
         """Step the hover hold target to the next checkpoint (free-path hook)."""

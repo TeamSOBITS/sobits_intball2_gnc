@@ -1,8 +1,8 @@
-"""Unit tests for direction control logic (plain-value, no ROS)."""
+"""Unit tests for translation-direction control logic (plain-value, no ROS)."""
 import math
 
-from sobits_intball2_gnc.control.utils.direction_controller import (
-    DirectionController,
+from sobits_intball2_gnc.control.utils.translation_direction_controller import (
+    TranslationDirectionController,
     direction_to_force,
 )
 
@@ -42,7 +42,7 @@ class _FakeAllocator:
 
 def test_controller_step_publishes_allocated_duties():
     fan, alloc = _FakeFan(), _FakeAllocator()
-    dc = DirectionController(alloc, fan, force_magnitude=0.02, max_force=0.1)
+    dc = TranslationDirectionController(alloc, fan, force_magnitude=0.02, max_force=0.1)
     dc.step([1.0, 0.0, 0.0])
     assert fan.last == [0.25] * 8
     assert math.isclose(alloc.seen[0][0], 0.02, abs_tol=1e-9)
@@ -51,6 +51,6 @@ def test_controller_step_publishes_allocated_duties():
 
 def test_controller_step_none_idles():
     fan = _FakeFan()
-    dc = DirectionController(_FakeAllocator(), fan)
+    dc = TranslationDirectionController(_FakeAllocator(), fan)
     dc.step(None)
     assert fan.last == []
