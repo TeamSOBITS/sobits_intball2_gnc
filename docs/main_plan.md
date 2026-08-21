@@ -19,11 +19,23 @@
 
 ## 未達成タスク（優先度順）
 
+### [G] Guidance軌道のリアルタイム更新（実TFフィードバックによる再計画）の前提条件整備
+`look_at`本体実装・90°超waypoint分離機動・経路の補間方式など複数の[G]タスクが実質的に「毎tick実TFを見て参照を更新する」という同じ基盤に帰着する。徹底調査の結果、素朴な実装（毎tick/10Hzで実位置・実速度から再計画）は到着判定のZeno的機能不全・オーバーシュート・目標近傍の飽和/チャタリング・姿勢制御の恒久機能不全など複数の破綻が数学的に確定しており、当初想定より前提条件の整備が先に必要。詳細・破綻の定量的根拠: `docs/guidance_realtime_replanning_design.md`。
+
+着手順（前提条件、依存関係順）:
+1. `guidance_node`単一起動の確認手順整備（多重起動が以降の検証結果を無効化するため最初に）
+2. `align_at_arrival`の開始条件を時間ベースから位置誤差+settle-timeベースに変更（再計画方式と無関係に単体で価値がある独立改善）
+3. Guidance側にTF staleness判定を新設（現状ゼロ）
+4. Guidance側に速度推定器を新設
+5. `HeuristicSegmentTimeAllocator`にv_now（始点速度）を渡す拡張
+6. 残距離下限での再計画停止/静的軌道へのフォールバック方針の決定
+7. `Trajectory`内部状態（`_last_q_des`/`_last_sample_t`）の再計画間引き継ぎ設計、`max_angular_rate`を常時指定
+8. 再計画レート（Control側P+D 50Hzより明確に低く）のパラメータ設計
+
+1〜3は独立して並行着手可能。4→5→6→7は速度推定→時間配分→フォールバック→状態管理の順で依存。8は実装直前。
+
 ### [C] trajectory_controller.kp_att の再設計
 移動中の姿勢追従ゲイン。トルク予算0.0047Nm（力優先制約下で確定）を前提に再設計する。詳細: `docs/archive/achieved/session_2026-08-20_thrust_allocator_force_crush_fix.md`
-
-### [C] tf_correction のalign用ゲイン反映（hold用との分離を含む）
-単一ゲイン(`kp_att=0.20`+理論値3倍`kd_att`)は単体テストで旧mapを速度・精度とも上回ったが、実際の複合回転move_toでは再現しなかった。pre_align関連の不具合（tau_early低速スキップ／収束判定の一時的通過誤判定）を修正した上で再検証済み（`docs/archive/achieved/2026-08-21_pre_align_skipped_low_speed_bug.md`）だが、振動の振幅自体（大角度の複合回転でpitch最大57°オーバーシュートするケースを確認）は依然改善されておらず、ゲイン再設計が必要。また同ゲインをホバー保持と共有するとシムでは悪化しなかったが実機ノイズ耐性は未検証のため、align用/hold用でゲインを分ける設計変更も併せて検討する。詳細: `docs/archive/achieved/2026-08-21_tf_correction_align_optimization.md`
 
 ### [G] 90°超waypointでの分離型機動
 偏角（進入方向と離脱方向の角度差）が90°を超える経路はゲインチューニングでは解決不可（ファンの物理的トルク上限）。停止→再配向（静止hold機構）→並進再開、の機動にGuidance側で自動的に切り替える設計が必要。90°以下は現行の連続追従（`kp_att=0.60`）で対応可能。詳細: `docs/archive/achieved/trajectory_force_duration_investigation.md`（6-15/6-16節）
@@ -104,3 +116,5 @@ Minimum Snapが出す軌道が障害物と衝突する場合に局所的に押�
 ## 未決定事項（判断待ちの論点、タスクではない）
 
 - 実機ではTFが存在しないため、いずれ自前の姿勢推定器（ジャイロ積分＋相補フィルタ等）・自己位置推定器が必要になる。`navigation/utils/`新設の方針で合意済みだが着手時期・優先度は未定（詳細: `docs/archive/achieved/phase0_findings.md`観測13。上記タスク「実機用の自己位置・姿勢推定」と関連）
+
+- `align_at_arrival`の開始条件は**時間ベース**（`_run_trajectory`が軌道の計画所要時間`total_duration`経過で`STATUS_SUCCESS`を返した時点、`guidance_executor.py`）で、実際の位置誤差の大きさは見ていない。並進の追従遅れ・オーバーシュートが残っていてもその瞬間にalign_at_arrivalへ移行し、`PoseCorrector`は位置・姿勢を同じcheckpointで**同時に**補正する（今も既に「並進修正しながら回転」）。並進誤差が大きいまま同時補正に入ると、`thrust_allocator`の力優先重み付け（`docs/archive/achieved/session_2026-08-20_thrust_allocator_force_crush_fix.md`）で回転トルクの予算が削られ、回転が遅くなる可能性がある。「並進を先に収束させてから回転する（順番実行）」方が、並進誤差が大きいケースでは総時間で速くなり得るが、現時点（2026-08-21）で検証した3ケースでは同時実行のままでも暴れずに収束しており、対策の必要性は未確認（`docs/archive/achieved/2026-08-21_align_torque_budget_crush_hypothesis.md`）。大きな並進誤差を伴う経路でalign_at_arrivalが遅い/暴れるケースが実際に出たら、位置誤差が閾値以下になるまで姿勢補正を保留する分岐を検討する。

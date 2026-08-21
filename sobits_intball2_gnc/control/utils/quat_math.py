@@ -33,3 +33,10 @@ def quat_rotate(q, v):
     """Rotate vector ``v`` by quaternion ``q`` [x, y, z, w]."""
     qv = np.array([v[0], v[1], v[2], 0.0])
     return quat_mul(quat_mul(q, qv), quat_conj(q))[:3]
+
+
+def geodesic_angle(q_a, q_b):
+    """Angle [rad] between two orientations, robust to the double cover."""
+    dot = np.clip(abs(np.dot(np.asarray(q_a, dtype=float),
+                             np.asarray(q_b, dtype=float))), 0.0, 1.0)
+    return 2.0 * np.arccos(dot)

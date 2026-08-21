@@ -91,7 +91,7 @@ def test_position_error_rotated_into_body_frame():
 
 def test_correction_clamped_independently():
     pc = _corrector(smooth_window=1, kp_pos=[10.0, 10.0, 10.0],
-                    kp_att=[10.0, 10.0, 10.0],
+                    kp_att_hold=[10.0, 10.0, 10.0],
                     max_corr_force=0.05, max_corr_torque=0.01)
     pc.update(0.0, ([0.0, 0.0, 0.0], _IDENTITY, 100.0))
     f, t = pc.update(0.1, ([5.0, 5.0, 5.0], [0.3, 0.0, 0.0, 0.954], 100.1))
@@ -273,6 +273,92 @@ def test_checkpoint_advance():
     ])
     assert pc.advance_checkpoint() is True
     assert pc.advance_checkpoint() is False  # already at last
+
+
+# --- PoseCorrector: align/hold gain switch -----------------------------------
+# docs/archive/achieved/2026-08-21_tf_correction_align_hold_gain_split_design.md
+
+_QUAT_90_X = [0.70710678, 0.0, 0.0, 0.70710678]  # 90 deg about x, far outside tolerance
+_QUAT_1DEG_X = [math.sin(math.radians(0.5)), 0.0, 0.0, math.cos(math.radians(0.5))]
+
+
+_ALIGN_HOLD_TEST_KWARGS = dict(
+    smooth_window=1, kp_att_align=[5.0, 5.0, 5.0], kp_att_hold=[1.0, 1.0, 1.0],
+    max_corr_torque=10.0, align_tolerance_deg=3.0, align_settle_time=0.5,
+)
+
+
+def test_align_gain_used_while_not_converged():
+    pc_align = _corrector(**_ALIGN_HOLD_TEST_KWARGS)
+    pc_align.set_checkpoints([([0.0, 0.0, 0.0], _IDENTITY)], is_align=True)
+    _, t_align = pc_align.update(0.0, ([0.0, 0.0, 0.0], _QUAT_90_X, 100.0))
+
+    pc_hold = _corrector(**_ALIGN_HOLD_TEST_KWARGS)
+    pc_hold.set_checkpoints([([0.0, 0.0, 0.0], _IDENTITY)], is_align=False)
+    _, t_hold = pc_hold.update(0.0, ([0.0, 0.0, 0.0], _QUAT_90_X, 100.0))
+
+    align_mag = max(abs(v) for v in t_align)
+    hold_mag = max(abs(v) for v in t_hold)
+    assert align_mag > 0.0
+    assert math.isclose(hold_mag, align_mag / 5.0, rel_tol=1e-6)
+
+
+def test_gain_switches_to_hold_after_settle_time_within_tolerance():
+    pc = _corrector(**_ALIGN_HOLD_TEST_KWARGS)
+    pc.set_checkpoints([([0.0, 0.0, 0.0], _IDENTITY)], is_align=True)
+    # Within tolerance from the first tick.
+    _, t_align = pc.update(0.0, ([0.0, 0.0, 0.0], _QUAT_1DEG_X, 100.0))
+    # Still within settle_time -> align gain still active.
+    _, t_still_align = pc.update(0.2, ([0.0, 0.0, 0.0], _QUAT_1DEG_X, 100.2))
+    # settle_time elapsed while continuously within tolerance -> hold gain now.
+    _, t_hold = pc.update(0.6, ([0.0, 0.0, 0.0], _QUAT_1DEG_X, 100.6))
+    assert any(abs(v) > 1e-9 for v in t_align)
+    align_mag = max(abs(v) for v in t_align)
+    hold_mag = max(abs(v) for v in t_hold)
+    # kp_att_align (5.0) vs kp_att_hold (1.0): hold torque should be ~5x smaller
+    # for the same (unchanged) attitude error.
+    assert math.isclose(hold_mag, align_mag / 5.0, rel_tol=1e-3)
+
+
+def test_momentary_near_miss_does_not_switch_early():
+    pc = _corrector(**_ALIGN_HOLD_TEST_KWARGS)
+    pc.set_checkpoints([([0.0, 0.0, 0.0], _IDENTITY)], is_align=True)
+    pc.update(0.0, ([0.0, 0.0, 0.0], _QUAT_1DEG_X, 100.0))    # within tolerance
+    pc.update(0.2, ([0.0, 0.0, 0.0], _QUAT_90_X, 100.2))      # brief noisy jump out
+    # Back within tolerance, but the continuous-within-tolerance clock must
+    # have been reset by the excursion above -- 0.3s since re-entry is not
+    # enough to clear the 0.5s settle_time yet.
+    _, t = pc.update(0.5, ([0.0, 0.0, 0.0], _QUAT_1DEG_X, 100.5))
+    align_mag_expected = 5.0  # matches kp_att_align scale from the other tests
+    hold_mag_expected = 1.0
+    mag = max(abs(v) for v in t)
+    # Still align gain -> closer to the align-scale magnitude than hold-scale.
+    assert mag > 0.0
+    assert not math.isclose(
+        mag, mag / align_mag_expected * hold_mag_expected, rel_tol=1e-3,
+    )
+
+
+def test_align_gain_safety_cap_forces_hold_eventually():
+    pc = _corrector(**{**_ALIGN_HOLD_TEST_KWARGS, "align_gain_max_duration": 1.0})
+    pc.set_checkpoints([([0.0, 0.0, 0.0], _IDENTITY)], is_align=True)
+    # Never within tolerance -> the angle check alone would never switch.
+    _, t_early = pc.update(0.0, ([0.0, 0.0, 0.0], _QUAT_90_X, 100.0))
+    _, t_late = pc.update(2.0, ([0.0, 0.0, 0.0], _QUAT_90_X, 102.0))
+    early_mag = max(abs(v) for v in t_early)
+    late_mag = max(abs(v) for v in t_late)
+    assert math.isclose(late_mag, early_mag / 5.0, rel_tol=1e-3)
+
+
+def test_non_align_checkpoint_uses_hold_gain_immediately():
+    pc = _corrector(**_ALIGN_HOLD_TEST_KWARGS)
+    pc.set_checkpoints([([0.0, 0.0, 0.0], _IDENTITY)], is_align=False)
+    _, t = pc.update(0.0, ([0.0, 0.0, 0.0], _QUAT_90_X, 100.0))
+    _, t_ref = pc.update(0.1, ([0.0, 0.0, 0.0], _QUAT_90_X, 100.1))
+    # First tick after a non-align checkpoint already uses the hold gain,
+    # not a one-tick grace period of the align gain.
+    mag = max(abs(v) for v in t_ref)
+    assert mag > 0.0
 
 
 # --- HoverController --------------------------------------------------------
@@ -511,7 +597,7 @@ def test_trajectory_controller_supplies_torque_when_q_des_is_live():
     # Phase 3b: once a q_des has been received, attitude torque comes from
     # TrajectoryController.compute_attitude, not PoseCorrector's hold target.
     quat_off = [0.3, 0.0, 0.0, 0.954]  # not aligned with either target
-    pc = _corrector(smooth_window=1, kp_att=[10.0, 10.0, 10.0],
+    pc = _corrector(smooth_window=1, kp_att_hold=[10.0, 10.0, 10.0],
                     max_corr_torque=1.0)
     pc.update(-1.0, ([0.0, 0.0, 0.0], _IDENTITY, 50.0))  # captures IDENTITY as hold attitude
     tf = _FakeTf(pose=([0.0, 0.0, 0.0], quat_off, 100.0))
@@ -546,7 +632,7 @@ def test_torque_falls_back_to_corrector_when_q_des_unset():
     # must keep coming from PoseCorrector even while translation is driven by
     # the trajectory controller.
     quat_off = [0.3, 0.0, 0.0, 0.954]  # not aligned with the hold attitude
-    pc = _corrector(smooth_window=1, kp_att=[10.0, 10.0, 10.0],
+    pc = _corrector(smooth_window=1, kp_att_hold=[10.0, 10.0, 10.0],
                     max_corr_torque=1.0)
     pc.update(-1.0, ([0.0, 0.0, 0.0], _IDENTITY, 50.0))  # captures IDENTITY as hold attitude
     tf = _FakeTf(pose=([0.0, 0.0, 0.0], quat_off, 100.0))

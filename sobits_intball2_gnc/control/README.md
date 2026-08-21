@@ -65,8 +65,13 @@ TF自己位置取得（`TfClient`）は`control/`と`guidance/`で共有する�
 | `hover_control.max_torque` | IMU則の出力トルククランプ [Nm] | `0.02` |
 | `tf_correction.kp_pos` | 位置誤差→力ゲイン [N/m] | `[0.89, 0.89, 0.89]` |
 | `tf_correction.kd_pos` | 速度→力ゲイン [N/(m/s)] | `[3.6, 3.6, 3.6]` |
-| `tf_correction.kp_att` | 姿勢誤差→トルクゲイン [Nm] | `[0.01, 0.01, 0.01]` |
-| `tf_correction.kd_att` | 相対角速度誤差→トルクゲイン [Nm/(rad/s)] | `[0.0, 0.0, 0.0]` |
+| `tf_correction.kp_att_align` | 姿勢誤差→トルクゲイン、align中 [Nm] | `[0.01, 0.01, 0.01]` |
+| `tf_correction.kd_att_align` | 相対角速度誤差→トルクゲイン、align中 [Nm/(rad/s)] | `[0.0, 0.0, 0.0]` |
+| `tf_correction.kp_att_hold` | 姿勢誤差→トルクゲイン、hold中 [Nm] | `[0.01, 0.01, 0.01]` |
+| `tf_correction.kd_att_hold` | 相対角速度誤差→トルクゲイン、hold中 [Nm/(rad/s)] | `[0.0, 0.0, 0.0]` |
+| `tf_correction.align_tolerance_deg` | align→hold切替の角度閾値 [deg] | `3.0` |
+| `tf_correction.align_settle_time` | 角度閾値内が連続してこの時間続いたらhold gainに切替 [s] | `0.5` |
+| `tf_correction.align_gain_max_duration` | align gainを使う時間の保険上限 [s] | `30.0` |
 | `tf_correction.vel_filter_alpha` | 速度推定のEMA係数 | `0.3` |
 | `tf_correction.att_filter_alpha` | 角速度誤差推定のEMA係数 | `1.0` |
 | `tf_correction.max_corr_force` | TF補正の出力力クランプ [N] | `0.05` |

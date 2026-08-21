@@ -210,11 +210,16 @@ class HoverController:
             corrector = PoseCorrector(
                 poll_rate=f("poll_rate"), smooth_window=f("smooth_window"),
                 smooth_sigma=f("smooth_sigma"), timeout=f("timeout"),
-                kp_pos=f("kp_pos"), kp_att=f("kp_att"), kd_pos=f("kd_pos"),
-                kd_att=f("kd_att"), vel_filter_alpha=f("vel_filter_alpha"),
+                kp_pos=f("kp_pos"), kd_pos=f("kd_pos"),
+                kp_att_align=f("kp_att_align"), kd_att_align=f("kd_att_align"),
+                kp_att_hold=f("kp_att_hold"), kd_att_hold=f("kd_att_hold"),
+                vel_filter_alpha=f("vel_filter_alpha"),
                 att_filter_alpha=f("att_filter_alpha"),
                 max_corr_force=f("max_corr_force"),
                 max_corr_torque=f("max_corr_torque"),
+                align_tolerance_deg=f("align_tolerance_deg"),
+                align_settle_time=f("align_settle_time"),
+                align_gain_max_duration=f("align_gain_max_duration"),
             )
             trajectory_ctrl = TrajectoryController(
                 mass=g("mass"), kp_pos=g("kp_pos"), kd_pos=g("kd_pos"),
@@ -257,10 +262,18 @@ class HoverController:
 
     # --- checkpoint hooks (delegated to the corrector) ---------------------
 
-    def set_checkpoints(self, poses) -> None:
-        """Set the checkpoint hold-target array (no-op in IMU-only mode)."""
+    def set_checkpoints(self, poses, is_align=True) -> None:
+        """Set the checkpoint hold-target array (no-op in IMU-only mode).
+
+        This is the external ``/gnc/checkpoints`` path -- today that is
+        exclusively ``GuidanceExecutor``'s pre_align/align_at_arrival
+        (``docs/archive/achieved/2026-08-21_tf_correction_align_hold_gain_split_design.md``),
+        so ``is_align`` defaults to True here. A future free-path feature
+        publishing non-align checkpoint chains through this same path would
+        need to pass ``is_align=False`` explicitly.
+        """
         if self._corrector is not None:
-            self._corrector.set_checkpoints(poses)
+            self._corrector.set_checkpoints(poses, is_align=is_align)
 
     def advance_checkpoint(self) -> bool:
         """Step the hold target to the next checkpoint (free-path hook)."""
