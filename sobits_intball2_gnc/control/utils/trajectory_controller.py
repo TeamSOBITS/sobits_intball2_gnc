@@ -243,3 +243,31 @@ class TrajectoryController:
             self.max_torque,
         )
         return torque.tolist()
+
+    def set_gains(self, kp_pos=None, kd_pos=None, vel_filter_alpha=None,
+                  max_force=None, kp_att=None, kd_att=None,
+                  att_filter_alpha=None, max_torque=None) -> None:
+        """Update gains/clamps in place (dynamic reconfiguration).
+
+        Any argument left as ``None`` keeps its current value. Does not touch
+        ``mass`` (measured physical constant, see
+        docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md category C) or the
+        velocity/rate finite-difference state (``reset()`` clears that
+        separately, e.g. on a new trajectory).
+        """
+        if kp_pos is not None:
+            self.kp_pos = np.asarray(kp_pos, dtype=float)
+        if kd_pos is not None:
+            self.kd_pos = np.asarray(kd_pos, dtype=float)
+        if vel_filter_alpha is not None:
+            self.vel_filter_alpha = float(vel_filter_alpha)
+        if max_force is not None:
+            self.max_force = float(max_force)
+        if kp_att is not None:
+            self.kp_att = np.asarray(kp_att, dtype=float)
+        if kd_att is not None:
+            self.kd_att = np.asarray(kd_att, dtype=float)
+        if att_filter_alpha is not None:
+            self.att_filter_alpha = float(att_filter_alpha)
+        if max_torque is not None:
+            self.max_torque = float(max_torque)

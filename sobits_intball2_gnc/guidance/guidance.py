@@ -10,6 +10,7 @@ via dependency injection, and serves it as the ``execute_fn`` behind
 Configuration comes from ``config/gnc_params.yaml``'s ``guidance`` section.
 """
 import rclpy
+from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
@@ -25,7 +26,7 @@ from sobits_intball2_gnc.guidance.ros.ctl_command_action_server import (
 from sobits_intball2_gnc.guidance.ros.multi_dof_joint_trajectory_publisher import (
     MultiDOFJointTrajectoryPublisher,
 )
-from sobits_intball2_gnc.guidance.ros.path_publisher import PathPublisher
+from sobits_intball2_gnc.guidance.ros.speed_path_publisher import SpeedPathPublisher
 from sobits_intball2_gnc.guidance.utils.guidance_executor import (
     STATUS_CANCELED,
     STATUS_SUCCESS,
@@ -33,7 +34,7 @@ from sobits_intball2_gnc.guidance.utils.guidance_executor import (
 )
 
 ACTION_NAME = "/gnc/move_to"
-TRAJECTORY_PATH_TOPIC = "/gnc/trajectory_path"
+TRAJECTORY_SPEED_PATH_TOPIC = "/gnc/trajectory_path_speed"
 TF_STARTUP_TIMEOUT = 5.0
 
 _GUIDANCE_PARAM_DEFAULTS = {
@@ -41,10 +42,20 @@ _GUIDANCE_PARAM_DEFAULTS = {
     "guidance.attitude_speed_threshold": 0.02,
     "guidance.align_tolerance_deg": 3.0,
     "guidance.align_timeout": 60.0,
+    "guidance.align_settle_time": 0.5,
     "guidance.rate": 50.0,
     "guidance.camera_forward_axis.main": [1.0, 0.0, 0.0],
     "guidance.camera_forward_axis.stereo": [0.0, 1.0, 0.0],
+    "guidance.attitude_reference_mode": "face_travel",
+    "guidance.pre_align": True,
+    "guidance.align_at_arrival": True,
+    "guidance.look_at_target_frame": "",
+    "guidance.face_travel_camera": "main",
+    "guidance.align_at_arrival_camera": "main",
 }
+
+_ATTITUDE_REFERENCE_MODES = frozenset({"fixed", "face_travel", "look_at"})
+_CAMERA_NAMES = frozenset({"main", "stereo"})
 
 
 class GuidanceNode(Node):
@@ -53,15 +64,17 @@ class GuidanceNode(Node):
     def __init__(self) -> None:
         super().__init__("guidance_node")
 
+        static_descriptor = ParameterDescriptor(read_only=True)
         for name, default in _GUIDANCE_PARAM_DEFAULTS.items():
-            self.declare_parameter(name, default)
+            descriptor = static_descriptor if name == "guidance.rate" else None
+            self.declare_parameter(name, default, descriptor)
         g = lambda name: self.get_parameter("guidance." + name).value  # noqa: E731
 
         # Same frame names as control.py's tf_correction section (shared TF
         # tree, iss_body <- body) -- declared here too since this is a
         # separate node/parameter namespace.
-        self.declare_parameter("tf_correction.reference_frame", "iss_body")
-        self.declare_parameter("tf_correction.target_frame", "body")
+        self.declare_parameter("tf_correction.reference_frame", "iss_body", static_descriptor)
+        self.declare_parameter("tf_correction.target_frame", "body", static_descriptor)
         reference_frame = str(self.get_parameter("tf_correction.reference_frame").value)
 
         # Same values as control.py's trajectory_controller section (shared
@@ -71,7 +84,7 @@ class GuidanceNode(Node):
         # HeuristicSegmentTimeAllocator's docstring and
         # docs/guidance_move_to_debug_2026-08-20.md).
         self.declare_parameter("trajectory_controller.max_force", 0.1)
-        self.declare_parameter("trajectory_controller.mass", 4.5)
+        self.declare_parameter("trajectory_controller.mass", 4.5, static_descriptor)
         trajectory_max_force = float(
             self.get_parameter("trajectory_controller.max_force").value
         )
@@ -91,8 +104,9 @@ class GuidanceNode(Node):
         self._checkpoint_pub = CheckpointPublisher(
             self, reference_frame=reference_frame
         )
-        self._path_pub = PathPublisher(
-            self, TRAJECTORY_PATH_TOPIC, reference_frame=reference_frame
+        self._speed_path_pub = SpeedPathPublisher(
+            self, TRAJECTORY_SPEED_PATH_TOPIC, reference_frame=reference_frame,
+            max_speed=float(g("target_speed")),
         )
 
         self._executor_logic = GuidanceExecutor(
@@ -119,12 +133,13 @@ class GuidanceNode(Node):
             attitude_speed_threshold=float(g("attitude_speed_threshold")),
             align_tolerance_deg=float(g("align_tolerance_deg")),
             align_timeout=float(g("align_timeout")),
+            align_settle_time=float(g("align_settle_time")),
             rate=float(g("rate")),
             camera_forward_axis={
                 "main": g("camera_forward_axis.main"),
                 "stereo": g("camera_forward_axis.stereo"),
             },
-            path_publisher=self._path_pub,
+            speed_path_publisher=self._speed_path_pub,
             max_accel=trajectory_max_force / trajectory_mass,
         )
 
@@ -135,17 +150,83 @@ class GuidanceNode(Node):
         )
         self.get_logger().info("GuidanceNode up: serving %s" % ACTION_NAME)
 
+        # Category-A dynamic parameter
+        # (docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md):
+        # align_tolerance_deg/align_timeout/align_settle_time are plain
+        # threshold checks the align-wait loop re-reads every iteration, so
+        # they're safe to change
+        # at runtime. target_speed/attitude_speed_threshold are category B
+        # (only take effect via a fresh trajectory generation) and are
+        # intentionally left unhandled here.
+        self.add_on_set_parameters_callback(self._on_set_parameters)
+
+    def _on_set_parameters(self, params) -> SetParametersResult:
+        """Route the align-loop's Category-A parameters to GuidanceExecutor.
+
+        ``execute()`` runs inside the action server's execute_callback under
+        a ``ReentrantCallbackGroup`` on ``main()``'s ``MultiThreadedExecutor``,
+        so this callback can run concurrently with an in-progress align-wait
+        on a different thread. Each affected attribute is a single float,
+        reassigned atomically under the GIL, so no lock is needed here.
+        """
+        for p in params:
+            if p.name == "guidance.align_tolerance_deg":
+                self._executor_logic.set_gains(align_tolerance_deg=float(p.value))
+            elif p.name == "guidance.align_timeout":
+                self._executor_logic.set_gains(align_timeout=float(p.value))
+            elif p.name == "guidance.align_settle_time":
+                self._executor_logic.set_gains(align_settle_time=float(p.value))
+            elif p.name == "guidance.attitude_reference_mode":
+                if str(p.value) not in _ATTITUDE_REFERENCE_MODES:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="guidance.attitude_reference_mode must be one "
+                        "of %s" % sorted(_ATTITUDE_REFERENCE_MODES),
+                    )
+            elif p.name in ("guidance.face_travel_camera",
+                             "guidance.align_at_arrival_camera"):
+                if str(p.value) not in _CAMERA_NAMES:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="%s must be one of %s"
+                        % (p.name, sorted(_CAMERA_NAMES)),
+                    )
+            # Any other declared parameter is Category B/C (latched or
+            # static) -- accepted but intentionally not applied at runtime.
+        return SetParametersResult(successful=True)
+
     def _execute_fn(self, p_target, q_target, feedback_cb, is_cancel_requested):
         """``CtlCommandActionServer``'s ``execute_fn`` (module docstring).
 
-        Always runs with ``face_travel=True, face_travel_camera="main",
-        align_at_arrival=True`` for now -- ``CtlCommand.action`` has no field
-        to carry those options, so exposing them awaits an interface change
-        (``docs/guidance_node_implementation_plan.md``); until then this is
-        the same default behavior Phase 3b's manual scripts have exercised.
+        All mode/option params are read from ``guidance.*`` here, at goal
+        receipt, so each goal latches the values in effect at that moment
+        (Category B,
+        docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md)
+        rather than reacting to a change mid-trajectory.
         """
+        mode = str(self.get_parameter("guidance.attitude_reference_mode").value)
+        if mode == "look_at":
+            self.get_logger().warn(
+                "[GuidanceNode] attitude_reference_mode=look_at is not yet "
+                "implemented; falling back to face_travel"
+            )
+            mode = "face_travel"
         status = self._executor_logic.execute(
             p_target, q_target, feedback_cb, is_cancel_requested,
+            face_travel=(mode == "face_travel"),
+            face_travel_camera=str(
+                self.get_parameter("guidance.face_travel_camera").value
+            ),
+            pre_align=bool(self.get_parameter("guidance.pre_align").value),
+            align_at_arrival=bool(
+                self.get_parameter("guidance.align_at_arrival").value
+            ),
+            look_at_target_frame=str(
+                self.get_parameter("guidance.look_at_target_frame").value
+            ),
+            align_at_arrival_camera=str(
+                self.get_parameter("guidance.align_at_arrival_camera").value
+            ),
         )
         if status == STATUS_SUCCESS:
             return TERMINATE_SUCCESS

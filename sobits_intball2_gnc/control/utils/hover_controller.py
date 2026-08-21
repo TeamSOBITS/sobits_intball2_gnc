@@ -39,6 +39,7 @@ compatibility):
 import time
 
 import numpy as np
+from rcl_interfaces.msg import ParameterDescriptor
 
 from sobits_intball2_gnc.control.utils.hover_law import DEFAULT_HOVER, HoverLaw
 from sobits_intball2_gnc.control.utils.pose_corrector import (
@@ -112,6 +113,9 @@ class HoverController:
         )
         self._trajectory_timeout = float(trajectory_timeout)
         self._was_trajectory_active = False
+        # checkpoint_version recorded when trajectory following last became
+        # active -- see the falling-edge re-capture guard below.
+        self._checkpoint_version_at_traj_start = None
         # Last-tick (force, torque) split by source, pre-combination -- for
         # Phase 0 diagnosis of whether the TF correction and the IMU law
         # cancel each other out. See docs/main_plan.md Phase 0.
@@ -155,18 +159,28 @@ class HoverController:
     @staticmethod
     def declare_parameters(node) -> None:
         """Declare the hover-law, TF-correction, and trajectory-controller parameters."""
+        static_descriptor = ParameterDescriptor(read_only=True)
+        hover_static_keys = {"mode", "control_rate"}
+        tf_static_keys = {
+            "reference_frame", "target_frame", "poll_rate",
+            "smooth_window", "smooth_sigma", "checkpoint_topic",
+        }
+        trajectory_static_keys = {"mass"}
         for key, default in DEFAULT_HOVER.items():
             name = f"hover_control.{key}"
             if not node.has_parameter(name):
-                node.declare_parameter(name, default)
+                descriptor = static_descriptor if key in hover_static_keys else None
+                node.declare_parameter(name, default, descriptor)
         for key, default in DEFAULT_TF.items():
             name = f"tf_correction.{key}"
             if not node.has_parameter(name):
-                node.declare_parameter(name, default)
+                descriptor = static_descriptor if key in tf_static_keys else None
+                node.declare_parameter(name, default, descriptor)
         for key, default in DEFAULT_TRAJECTORY.items():
             name = f"trajectory_controller.{key}"
             if not node.has_parameter(name):
-                node.declare_parameter(name, default)
+                descriptor = static_descriptor if key in trajectory_static_keys else None
+                node.declare_parameter(name, default, descriptor)
 
     @classmethod
     def from_node(cls, node, imu_subscriber, fan_publisher, allocator,
@@ -213,6 +227,34 @@ class HoverController:
                    trajectory_timeout=g("timeout") if tf_client is not None
                    else DEFAULT_TRAJECTORY["timeout"])
 
+    # --- dynamic gain reconfiguration (delegated to the pure-function
+    # objects; see
+    # docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md
+    # category A) -----
+
+    def set_hover_gains(self, **kwargs) -> None:
+        """Update ``hover_control.*`` gains in place. See ``HoverLaw.set_gains``."""
+        self._law.set_gains(**kwargs)
+
+    def set_tf_correction_gains(self, **kwargs) -> None:
+        """Update ``tf_correction.*`` gains in place (no-op in IMU-only mode).
+
+        See ``PoseCorrector.set_gains``.
+        """
+        if self._corrector is not None:
+            self._corrector.set_gains(**kwargs)
+
+    def set_trajectory_gains(self, timeout=None, **kwargs) -> None:
+        """Update ``trajectory_controller.*`` gains in place (no-op in IMU-only
+        mode). ``timeout`` is this class's own stale-setpoint threshold (not
+        stored on ``TrajectoryController``); the rest is forwarded to
+        ``TrajectoryController.set_gains``.
+        """
+        if timeout is not None:
+            self._trajectory_timeout = float(timeout)
+        if self._trajectory_ctrl is not None:
+            self._trajectory_ctrl.set_gains(**kwargs)
+
     # --- checkpoint hooks (delegated to the corrector) ---------------------
 
     def set_checkpoints(self, poses) -> None:
@@ -255,7 +297,23 @@ class HoverController:
                 # target from the current pose (about to be read by
                 # update() below) instead of the stale pre-trajectory
                 # target, so translation doesn't jump. See docs/phase3.md.
-                self._corrector.set_checkpoints([])
+                #
+                # Guarded: skip this if someone (e.g. GuidanceExecutor's
+                # align_at_arrival) has already set a fresh checkpoint since
+                # trajectory following started. Without this guard, a
+                # checkpoint published right after the trajectory ends can
+                # arrive before this falling-edge tick fires (bounded by
+                # trajectory_controller.timeout) and gets silently
+                # overwritten with "hold current pose" a tick later --
+                # docs/archive/achieved/2026-08-21_tf_correction_attitude_gain_tuning.md's confirmed
+                # root cause for align_at_arrival appearing to never
+                # converge on a large residual.
+                if (
+                    self._checkpoint_version_at_traj_start is None
+                    or self._corrector.checkpoint_version
+                    == self._checkpoint_version_at_traj_start
+                ):
+                    self._corrector.set_checkpoints([])
             if trajectory_active and not self._was_trajectory_active:
                 # Rising edge: TrajectoryController is a single long-lived
                 # instance (constructed once in from_node()), so without this
@@ -267,6 +325,9 @@ class HoverController:
                 # so the first tick of a new move isn't computed against a
                 # stale prior-move state.
                 self._trajectory_ctrl.reset()
+                self._checkpoint_version_at_traj_start = (
+                    self._corrector.checkpoint_version
+                )
             self._was_trajectory_active = trajectory_active
 
             pose = self._tf.get_pose()

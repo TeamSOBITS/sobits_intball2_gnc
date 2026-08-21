@@ -52,6 +52,7 @@ import math
 from scipy.optimize import lsq_linear
 
 import numpy as np
+from rcl_interfaces.msg import ParameterDescriptor
 
 # Defaults mirror config/gnc_params.yaml so the node runs without a params file.
 DEFAULT_KJ = 4.082482905
@@ -127,11 +128,13 @@ class ThrustAllocator:
     ) -> None:
         self.kj = float(kj)
         self.fj_max = float(fj_max)
-        # Per-row weights: force rows by 1/force_weight_ref, torque rows by
-        # 1/torque_weight_ref, so both channels' residuals are compared as a
-        # fraction of their own reference budget rather than raw N vs. N*m.
-        self._weight = np.array(
-            [1.0 / float(force_weight_ref)] * 3 + [1.0 / float(torque_weight_ref)] * 3
+        # Kept alongside the derived self._weight below so set_weights() can
+        # recompute it from a partial update (only one of the two refs
+        # changing) without the caller having to resupply both.
+        self._force_weight_ref = float(force_weight_ref)
+        self._torque_weight_ref = float(torque_weight_ref)
+        self._weight = self._make_weight(
+            self._force_weight_ref, self._torque_weight_ref
         )
         cg = np.asarray(cg, dtype=float)
         positions = _reshape_triplets(fan_positions)
@@ -149,14 +152,42 @@ class ThrustAllocator:
         self.A = np.column_stack(cols)          # 6 x N
 
     @staticmethod
+    def _make_weight(force_weight_ref: float, torque_weight_ref: float):
+        """Per-row weight vector (see module docstring point 2)."""
+        return np.array(
+            [1.0 / force_weight_ref] * 3 + [1.0 / torque_weight_ref] * 3
+        )
+
+    def set_weights(self, force_weight_ref=None, torque_weight_ref=None) -> None:
+        """Update the force/torque weighting references (dynamic reconfiguration).
+
+        Recomputes ``self._weight`` only -- ``kj``/``fj_max``/``fan_count``/
+        ``self.A`` derive from the (static) fan geometry and are untouched,
+        see docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md
+        category C. Any argument left as ``None`` keeps its current value.
+        """
+        if force_weight_ref is not None:
+            self._force_weight_ref = float(force_weight_ref)
+        if torque_weight_ref is not None:
+            self._torque_weight_ref = float(torque_weight_ref)
+        self._weight = self._make_weight(
+            self._force_weight_ref, self._torque_weight_ref
+        )
+
+    @staticmethod
     def declare_parameters(node) -> None:
         """Declare the parameters this allocator reads (idempotent)."""
+        static_descriptor = ParameterDescriptor(read_only=True)
         for name, default in (
             ("thrust_allocator.kj", DEFAULT_KJ),
             ("thrust_allocator.fj_max", DEFAULT_FJ_MAX),
             ("thrust_allocator.cg", DEFAULT_CG),
             ("thrust_allocator.fan_positions", DEFAULT_FAN_POSITIONS),
             ("thrust_allocator.fan_vectors", DEFAULT_FAN_VECTORS),
+        ):
+            if not node.has_parameter(name):
+                node.declare_parameter(name, default, static_descriptor)
+        for name, default in (
             ("thrust_allocator.force_weight_ref", DEFAULT_FORCE_WEIGHT_REF),
             ("thrust_allocator.torque_weight_ref", DEFAULT_TORQUE_WEIGHT_REF),
         ):

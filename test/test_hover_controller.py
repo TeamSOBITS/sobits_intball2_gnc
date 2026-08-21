@@ -465,6 +465,48 @@ def test_fallback_recaptures_hold_target_without_jump():
     assert all(abs(v) < 1e-6 for v in alloc.last_force)
 
 
+def test_fallback_does_not_clobber_checkpoint_set_during_trajectory():
+    # Regression for docs/archive/achieved/2026-08-21_tf_correction_attitude_gain_tuning.md's confirmed
+    # root cause: align_at_arrival publishes a fresh checkpoint right after
+    # trajectory following ends, but the falling-edge re-capture (above)
+    # used to fire unconditionally on the next tick and silently overwrite
+    # it with "hold current pose" -- making align_at_arrival's target
+    # unreachable regardless of tf_correction's gains.
+    pc = _corrector(smooth_window=1, kp_pos=[1.0, 1.0, 1.0], max_corr_force=100.0)
+    traj_ctrl = TrajectoryController(max_force=10.0)
+    traj_sub = _FakeTrajectorySub(
+        p_des=[9.0, 9.0, 9.0], v_des=[0, 0, 0], a_des=[0, 0, 0],
+        last_received_t=0.0,
+    )
+    tf = _FakeTf(pose=([9.0, 9.0, 9.0], _IDENTITY, 100.0))
+    alloc = _FakeAllocator()
+    hc = HoverController(
+        _FakeImu(gyro=[0, 0, 0], acc=[0, 0, 0]), _FakeFan(), alloc,
+        HoverLaw(max_force=100.0),
+        tf_client=tf, corrector=pc,
+        trajectory_subscriber=traj_sub, trajectory_controller=traj_ctrl,
+        trajectory_timeout=0.2,
+    )
+    hc.step(0.0)  # trajectory active
+    assert hc.trajectory_active is True
+
+    # Simulate GuidanceExecutor.align_at_arrival: it publishes its own
+    # checkpoint the instant trajectory following ends, before this tick's
+    # falling edge is even detected (bounded by trajectory_controller.timeout).
+    pc.set_checkpoints([([20.0, 20.0, 20.0], _IDENTITY)])
+
+    # Trajectory goes stale -> falling edge fires on this tick.
+    traj_sub.last_received_t = -10.0
+    hc.step(1.0)
+    assert hc.trajectory_active is False
+
+    # The externally-set checkpoint must survive: force should push toward
+    # [20,20,20] from [9,9,9] (kp=1.0 -> +11 per axis), NOT toward the
+    # current pose (which the old unconditional re-capture would target,
+    # producing ~0 force).
+    assert all(math.isclose(v, 11.0, abs_tol=1e-6) for v in alloc.last_force)
+
+
 def test_trajectory_controller_supplies_torque_when_q_des_is_live():
     # Phase 3b: once a q_des has been received, attitude torque comes from
     # TrajectoryController.compute_attitude, not PoseCorrector's hold target.

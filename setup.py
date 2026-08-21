@@ -41,6 +41,8 @@ setup(
             'multi_dof_joint_trajectory_subscriber = '
             'sobits_intball2_gnc.control.ros.multi_dof_joint_trajectory_subscriber:main',
             'path_publisher = sobits_intball2_gnc.guidance.ros.path_publisher:main',
+            'speed_path_publisher = '
+            'sobits_intball2_gnc.guidance.ros.speed_path_publisher:main',
             'multi_dof_joint_trajectory_publisher = '
             'sobits_intball2_gnc.guidance.ros.multi_dof_joint_trajectory_publisher:main',
             'ctl_command_action_server = '

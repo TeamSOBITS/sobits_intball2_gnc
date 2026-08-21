@@ -131,6 +131,11 @@ class PoseCorrector:
         self._hold_quat = None
         self._checkpoints = []  # list of (pos, quat)
         self._cp_index = None
+        # Bumped on every set_checkpoints() call (including internal
+        # re-captures) so callers like HoverController can tell whether
+        # someone has (re)targeted the hold since a point they recorded --
+        # see the trajectory-end race note on set_checkpoints() below.
+        self._checkpoint_version = 0
         # Velocity estimate for kd_pos: finite difference of the smoothed
         # position between successive update() calls (Phase 0 damping trial).
         # Timed on the TF stamp (not the caller's wall-clock t), since the
@@ -258,6 +263,10 @@ class PoseCorrector:
 
         A non-empty list makes its first entry the active hold target; an
         empty list clears checkpoints and re-captures the hover pose.
+
+        Every call bumps :attr:`checkpoint_version`, including internal ones
+        (e.g. ``HoverController``'s own re-capture-on-trajectory-end) -- see
+        that call site for why the version needs to reflect *all* callers.
         """
         self._checkpoints = [
             (np.asarray(p, dtype=float), np.asarray(q, dtype=float))
@@ -269,6 +278,12 @@ class PoseCorrector:
             self._cp_index = None
             self._hold_pos = None  # re-capture from current smoothed pose
             self._hold_quat = None
+        self._checkpoint_version += 1
+
+    @property
+    def checkpoint_version(self) -> int:
+        """Bumped by every :meth:`set_checkpoints` call, self or caller."""
+        return self._checkpoint_version
 
     def advance_checkpoint(self) -> bool:
         """Switch to the next checkpoint. Returns False at the last one."""
@@ -371,3 +386,33 @@ class PoseCorrector:
             self.max_corr_torque,
         )
         return f_body.tolist(), torque.tolist()
+
+    def set_gains(self, kp_pos=None, kd_pos=None, kp_att=None, kd_att=None,
+                  vel_filter_alpha=None, att_filter_alpha=None,
+                  max_corr_force=None, max_corr_torque=None,
+                  timeout=None) -> None:
+        """Update gains/thresholds in place (dynamic reconfiguration).
+
+        Any argument left as ``None`` keeps its current value. Does not touch
+        ``poll_rate``/``smooth_window``/``smooth_sigma`` (loop timing / buffer
+        sizing, see docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md
+        category C) or any liveness/hold-target state.
+        """
+        if kp_pos is not None:
+            self.kp_pos = np.asarray(kp_pos, dtype=float)
+        if kd_pos is not None:
+            self.kd_pos = np.asarray(kd_pos, dtype=float)
+        if kp_att is not None:
+            self.kp_att = np.asarray(kp_att, dtype=float)
+        if kd_att is not None:
+            self.kd_att = np.asarray(kd_att, dtype=float)
+        if vel_filter_alpha is not None:
+            self.vel_filter_alpha = float(vel_filter_alpha)
+        if att_filter_alpha is not None:
+            self.att_filter_alpha = float(att_filter_alpha)
+        if max_corr_force is not None:
+            self.max_corr_force = float(max_corr_force)
+        if max_corr_torque is not None:
+            self.max_corr_torque = float(max_corr_torque)
+        if timeout is not None:
+            self.timeout = float(timeout)

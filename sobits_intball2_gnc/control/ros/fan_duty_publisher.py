@@ -15,6 +15,7 @@ import time
 from typing import Mapping
 
 import rclpy
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from std_msgs.msg import Float64MultiArray, MultiArrayDimension
@@ -58,12 +59,13 @@ class FanDutyPublisher:
     @staticmethod
     def declare_parameters(node: Node) -> None:
         """Declare the parameters this wrapper reads (idempotent)."""
+        static_descriptor = ParameterDescriptor(read_only=True)
         for name, default in (
             ("thrust_allocator.kj", DEFAULT_KJ),
             ("fan_duty_publisher.fan_count", DEFAULT_FAN_COUNT),
         ):
             if not node.has_parameter(name):
-                node.declare_parameter(name, default)
+                node.declare_parameter(name, default, static_descriptor)
 
     @property
     def fan_count(self) -> int:

@@ -7,6 +7,7 @@ from sobits_intball2_gnc.guidance.ros.multi_dof_joint_trajectory_publisher impor
     MultiDOFJointTrajectoryPublisher,
 )
 from sobits_intball2_gnc.guidance.ros.path_publisher import PathPublisher
+from sobits_intball2_gnc.guidance.ros.speed_path_publisher import SpeedPathPublisher
 
 __all__ = [
     "CheckpointPublisher",
@@ -14,4 +15,5 @@ __all__ = [
     "MoveToClient",
     "MultiDOFJointTrajectoryPublisher",
     "PathPublisher",
+    "SpeedPathPublisher",
 ]

@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Direction-vector control logic for IntBall2.
+"""Translation-only direction-vector control logic for IntBall2.
 
 ROS-agnostic logic: turns a body-frame travel direction into a pure-translation
-wrench and (when driven) allocates it to the 8 fans via an injected
+wrench (no torque) and (when driven) allocates it to the 8 fans via an injected
 :class:`ThrustAllocator`, publishing through an injected ``FanDutyPublisher``.
 
-This is one of the building blocks for the future free-path flight program (the
-other being the IMU hover controller). The numeric core ``direction_to_force``
-is a pure function so it is unit-testable without ROS; ROS I/O is done only via
-the injected wrappers.
+Named ``TranslationDirectionController`` (not ``DirectionController``) because
+this is deliberately narrow: only translation, no attitude/rotation command,
+no speed scaling, no deadman/safety handling. A future teleoperation
+orchestrator (docs/main_plan.md's teleope section) would need those on top of
+this; this class is only the "direction vector -> clamped force" building
+block, one of two for the future free-path flight program (the other being
+the IMU hover controller). The numeric core ``direction_to_force`` is a pure
+function so it is unit-testable without ROS; ROS I/O is done only via the
+injected wrappers.
 """
 import math
 
@@ -30,8 +35,11 @@ def direction_to_force(direction, force_magnitude, max_force):
     return [x * scale, y * scale, z * scale]
 
 
-class DirectionController:
+class TranslationDirectionController:
     """Drive IntBall2 along a commanded body-frame direction vector.
+
+    Translation only -- see module docstring for why this is scoped narrower
+    than a general teleoperation command.
 
     Args:
         allocator: injected :class:`ThrustAllocator`.
@@ -57,21 +65,27 @@ class DirectionController:
     def declare_parameters(node) -> None:
         """Declare the parameters this controller reads (idempotent)."""
         for name, default in (
-            ("direction_control.force_magnitude", DEFAULT_FORCE_MAGNITUDE),
-            ("direction_control.max_force", DEFAULT_MAX_FORCE),
+            ("translation_direction_control.force_magnitude", DEFAULT_FORCE_MAGNITUDE),
+            ("translation_direction_control.max_force", DEFAULT_MAX_FORCE),
         ):
             if not node.has_parameter(name):
                 node.declare_parameter(name, default)
 
     @classmethod
-    def from_node(cls, node, allocator=None, fan_publisher=None) -> "DirectionController":
+    def from_node(
+        cls, node, allocator=None, fan_publisher=None
+    ) -> "TranslationDirectionController":
         """Build from the node's declared parameters, injecting wrappers."""
         cls.declare_parameters(node)
         return cls(
             allocator=allocator,
             fan_publisher=fan_publisher,
-            force_magnitude=node.get_parameter("direction_control.force_magnitude").value,
-            max_force=node.get_parameter("direction_control.max_force").value,
+            force_magnitude=node.get_parameter(
+                "translation_direction_control.force_magnitude"
+            ).value,
+            max_force=node.get_parameter(
+                "translation_direction_control.max_force"
+            ).value,
         )
 
     def compute(self, direction):
