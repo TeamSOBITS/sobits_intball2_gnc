@@ -9,6 +9,7 @@ via dependency injection, and serves it as the ``execute_fn`` behind
 
 Configuration comes from ``config/gnc_params.yaml``'s ``guidance`` section.
 """
+import numpy as np
 import rclpy
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -17,6 +18,10 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
 from sobits_intball2_gnc.common.ros.tf_client import TfClient
+from sobits_intball2_gnc.control.utils.singleton_lock import (
+    SingletonLockError,
+    acquire_singleton_lock,
+)
 from sobits_intball2_gnc.guidance.ros.checkpoint_publisher import CheckpointPublisher
 from sobits_intball2_gnc.guidance.ros.ctl_command_action_server import (
     TERMINATE_ABORTED,
@@ -32,10 +37,15 @@ from sobits_intball2_gnc.guidance.utils.guidance_executor import (
     STATUS_SUCCESS,
     GuidanceExecutor,
 )
+from sobits_intball2_gnc.guidance.utils.velocity_estimator import VelocityEstimator
 
 ACTION_NAME = "/gnc/move_to"
 TRAJECTORY_SPEED_PATH_TOPIC = "/gnc/trajectory_path_speed"
 TF_STARTUP_TIMEOUT = 5.0
+# Separate lock file from control_node's (docs/main_plan.md, "guidance_node
+# multi-launch" incident: a leftover process survived kill as a child and
+# answered /gnc/move_to alongside the new one, corrupting goal feedback).
+GUIDANCE_LOCK_PATH = "/tmp/intball2_guidance_node.lock"
 
 _GUIDANCE_PARAM_DEFAULTS = {
     "guidance.target_speed": 0.5,
@@ -43,7 +53,13 @@ _GUIDANCE_PARAM_DEFAULTS = {
     "guidance.align_tolerance_deg": 3.0,
     "guidance.align_timeout": 60.0,
     "guidance.align_settle_time": 0.5,
+    "guidance.align_pos_tolerance_m": 0.05,
+    "guidance.align_pos_settle_time": 0.5,
+    "guidance.align_pos_timeout": 10.0,
+    "guidance.tf_staleness_timeout": 1.0,
     "guidance.rate": 50.0,
+    "guidance.velocity_estimate_rate": 10.0,
+    "guidance.velocity_estimate_alpha": 0.3,
     "guidance.camera_forward_axis.main": [1.0, 0.0, 0.0],
     "guidance.camera_forward_axis.stereo": [0.0, 1.0, 0.0],
     "guidance.attitude_reference_mode": "face_travel",
@@ -52,10 +68,31 @@ _GUIDANCE_PARAM_DEFAULTS = {
     "guidance.look_at_target_frame": "",
     "guidance.face_travel_camera": "main",
     "guidance.align_at_arrival_camera": "main",
+    # Real-time re-planning (docs/guidance_realtime_replanning_design.md):
+    # "static" (default, unchanged prior behavior) or "replanning". Category
+    # B, like attitude_reference_mode -- latched at goal receipt in
+    # _execute_fn below, not applied mid-trajectory.
+    "guidance.trajectory_tracking_mode": "static",
+    # q_des rate limit for both modes (docs/archive/achieved/
+    # 2026-08-24_trajectory_state_carryover_design.md 3-4節). First-cut
+    # default, not yet tuned against real tracking performance.
+    "guidance.max_angular_rate_deg": 90.0,
+    # Remaining-distance threshold below which "replanning" mode
+    # permanently stops re-planning for the rest of that goal (docs/
+    # archive/achieved/2026-08-24_replanning_distance_fallback_decision.md).
+    "guidance.distance_fallback_m": 0.3,
+    # Re-plan cadence for "replanning" mode, deliberately far below `rate`
+    # (docs/archive/achieved/2026-08-24_replan_rate_design.md) -- matches
+    # velocity_estimate_rate since v0 (this tracker's re-plan input) only
+    # refreshes that often anyway. Read-only: implemented as a tick counter
+    # inside _run_trajectory's existing `rate`-paced loop, not a separate
+    # timer, so it only ever takes effect at construction.
+    "guidance.replan_rate_hz": 10.0,
 }
 
 _ATTITUDE_REFERENCE_MODES = frozenset({"fixed", "face_travel", "look_at"})
 _CAMERA_NAMES = frozenset({"main", "stereo"})
+_TRAJECTORY_TRACKING_MODES = frozenset({"static", "replanning"})
 
 
 class GuidanceNode(Node):
@@ -65,8 +102,24 @@ class GuidanceNode(Node):
         super().__init__("guidance_node")
 
         static_descriptor = ParameterDescriptor(read_only=True)
+        # Timer periods are only ever read at node construction (below), so
+        # changing them at runtime would silently have no effect -- read-only
+        # like guidance.rate (docs/guidance_velocity_estimator_design.md 5 節).
+        _STATIC_PARAMS = frozenset({
+            "guidance.rate", "guidance.velocity_estimate_rate",
+            # max_angular_rate_deg/distance_fallback_m: no dynamic-reconfigure
+            # design has been done for these yet (docs/archive/achieved/
+            # 2026-08-24_replanning_distance_fallback_decision.md /
+            # 2026-08-24_trajectory_state_carryover_design.md only decided the
+            # values/semantics, not a Category-A wiring) -- read-only until
+            # that's explicitly designed. replan_rate_hz is read-only for the
+            # same reason as velocity_estimate_rate above (only read at
+            # construction, to compute _replan_every_n_ticks).
+            "guidance.max_angular_rate_deg", "guidance.distance_fallback_m",
+            "guidance.replan_rate_hz",
+        })
         for name, default in _GUIDANCE_PARAM_DEFAULTS.items():
-            descriptor = static_descriptor if name == "guidance.rate" else None
+            descriptor = static_descriptor if name in _STATIC_PARAMS else None
             self.declare_parameter(name, default, descriptor)
         g = lambda name: self.get_parameter("guidance." + name).value  # noqa: E731
 
@@ -109,6 +162,22 @@ class GuidanceNode(Node):
             max_speed=float(g("target_speed")),
         )
 
+        # Guidance-side TF velocity estimate (docs/
+        # guidance_velocity_estimator_design.md): driven by its own low-rate
+        # timer, deliberately slower than Control's 50Hz P+D loop (frequency
+        # separation, docs/guidance_realtime_replanning_design.md 3-2 節).
+        # max_dt reuses tf_staleness_timeout (Category A, forwarded in
+        # _on_set_parameters below) rather than a new parameter, so a
+        # stall-then-burst TF gap is treated the same "stale" way here as it
+        # already is by GuidanceExecutor's own staleness check.
+        self._vel_estimator = VelocityEstimator(
+            alpha=float(g("velocity_estimate_alpha")),
+            max_dt=float(g("tf_staleness_timeout")),
+        )
+        self._vel_timer = self.create_timer(
+            1.0 / float(g("velocity_estimate_rate")), self._on_velocity_timer
+        )
+
         self._executor_logic = GuidanceExecutor(
             self._tf, self._setpoint_pub, self._checkpoint_pub,
             clock_seconds_fn=lambda: self.get_clock().now().nanoseconds * 1e-9,
@@ -134,6 +203,10 @@ class GuidanceNode(Node):
             align_tolerance_deg=float(g("align_tolerance_deg")),
             align_timeout=float(g("align_timeout")),
             align_settle_time=float(g("align_settle_time")),
+            align_pos_tolerance_m=float(g("align_pos_tolerance_m")),
+            align_pos_settle_time=float(g("align_pos_settle_time")),
+            align_pos_timeout=float(g("align_pos_timeout")),
+            tf_staleness_timeout=float(g("tf_staleness_timeout")),
             rate=float(g("rate")),
             camera_forward_axis={
                 "main": g("camera_forward_axis.main"),
@@ -141,6 +214,10 @@ class GuidanceNode(Node):
             },
             speed_path_publisher=self._speed_path_pub,
             max_accel=trajectory_max_force / trajectory_mass,
+            velocity_fn=self._vel_estimator.get,
+            max_angular_rate=np.radians(float(g("max_angular_rate_deg"))),
+            distance_fallback_m=float(g("distance_fallback_m")),
+            replan_rate_hz=float(g("replan_rate_hz")),
         )
 
         self._action_server = CtlCommandActionServer(
@@ -152,13 +229,36 @@ class GuidanceNode(Node):
 
         # Category-A dynamic parameter
         # (docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md):
-        # align_tolerance_deg/align_timeout/align_settle_time are plain
-        # threshold checks the align-wait loop re-reads every iteration, so
-        # they're safe to change
-        # at runtime. target_speed/attitude_speed_threshold are category B
-        # (only take effect via a fresh trajectory generation) and are
-        # intentionally left unhandled here.
+        # align_tolerance_deg/align_timeout/align_settle_time and their
+        # position-error counterparts align_pos_tolerance_m/
+        # align_pos_settle_time/align_pos_timeout, plus tf_staleness_timeout,
+        # are plain threshold checks the align-wait/position-convergence/
+        # TF-liveness logic re-reads every iteration, so they're safe to
+        # change at runtime. Same for velocity_estimate_alpha (VelocityEstimator
+        # re-reads it every update() call, docs/
+        # guidance_velocity_estimator_design.md 5 節). target_speed/
+        # attitude_speed_threshold are category B (only take effect via a
+        # fresh trajectory generation) and are intentionally left unhandled
+        # here; velocity_estimate_rate is a timer period, only read at node
+        # construction, so it's read-only (declared with static_descriptor
+        # above) rather than handled here.
         self.add_on_set_parameters_callback(self._on_set_parameters)
+
+    def _on_velocity_timer(self) -> None:
+        """Feed the latest TF pose into ``VelocityEstimator`` (docs/
+        guidance_velocity_estimator_design.md). Runs on this node's
+        MultiThreadedExecutor on whatever thread services this timer's
+        callback group -- concurrently with ``execute()``'s own TF reads on
+        the action server's ReentrantCallbackGroup thread. Safe: tf2's
+        BufferCore is internally mutex-protected against concurrent lookups,
+        and VelocityEstimator.update()/get() hand off state via a single
+        atomic attribute reassignment (see that module's docstring).
+        """
+        pose = self._tf.get_pose()
+        if pose is None:
+            return
+        pos, _quat, stamp = pose
+        self._vel_estimator.update(pos, stamp)
 
     def _on_set_parameters(self, params) -> SetParametersResult:
         """Route the align-loop's Category-A parameters to GuidanceExecutor.
@@ -176,6 +276,21 @@ class GuidanceNode(Node):
                 self._executor_logic.set_gains(align_timeout=float(p.value))
             elif p.name == "guidance.align_settle_time":
                 self._executor_logic.set_gains(align_settle_time=float(p.value))
+            elif p.name == "guidance.align_pos_tolerance_m":
+                self._executor_logic.set_gains(align_pos_tolerance_m=float(p.value))
+            elif p.name == "guidance.align_pos_settle_time":
+                self._executor_logic.set_gains(align_pos_settle_time=float(p.value))
+            elif p.name == "guidance.align_pos_timeout":
+                self._executor_logic.set_gains(align_pos_timeout=float(p.value))
+            elif p.name == "guidance.tf_staleness_timeout":
+                self._executor_logic.set_gains(tf_staleness_timeout=float(p.value))
+                # Also VelocityEstimator's max_dt: this param doubles as its
+                # stale-gap threshold too (docs/
+                # guidance_velocity_estimator_design.md 5 節), so both
+                # consumers must stay in sync.
+                self._vel_estimator.set_gains(max_dt=float(p.value))
+            elif p.name == "guidance.velocity_estimate_alpha":
+                self._vel_estimator.set_gains(alpha=float(p.value))
             elif p.name == "guidance.attitude_reference_mode":
                 if str(p.value) not in _ATTITUDE_REFERENCE_MODES:
                     return SetParametersResult(
@@ -190,6 +305,13 @@ class GuidanceNode(Node):
                         successful=False,
                         reason="%s must be one of %s"
                         % (p.name, sorted(_CAMERA_NAMES)),
+                    )
+            elif p.name == "guidance.trajectory_tracking_mode":
+                if str(p.value) not in _TRAJECTORY_TRACKING_MODES:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="guidance.trajectory_tracking_mode must be "
+                        "one of %s" % sorted(_TRAJECTORY_TRACKING_MODES),
                     )
             # Any other declared parameter is Category B/C (latched or
             # static) -- accepted but intentionally not applied at runtime.
@@ -227,6 +349,9 @@ class GuidanceNode(Node):
             align_at_arrival_camera=str(
                 self.get_parameter("guidance.align_at_arrival_camera").value
             ),
+            trajectory_tracking_mode=str(
+                self.get_parameter("guidance.trajectory_tracking_mode").value
+            ),
         )
         if status == STATUS_SUCCESS:
             return TERMINATE_SUCCESS
@@ -236,6 +361,16 @@ class GuidanceNode(Node):
 
 
 def main(args=None) -> None:
+    # Refuse to start a second guidance_node in this container: see
+    # GUIDANCE_LOCK_PATH's comment above for the incident this prevents.
+    import sys
+
+    try:
+        lock_file = acquire_singleton_lock(GUIDANCE_LOCK_PATH)  # noqa: F841
+    except SingletonLockError as exc:
+        print("guidance: %s" % exc, file=sys.stderr)
+        sys.exit(1)
+
     rclpy.init(args=args)
     node = GuidanceNode()
     executor = MultiThreadedExecutor()

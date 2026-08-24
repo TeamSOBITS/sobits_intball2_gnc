@@ -3,6 +3,9 @@
 import numpy as np
 import pytest
 
+from sobits_intball2_gnc.guidance.segment_time.base_segment_time_allocator import (
+    SegmentTimeInfeasibleError,
+)
 from sobits_intball2_gnc.guidance.segment_time.heuristic_segment_time_allocator import (
     HeuristicSegmentTimeAllocator,
 )
@@ -90,3 +93,91 @@ def test_max_accel_triangular_profile_for_short_segment():
 def test_rejects_non_positive_max_accel():
     with pytest.raises(ValueError):
         HeuristicSegmentTimeAllocator(target_speed=1.0, max_accel=0.0)
+
+
+# --- v0 (start velocity) extension --------------------------------------
+# docs/archive/achieved/session_2026-08-24_heuristic_segment_time_allocator_v0_extension.md 2 節/3 節:
+# T_min/T_max below come from the exact cubic-Hermite polynomial
+# (m0=v_parallel, m1=0), not the rest-to-rest _trapezoidal_time model above.
+
+
+def test_v0_requires_max_accel():
+    allocator = HeuristicSegmentTimeAllocator(target_speed=1.0)  # max_accel=None
+    with pytest.raises(ValueError):
+        allocator.allocate([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], v0=[0.1, 0.0, 0.0])
+
+
+def test_v0_rejects_wrong_shape():
+    allocator = HeuristicSegmentTimeAllocator(target_speed=1.0, max_accel=1.0)
+    with pytest.raises(ValueError):
+        allocator.allocate([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], v0=[0.1, 0.0])
+
+
+def test_v0_only_affects_first_segment():
+    # v_parallel=2.0 -> T_max=3d/v0=1.5s, well below the rest-to-rest
+    # trapezoidal estimate (2.5s) this config would otherwise use, so the
+    # v0-aware cap is guaranteed to actually change segment 0.
+    waypoints = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]]
+    allocator = HeuristicSegmentTimeAllocator(target_speed=0.5, max_accel=1.0)
+    without_v0 = allocator.allocate(waypoints)
+    with_v0 = allocator.allocate(waypoints, v0=[2.0, 0.0, 0.0])
+    assert not np.isclose(with_v0[0], without_v0[0])
+    assert np.isclose(with_v0[1], without_v0[1])
+
+
+def test_v0_raises_time_above_naive_estimate():
+    # d=1, target_speed=5.0, a_max=1.0: rest-to-rest triangle time = 2.0
+    # (see test_max_accel_triangular_profile_for_short_segment's formula),
+    # independent of v0 in this small-v0 regime. But the v0-aware T_min at
+    # a near-zero forward speed converges to the *exact* rest-to-rest bound
+    # sqrt(6d/a_max)=sqrt(6)~=2.449 -- strictly larger than the 2.0 the
+    # (approximate) rest-to-rest model above would give -- so the naive
+    # value must be raised. v0 is kept tiny (not exactly 0) so this also
+    # exercises the v_parallel>0 code path, not the v_parallel<=0 fallback.
+    allocator = HeuristicSegmentTimeAllocator(target_speed=5.0, max_accel=1.0)
+    segment_times = allocator.allocate(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], v0=[1e-6, 0.0, 0.0]
+    )
+    assert np.isclose(segment_times[0], np.sqrt(6.0), atol=1e-3)
+
+
+def test_v0_caps_time_below_naive_estimate():
+    # d=1, target_speed=0.1 (slow cruise -> long rest-to-rest trapezoid time
+    # ~10.1s), but v0=2.0 m/s residual speed -> T_max=3d/v0=1.5s. The naive
+    # (v0-unaware) estimate would badly overshoot the target; it must be
+    # capped down to T_max, not just floored.
+    allocator = HeuristicSegmentTimeAllocator(target_speed=0.1, max_accel=1.0)
+    segment_times = allocator.allocate(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], v0=[2.0, 0.0, 0.0]
+    )
+    assert np.isclose(segment_times[0], 1.5, atol=1e-6)
+
+
+def test_v0_negative_parallel_component_falls_back_to_exact_rest_to_rest():
+    # v0 points away from the target (e.g. TF noise, or a residual velocity
+    # from an overshoot) -- the parallel component is clamped to 0, and the
+    # exact rest-to-rest bound sqrt(6d/a_max) is used (design doc 2-4 節: this
+    # is *not* the same number as the old approximate trapezoidal triangle
+    # formula, which underestimates by a factor of sqrt(1.5)).
+    allocator = HeuristicSegmentTimeAllocator(target_speed=5.0, max_accel=1.0)
+    segment_times = allocator.allocate(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], v0=[-1.0, 0.0, 0.0]
+    )
+    assert np.isclose(segment_times[0], np.sqrt(6.0), atol=1e-6)
+
+
+def test_v0_aware_bounds_never_infeasible_for_positive_v_parallel():
+    # docs/archive/achieved/session_2026-08-24_heuristic_segment_time_allocator_v0_extension.md 3 節/
+    # _v0_aware_bounds's docstring: T_min < T_max is provable for any
+    # d > 0, a_max > 0, v_parallel > 0 -- spot-check across a wide range
+    # (including regimes prone to floating-point cancellation) that no
+    # SegmentTimeInfeasibleError-worthy T_min > T_max case slips through.
+    rng = np.random.default_rng(0)
+    for _ in range(2000):
+        d = 10.0 ** rng.uniform(-6, 2)
+        v_parallel = 10.0 ** rng.uniform(-6, 2)
+        a_max = 10.0 ** rng.uniform(-6, 2)
+        t_min, t_max = HeuristicSegmentTimeAllocator._v0_aware_bounds(
+            d, v_parallel, a_max
+        )
+        assert t_min <= t_max

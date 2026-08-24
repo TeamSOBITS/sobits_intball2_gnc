@@ -2,10 +2,10 @@
 (docs/architecture_guidelines.md 5 節: shared properties every
 BaseTrajectoryGenerator implementation must satisfy).
 
-MinSnapTrajectoryGenerator is intentionally NOT parametrized here yet: its
-body (min_snap.solve_min_snap) is unimplemented (separate implementer, see
-docs/main_plan.md Phase 2), so it cannot satisfy this contract today. Add it
-to GENERATOR_CLASSES once that core lands.
+MinSnapTrajectoryGenerator is intentionally NOT parametrized here: its core
+solve was decided not to be implemented (2026-08-24, see
+guidance/trajectory_generation/min_snap_trajectory_generator.py's module
+docstring), so it cannot satisfy this contract.
 """
 import numpy as np
 import pytest

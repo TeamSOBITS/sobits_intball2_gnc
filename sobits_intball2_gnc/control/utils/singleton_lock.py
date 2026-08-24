@@ -29,6 +29,6 @@ def acquire_singleton_lock(path: str = DEFAULT_LOCK_PATH):
     except OSError:
         lock_file.close()
         raise SingletonLockError(
-            "another control_node process already holds the lock at %r" % path
+            "another process already holds the lock at %r" % path
         )
     return lock_file

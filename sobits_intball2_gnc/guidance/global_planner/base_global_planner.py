@@ -2,9 +2,10 @@
 """Common interface for global path planners (ROS-agnostic, pure).
 
 A global planner turns a start/goal pair into a coarse waypoint list --
-straight-line reference-frame points, no timing -- that
-:mod:`sobits_intball2_gnc.guidance.utils.min_snap` later turns into a smooth,
-time-parameterized trajectory. This is the "大域経路計画" stage from
+straight-line reference-frame points, no timing -- that a
+:class:`~sobits_intball2_gnc.guidance.trajectory_generation.base_trajectory_generator.BaseTrajectoryGenerator`
+later turns into a smooth, time-parameterized trajectory. This is the
+"大域経路計画" stage from
 ``docs/main_plan.md`` (Phase 4), kept separate from trajectory generation
 (``docs/future_design_notes.md`` 3-1: "経路" vs "軌道" must not be confused).
 

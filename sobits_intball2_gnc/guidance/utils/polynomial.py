@@ -3,13 +3,15 @@
 
 Not specific to min-snap: given a coefficient vector, evaluates the
 polynomial or one of its derivatives at a scalar point. Kept separate from
-:mod:`sobits_intball2_gnc.guidance.utils.min_snap` because "evaluate a
-polynomial from known coefficients" is ordinary math, not the min-snap
-optimization itself (see ``docs/min_snap_interface_contract.md`` 1 節).
+any trajectory generator because "evaluate a polynomial from known
+coefficients" is ordinary math, not a generator's own algorithm (see
+``docs/minimum_snap/min_snap_interface_contract.md`` 1 節).
 
 Coefficients are stored in **ascending** power order (``coeffs[k]`` is the
-coefficient of ``tau**k``), matching ``min_snap.py``'s output layout --
-the opposite of ``numpy.polyval``'s convention.
+coefficient of ``tau**k``), matching every
+:class:`~sobits_intball2_gnc.guidance.trajectory_generation.base_trajectory_generator.BaseTrajectoryGenerator`
+implementation's output layout -- the opposite of ``numpy.polyval``'s
+convention.
 """
 import numpy as np
 

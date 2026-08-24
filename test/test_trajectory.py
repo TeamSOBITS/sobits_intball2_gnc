@@ -121,6 +121,65 @@ def test_max_angular_rate_none_preserves_prior_instantaneous_behavior():
     assert np.allclose(q_unlimited, q_limited)
 
 
+def _stub_coeffs_with_velocity(p0, v):
+    """Single-segment stub starting at ``p0`` with constant velocity ``v`` --
+    for exercising ``replace_coeffs``'s state-carryover behavior against a
+    re-plan, like a real re-planning tracker would produce (docs/archive/
+    achieved/2026-08-24_trajectory_state_carryover_design.md)."""
+    coeffs = np.zeros((1, 3, 8))
+    for axis in range(3):
+        coeffs[0, axis, 0] = p0[axis]
+        coeffs[0, axis, 1] = v[axis]
+    return coeffs
+
+
+def test_replace_coeffs_preserves_last_q_des_and_last_sample_t():
+    traj = Trajectory(
+        WAYPOINTS, SEGMENT_TIMES, _straight_line_coeffs(),
+        attitude_speed_threshold=0.05,
+    )
+    traj.sample(0.0)
+    _p, _v, _a, q_before = traj.sample(3.0)  # v = [0, 0.5, 0] -> q_des rotated
+
+    # Re-plan at global t=5.0: a fresh single-segment leg with the SAME
+    # velocity direction traj was already tracking, so q_des shouldn't need
+    # to move at all -- if replace_coeffs had reset _last_q_des to identity
+    # (docs/guidance_realtime_replanning_design.md 6-6 節's failure mode),
+    # this sample would jump back toward facing +X instead of staying at q_before.
+    traj.replace_coeffs(
+        [[1.0, 0.5, 0.0], [1.0, 2.0, 0.0]], [3.0],
+        _stub_coeffs_with_velocity([1.0, 0.5, 0.0], [0.0, 0.5, 0.0]), 5.0,
+    )
+    _p, _v, _a, q_after = traj.sample(5.0)
+    assert np.allclose(q_after, q_before, atol=1e-6)
+
+
+def test_replace_coeffs_evaluates_new_polynomial_in_local_time():
+    traj = Trajectory(WAYPOINTS, SEGMENT_TIMES, _straight_line_coeffs())
+    traj.replace_coeffs(
+        [[1.0, 0.5, 0.0], [1.0, 2.0, 0.0]], [3.0],
+        _stub_coeffs_with_velocity([1.0, 0.5, 0.0], [0.5, 0.0, 0.0]), 5.0,
+    )
+    # t_local = 0 at the moment of replan (global t == t_origin == 5.0).
+    p_at_origin, v_at_origin, _a, _q = traj.sample(5.0)
+    assert np.allclose(p_at_origin, [1.0, 0.5, 0.0])
+    assert np.allclose(v_at_origin, [0.5, 0.0, 0.0])
+    # One second later: local tau = 1.0, not global t = 6.0.
+    p_later, _v, _a, _q = traj.sample(6.0)
+    assert np.allclose(p_later, [1.5, 0.5, 0.0])
+
+
+def test_global_total_duration_accounts_for_replan_origin():
+    traj = Trajectory(WAYPOINTS, SEGMENT_TIMES, _straight_line_coeffs())
+    assert traj.global_total_duration == traj.total_duration == 4.0
+    traj.replace_coeffs(
+        [[1.0, 0.5, 0.0], [1.0, 2.0, 0.0]], [3.0],
+        _stub_coeffs_with_velocity([1.0, 0.5, 0.0], [0.5, 0.0, 0.0]), 5.0,
+    )
+    assert traj.total_duration == 3.0
+    assert traj.global_total_duration == 8.0
+
+
 def test_initial_q_des_seeds_first_sample_instead_of_identity():
     # A min-jerk trajectory has v=0 at t=0 by construction, so without seeding,
     # sample(0) would fall back to compute_q_des's IDENTITY_QUAT default --

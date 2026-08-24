@@ -72,3 +72,5 @@ openspec/
 /.claude
 /.github
 CLAUDE.md
+docs/results/
+docs/archive/
