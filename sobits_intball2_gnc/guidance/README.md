@@ -1,6 +1,6 @@
-# guidance （Guidance: GNCの「G」）
+# Guidance
 
-waypoint列から、時間の関数としての滑らかな目標軌道（位置・速度・加速度・目標姿勢）を生成し、`/gnc/move_to`アクションとしてgoal駆動で機体を動かすモジュールです。**`min_snap.py`のコアロジックのみ未実装**（別担当者、詳細: `docs/main_plan.md`）で、それ以外（`guidance_node`本体・move-to統合含む）は実装済みです。
+waypoint列から、時間の関数としての滑らかな目標軌道（位置・速度・加速度・目標姿勢）を生成し、`/gnc/move_to`アクションとしてgoal駆動で機体を動かすモジュールです。実際に使われている軌道生成は`HermiteSplineTrajectoryGenerator`（C1連続のみ保証する劣化版）。min-snapのコアロジックは実装しない方針（2026-08-24決定）で、`min_snap_trajectory_generator.py`はスケルトンのまま残しています。それ以外（`guidance_node`本体・move-to統合含む）は実装済みです。
 
 ## 構成
 
@@ -22,18 +22,17 @@ guidance/
 ├── segment_time/                         # 区間時間配分
 │   ├── base_segment_time_allocator.py
 │   ├── heuristic_segment_time_allocator.py   # distance/target_speed + 台形速度プロファイルの時間下限
-│   └── optimal_segment_time_allocator.py     # シグネチャ確定のみ、本体はmin_snap待ち
+│   └── optimal_segment_time_allocator.py     # シグネチャ確定のみ、本体は未実装（min-snap前提のためスコープ外）
 ├── trajectory_generation/                # waypoints+区間時間 -> 多項式係数
 │   ├── base_trajectory_generator.py
-│   ├── hermite_spline_trajectory_generator.py  # 劣化版（C1連続のみ保証）、実装済み
-│   └── min_snap_trajectory_generator.py      # solve_min_snapへのアダプタ、本体待ち
+│   ├── hermite_spline_trajectory_generator.py  # 劣化版（C1連続のみ保証）、実装済み・実際に使用中
+│   └── min_snap_trajectory_generator.py      # スケルトンのみ、コアロジックは実装しない方針（2026-08-24決定）
 └── utils/                                # ROS非依存のロジック
     ├── polynomial.py                         # 多項式（微分）評価
     ├── trajectory.py                         # Trajectory: sample(t) -> (p, v, a, q_des)
     ├── attitude_reference.py                 # v_des(t) -> q_des(t)（進行方向を向く姿勢参照）
-    ├── guidance_executor.py                  # GuidanceExecutor: 1件のCtlCommand goalを
-    │                                          # pre-align→軌道追従→arrival-alignで駆動（cancel対応）
-    └── min_snap.py                           # waypoints + 時間配分 -> 多項式係数（コアロジック未実装）
+    └── guidance_executor.py                  # GuidanceExecutor: 1件のCtlCommand goalを
+                                               # pre-align→軌道追従→arrival-alignで駆動（cancel対応）
 ```
 
 ## `guidance.py`（GuidanceNode）の使い方
@@ -75,6 +74,9 @@ ros2 run sobits_intball2_gnc guidance --ros-args --params-file \
 |---|---|---|
 | `guidance.align_tolerance_deg` | 事前/事後アラインメントの収束判定角度 [deg] | `3.0` |
 | `guidance.align_timeout` | 事前/事後アラインメントの安全カットオフ [s] | `60.0` |
+| `guidance.align_pos_tolerance_m` | 軌道追従（`_run_trajectory`）の到着判定に使う位置誤差許容値 [m]。計画所要時間経過後、この誤差以下に収まるまで待つ（`align_tolerance_deg`の位置版、独立パラメータ） | `0.05` |
+| `guidance.align_pos_settle_time` | 上記の許容値内に連続して留まるべき最小時間 [s]（オーバーシュート通過の誤検知防止、`align_settle_time`と同じ目的） | `0.5` |
+| `guidance.align_pos_timeout` | 位置収束待ちの安全カットオフ [s]。超えると警告ログを出して進行（`align_timeout`より短い——並進残差を詰めるだけの待ちのため） | `10.0` |
 | `guidance.attitude_reference_mode` | 移動中の姿勢参照モード（`fixed`/`face_travel`/`look_at`、goal受理時にラッチ）。`look_at`は未実装で`face_travel`にフォールバック（警告ログ） | `face_travel` |
 | `guidance.pre_align` | 出発前の事前整列を行うか（goal受理時にラッチ、`attitude_reference_mode=face_travel`のときのみ効く） | `true` |
 | `guidance.align_at_arrival` | 到着後、再整列するか（目標は`align_at_arrival_camera`で決まる。goal受理時にラッチ） | `true` |
@@ -90,7 +92,7 @@ ros2 run sobits_intball2_gnc guidance --ros-args --params-file \
 ros2 run sobits_intball2_gnc move_to_client near_dock
 ```
 
-内部で`iss_body <- near_dock`をTFで解決し、`/gnc/move_to`へgoal送信して完了までfeedback（`time_to_go`・`pose_to_go`）をログ表示する。**注意**: `pose_to_go`は計画軌道（open-loop）の残差であり実TF追従の証明にはならない。実際に到達したかは`ros2 run tf2_ros tf2_echo iss_body body`で直接確認すること（詳細: `docs/archive/achieved/main_plan_completed_phases.md`のGuidanceノード統合の項）。
+内部で`iss_body <- near_dock`をTFで解決し、`/gnc/move_to`へgoal送信して完了までfeedback（`time_to_go`・`pose_to_go`）をログ表示する。**注意**: `pose_to_go`は計画軌道（open-loop）の残差であり実TF追従の証明にはならない。実際に到達したかは`ros2 run tf2_ros tf2_echo iss_body body`で直接確認すること（詳細: `docs/archive/achieved/2026-08-20_main_plan_completed_phases.md`のGuidanceノード統合の項）。
 
 ### goalを送る（標準の`ros2 action` CLI、任意の座標へ）
 
@@ -107,7 +109,7 @@ ros2 action send_goal /gnc/move_to ib2_msgs/action/CtlCommand \
 ### 実行の流れ（`GuidanceExecutor.execute()`）
 
 1. 現在姿勢と経路初期進行方向のズレが大きい場合、事前整列（`/gnc/checkpoints`で静止保持、最大`align_timeout`秒）
-2. `HeuristicSegmentTimeAllocator`→`HermiteSplineTrajectoryGenerator`→`Trajectory`で生成した軌道を`/gnc/trajectory_setpoint`へ追従再生
+2. `HeuristicSegmentTimeAllocator`→`HermiteSplineTrajectoryGenerator`→`Trajectory`で生成した軌道を`/gnc/trajectory_setpoint`へ追従再生。計画所要時間が経過しても、実TF位置の誤差が`align_pos_tolerance_m`以下に`align_pos_settle_time`秒連続して収まるまで（最大`align_pos_timeout`秒）は次段へ進まない（`docs/archive/achieved/2026-08-24_align_at_arrival_position_based.md`）
 3. 到着後、目標姿勢とのズレが大きければ整列（同じく`/gnc/checkpoints`、最大`align_timeout`秒）
 
 現状`face_travel=True`・`face_travel_camera="main"`・`align_at_arrival=True`固定（`CtlCommand.action`にオプションを渡すフィールドが無いため、インターフェース拡張待ち）。
@@ -116,4 +118,4 @@ ros2 action send_goal /gnc/move_to ib2_msgs/action/CtlCommand \
 
 `path_publisher`・`multi_dof_joint_trajectory_publisher`・`checkpoint_publisher`・`ctl_command_action_server`は`console_scripts`登録済みだが、通常は`guidance_node`から利用するライブラリとしての位置づけで、単体`ros2 run`はデバッグ用途のみ（各ファイルの`main()`docstring参照）。
 
-`min_snap.py`が未完成の間の追加の動作確認手段として、`test/manual/`のスタンドインスクリプトで軌道を直接publishする方法もある（詳細: `test/manual/README.md`）。
+min-snapのコアロジックが未実装（実装しない方針）な状態での追加の動作確認手段として、`test/manual/`のスタンドインスクリプトで軌道を直接publishする方法もある（詳細: `test/manual/README.md`）。

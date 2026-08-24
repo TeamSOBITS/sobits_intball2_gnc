@@ -117,7 +117,37 @@
       # 2026-08-21_pre_align_skipped_low_speed_bug.md). Untuned initial
       # guess -- revisit against the observed oscillation period.
       align_settle_time: 0.5        # [s]
+      # Position-error counterpart of align_tolerance_deg/align_settle_time/
+      # align_timeout above, checked by _run_trajectory once its planned
+      # duration elapses (docs/align_at_arrival_position_based_plan.md).
+      # Kept as separate parameters, not shared with the attitude trio --
+      # translation and attitude correction have different loop dynamics
+      # (mass vs. inertia, kp_pos vs. kp_att).
+      align_pos_tolerance_m: 0.05   # move-to arrival convergence tolerance [m]. Untuned initial guess -- revisit against observed arrival error (measured 1.2mm-6cm across runs, docs/archive/achieved/).
+      align_pos_settle_time: 0.5    # [s] -- same settle-time reasoning as align_settle_time
+      # Deliberately much shorter than align_timeout (60s): this only waits
+      # out the residual translation error left after the planned duration
+      # elapses (expected: a few cm, settled by the P+D trajectory_controller
+      # in a few seconds), not a whole goal's worth of safety margin.
+      align_pos_timeout: 10.0       # [s]
+      # TF liveness (docs/guidance_realtime_replanning_design.md 6-8/7-4): a
+      # pose is treated as stale once its transform's stamp stops advancing
+      # for this long, timed on this node's own sim clock -- mirrors
+      # tf_correction.timeout's convention (stamps are compared to other
+      # stamps, never to this process's clock). A stale pose is treated the
+      # same as no pose at all (execute() aborts on its initial fetch;
+      # _run_trajectory/_align_to skip that tick's convergence check).
+      tf_staleness_timeout: 1.0     # stamp stalled this long -> treat as no TF [s]
       rate: 50.0                    # /gnc/trajectory_setpoint publish rate [Hz]
+      # Guidance-side TF velocity estimator (docs/
+      # guidance_velocity_estimator_design.md), independent of
+      # TrajectoryController's own estimator. Deliberately much lower than
+      # `rate` (50Hz Control P+D loop) -- frequency separation to avoid
+      # coupling two independent feedback loops that both read the same TF
+      # (docs/guidance_realtime_replanning_design.md 3-2 節). Untuned initial
+      # guess -- revisit against measured TF position noise.
+      velocity_estimate_rate: 10.0  # finite-difference update rate [Hz]
+      velocity_estimate_alpha: 0.3  # EMA blend weight (1.0 = no filtering), same convention/default as trajectory_controller.vel_filter_alpha
       # Attitude-reference mode for the in-trajectory q_des(t) (docs/
       # movement_mode_design.md): "fixed" (don't rotate while moving),
       # "face_travel" (face direction of travel, compute_q_des), or
@@ -135,6 +165,25 @@
       # camera (e.g. "stereo") aligns so that camera's axis faces where the
       # main camera would have under q_target (compute_camera_relative_quat).
       align_at_arrival_camera: main
+      # Real-time re-planning (docs/guidance_realtime_replanning_design.md):
+      # "static" (default, open-loop single trajectory, unchanged prior
+      # behavior) or "replanning" (continuously re-plans the translation leg
+      # from live TF). Latched at goal receipt, like attitude_reference_mode.
+      trajectory_tracking_mode: static
+      # q_des rate limit (docs/archive/achieved/
+      # 2026-08-24_trajectory_state_carryover_design.md 3-4節), applied in
+      # both tracking modes. Untuned initial guess.
+      max_angular_rate_deg: 90.0
+      # trajectory_tracking_mode=replanning only: remaining-distance
+      # threshold below which re-planning permanently stops for the rest of
+      # that goal (docs/archive/achieved/
+      # 2026-08-24_replanning_distance_fallback_decision.md).
+      distance_fallback_m: 0.3
+      # trajectory_tracking_mode=replanning only: re-plan cadence, far below
+      # `rate` above by design (docs/archive/achieved/
+      # 2026-08-24_replan_rate_design.md) -- matches velocity_estimate_rate
+      # since that's this feature's actual v0 refresh rate.
+      replan_rate_hz: 10.0
 
     control:
       # Period of the periodic "who owns the fans" status log [s].
@@ -278,7 +327,19 @@
       # zeta=0.9 value (2*0.9*sqrt(kp_att*I) per axis, I=[0.0470, 0.0375,
       # 0.0179] kg*m^2 x/y/z) -- see kp_att_align's comment above.
       kd_att_align: [0.4635, 0.4077, 0.264]   # relative angular-rate error -> torque gain [Nm/(rad/s)], align phase
-      kd_att_hold: [0.4635, 0.4077, 0.264]    # same, hold phase (untuned separately yet)
+      # 2026-08-24: halved from kd_att_align's value. At the align-phase gain,
+      # steady hover showed a persistent ~0.7deg peak-to-peak / ~0.67s-period
+      # attitude jitter -- too fast to be gain-margin oscillation against the
+      # kp_att_hold=0.20 design (undamped natural period ~2.8s), so it was
+      # diagnosed as finite-difference omega_err noise (TF differentiated at
+      # poll_rate, only att_filter_alpha=0.3 EMA'd) being amplified by this
+      # gain rather than real angular-rate error being damped. Live
+      # `ros2 param set` test at half this value cut peak-to-peak to ~0.06deg
+      # (~1/11, nonlinear vs. the 2x gain change -- consistent with noise
+      # amplification, not a linear damping effect) with period lengthening
+      # to ~1.23s. kd_att_align (used only during active alignment, where
+      # tracking bandwidth matters more than hold-stillness) left untouched.
+      kd_att_hold: [0.23175, 0.20385, 0.132]  # relative angular-rate error -> torque gain [Nm/(rad/s)], hold phase
       # Angle threshold [deg] below which PoseCorrector considers an
       # is_align=True checkpoint converged and switches from the align gain
       # to the hold gain above. Independent of guidance.align_tolerance_deg

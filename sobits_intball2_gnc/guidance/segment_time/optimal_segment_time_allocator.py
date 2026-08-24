@@ -13,13 +13,14 @@ lines 541-604): minimize ``f(T)`` s.t. ``sum(T) == tm``, ``T >= 0``, where
 vector; directional derivatives are estimated by finite differences and
 gradient descent uses backtracking line search.
 
-Not yet implemented: ``f(T)`` requires calling
-:func:`sobits_intball2_gnc.guidance.utils.min_snap.solve_min_snap` (or its
-QP objective value) per candidate ``T``, so the body is blocked on that
-module's core KKT logic (``docs/min_snap_interface_contract.md``, separate
-implementer). See ``docs/main_plan.md`` Phase 2. The class/method signature
-below (return type, constructor DI point for the min-snap solver) is decided
-now so callers and tests can be written against it before the body lands.
+Not implemented: ``f(T)`` requires the actual min-snap QP objective value per
+candidate ``T``, i.e. a working
+:class:`~sobits_intball2_gnc.guidance.trajectory_generation.min_snap_trajectory_generator.MinSnapTrajectoryGenerator`.
+That core solve was decided not to be implemented (2026-08-24, see that
+module's docstring), so this class has no path to a working body for now.
+The class/method signature below (return type, constructor DI point for the
+min-snap solver) is kept as documentation of the original design in case
+this is revisited.
 """
 from sobits_intball2_gnc.guidance.segment_time.base_segment_time_allocator import (
     BaseSegmentTimeAllocator,
@@ -37,9 +38,10 @@ class OptimalSegmentTimeAllocator(BaseSegmentTimeAllocator):
                 injected rather than imported directly so this stays testable
                 without a real min-snap implementation (DI, matching this
                 project's existing pure-function/no-hidden-import style).
-                ``f(T)`` (the min-snap cost) is derived from this solver's
-                result; the exact cost extraction is TBD once
-                ``solve_min_snap`` exists.
+                ``f(T)`` (the min-snap cost) would be derived from this
+                solver's result; the exact cost extraction was never
+                finalized (see module docstring: the core solve won't be
+                implemented).
             initial_allocator: a :class:`BaseSegmentTimeAllocator` (e.g.
                 :class:`~sobits_intball2_gnc.guidance.segment_time.heuristic_segment_time_allocator.HeuristicSegmentTimeAllocator`)
                 used to produce the starting ``T`` for gradient descent.
@@ -54,15 +56,19 @@ class OptimalSegmentTimeAllocator(BaseSegmentTimeAllocator):
         self.step_size = step_size
         self.finite_diff_h = finite_diff_h
 
-    def allocate(self, waypoints):
+    def allocate(self, waypoints, v0=None):
         """Return the gradient-descent-refined ``segment_times`` array.
 
         Total time (``sum(segment_times)``) is held fixed at the
         ``initial_allocator``'s output; only its distribution across segments
         changes. Same return contract as
         :class:`~sobits_intball2_gnc.guidance.segment_time.heuristic_segment_time_allocator.HeuristicSegmentTimeAllocator`
-        (shape ``(n_waypoints - 1,)``).
+        (shape ``(n_waypoints - 1,)``), including the ``v0`` parameter (see
+        ``BaseSegmentTimeAllocator.allocate``'s docstring) -- accepted here
+        only to keep the contract in sync (``docs/architecture_guidelines.md``
+        3 節); this stub has no body to consume it.
         """
         raise NotImplementedError(
-            "blocked on solve_min_snap's core KKT logic; see module docstring"
+            "min-snap core solve was not implemented (2026-08-24 decision); "
+            "see module docstring"
         )

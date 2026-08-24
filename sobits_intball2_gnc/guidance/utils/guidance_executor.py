@@ -33,11 +33,19 @@ from sobits_intball2_gnc.guidance.trajectory_generation import (
     hermite_spline_trajectory_generator as _hermite,
 )
 from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle
+from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_trajectory_tracker import (
+    ReplanningTrajectoryTracker,
+)
+from sobits_intball2_gnc.guidance.trajectory_tracking.static_trajectory_tracker import (
+    StaticTrajectoryTracker,
+)
 from sobits_intball2_gnc.guidance.utils.attitude_reference import (
     compute_camera_relative_quat,
     compute_q_des,
 )
 from sobits_intball2_gnc.guidance.utils.trajectory import Trajectory
+
+TRAJECTORY_TRACKING_MODES = frozenset({"static", "replanning"})
 
 STATUS_SUCCESS = "success"
 STATUS_ABORTED = "aborted"
@@ -70,11 +78,16 @@ class GuidanceExecutor:
             + a short sleep); this class never touches ``rclpy`` directly.
         logger: object with ``.info``/``.warn`` (e.g. a node's logger).
         target_speed/attitude_speed_threshold/align_tolerance_deg/
-            align_timeout/rate: see ``config/gnc_params.yaml``'s
-            ``guidance`` section.
+            align_timeout/rate/tf_staleness_timeout: see
+            ``config/gnc_params.yaml``'s ``guidance`` section.
         camera_forward_axis: ``{camera_name: [x, y, z]}`` body-frame forward
             axis per ``face_travel_camera`` option (default:
             ``DEFAULT_CAMERA_FORWARD_AXIS``, TF-measured 2026-08-20).
+        velocity_fn: optional callable returning the latest
+            ``VelocityEstimator.get()`` result (``docs/
+            guidance_velocity_estimator_design.md``). Not yet consumed by
+            this class -- accepted for a future task (feeding v_now into
+            ``HeuristicSegmentTimeAllocator``).
     """
 
     def __init__(self, tf_client, setpoint_publisher, checkpoint_publisher,
@@ -83,7 +96,11 @@ class GuidanceExecutor:
                  align_tolerance_deg=3.0, align_timeout=60.0,
                  align_settle_time=0.5, rate=50.0,
                  camera_forward_axis=None, speed_path_publisher=None,
-                 path_preview_points=20, max_accel=None):
+                 path_preview_points=20, max_accel=None,
+                 align_pos_tolerance_m=0.05, align_pos_settle_time=0.5,
+                 align_pos_timeout=10.0, tf_staleness_timeout=1.0,
+                 velocity_fn=None, max_angular_rate=None,
+                 distance_fallback_m=0.3, replan_rate_hz=10.0):
         self._tf = tf_client
         self._setpoint_pub = setpoint_publisher
         self._checkpoint_pub = checkpoint_publisher
@@ -110,7 +127,66 @@ class GuidanceExecutor:
         # target again once the swing continued past it, see
         # docs/archive/achieved/2026-08-21_pre_align_skipped_low_speed_bug.md).
         self._align_settle_time = float(align_settle_time)
+        # Position-error counterpart of the attitude align_tolerance_rad/
+        # align_settle_time/align_timeout trio above, but kept as separate
+        # parameters (not shared) -- position and attitude correction have
+        # different loop dynamics (mass vs. inertia, kp_pos vs. kp_att), same
+        # reasoning PoseCorrector already applies by keeping its own
+        # align_tolerance_deg/align_settle_time independent of this class's.
+        # See docs/align_at_arrival_position_based_plan.md.
+        self._align_pos_tolerance_m = float(align_pos_tolerance_m)
+        self._align_pos_settle_time = float(align_pos_settle_time)
+        # Deliberately much shorter than align_timeout (60s default): this
+        # only waits out the residual translation error left after
+        # _run_trajectory's planned duration elapses (expected: a few cm,
+        # settled by the existing P+D trajectory_controller in a few
+        # seconds), not a whole goal's worth of safety margin.
+        self._align_pos_timeout = float(align_pos_timeout)
+        # TF liveness (docs/guidance_realtime_replanning_design.md 6-8/7-4):
+        # a TF lookup is a pull from tf2's buffer and keeps succeeding after
+        # the publisher stops, so liveness is judged by whether the stamp
+        # itself advances, timed on this class's own sim clock -- mirrors
+        # PoseCorrector._classify's convention (control/utils/
+        # pose_corrector.py). _tf_last_stamp/_tf_last_advance_t persist for
+        # this executor's whole lifetime (spanning multiple goals), same as
+        # PoseCorrector's equivalent state.
+        self._tf_staleness_timeout = float(tf_staleness_timeout)
+        self._tf_last_stamp = None
+        self._tf_last_advance_t = None
+        # Guidance-side TF velocity estimate (docs/
+        # guidance_velocity_estimator_design.md), independent of
+        # TrajectoryController's own estimator (one-way Guidance -> Control
+        # data flow, can't be reused -- see docs/
+        # guidance_realtime_replanning_design.md 3-3 節). `velocity_fn` is a
+        # callable returning the latest VelocityEstimator.get() result,
+        # fed by a low-rate timer in guidance.py running on a different
+        # thread than this class's own execute()/`_run_trajectory` loop --
+        # never call it from inside a tight/latency-sensitive path without
+        # accounting for that. Accepted here but not yet consumed: this is
+        # only the DI plumbing for the next task in docs/main_plan.md
+        # (passing v_now into HeuristicSegmentTimeAllocator).
+        self._velocity_fn = velocity_fn
         self._dt = 1.0 / float(rate)
+        # q_des rate limit (docs/archive/achieved/
+        # 2026-08-24_trajectory_state_carryover_design.md 3-4節): always
+        # passed to every Trajectory this class builds (static or
+        # re-planning) -- None (default) reproduces the prior unlimited
+        # behavior, but the node wires a real value so re-planning's noisy
+        # v0 (docs/guidance_realtime_replanning_design.md 6-4節) can't
+        # translate into an unbounded single-tick q_des jump.
+        self._max_angular_rate = (
+            None if max_angular_rate is None else float(max_angular_rate)
+        )
+        # Re-planning fallback threshold/cadence (docs/archive/achieved/
+        # 2026-08-24_replanning_distance_fallback_decision.md,
+        # 2026-08-24_replan_rate_design.md) -- only consumed when
+        # execute()'s trajectory_tracking_mode == "replanning".
+        self._distance_fallback_m = float(distance_fallback_m)
+        # Re-plan every Nth _run_trajectory tick (currently `rate`, e.g.
+        # 50Hz) rather than a separate rclpy timer/thread -- counter-based,
+        # per the replan-rate decision doc's rationale (no new cross-thread
+        # state beyond what VelocityEstimator already introduces).
+        self._replan_every_n_ticks = max(1, round(float(rate) / float(replan_rate_hz)))
         self._camera_forward_axis = dict(
             camera_forward_axis or DEFAULT_CAMERA_FORWARD_AXIS
         )
@@ -122,7 +198,9 @@ class GuidanceExecutor:
         self._path_preview_points = int(path_preview_points)
 
     def set_gains(self, align_tolerance_deg=None, align_timeout=None,
-                  align_settle_time=None) -> None:
+                  align_settle_time=None, align_pos_tolerance_m=None,
+                  align_pos_settle_time=None, align_pos_timeout=None,
+                  tf_staleness_timeout=None) -> None:
         """Update the align convergence threshold/timeout in place (dynamic
         reconfiguration, see docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md
         category A). The align-wait loop in :meth:`execute` reads these
@@ -137,11 +215,47 @@ class GuidanceExecutor:
             self._align_timeout = float(align_timeout)
         if align_settle_time is not None:
             self._align_settle_time = float(align_settle_time)
+        if align_pos_tolerance_m is not None:
+            self._align_pos_tolerance_m = float(align_pos_tolerance_m)
+        if align_pos_settle_time is not None:
+            self._align_pos_settle_time = float(align_pos_settle_time)
+        if align_pos_timeout is not None:
+            self._align_pos_timeout = float(align_pos_timeout)
+        if tf_staleness_timeout is not None:
+            self._tf_staleness_timeout = float(tf_staleness_timeout)
+
+    def _tf_pose_fresh(self, stamp) -> bool:
+        """Return whether ``stamp`` (get_pose()'s third element) indicates a
+        live TF stream, updating this executor's liveness state as a side
+        effect.
+
+        Mirrors ``PoseCorrector._classify``'s convention: a TF lookup pulls
+        from tf2's buffer and keeps succeeding after the publisher stops, so
+        liveness is judged by whether the stamp *advances*, timed on this
+        class's own sim clock -- never by comparing the stamp directly
+        against that clock (the stamp may be on an unrelated clock epoch,
+        see ``TfClient.get_pose()``'s docstring).
+        """
+        stamp = float(stamp)
+        if stamp == 0.0:
+            # A zero stamp means "unset" in ROS, not "time zero" -- tf2 can
+            # hand one back for an early lookup while the listener is still
+            # filling in the transform chain (see tf_race_investigation.md).
+            return False
+        t = self._clock_seconds()
+        if stamp != self._tf_last_stamp:
+            # Either the stamp is genuinely advancing (the normal case), or
+            # it went backwards (a simulator restart) -- either way, adopt
+            # it as the new reference point rather than reporting a stall.
+            self._tf_last_stamp = stamp
+            self._tf_last_advance_t = t
+            return True
+        return (t - self._tf_last_advance_t) <= self._tf_staleness_timeout
 
     def execute(self, p_target, q_target, feedback_cb, is_cancel_requested,
                 face_travel=True, face_travel_camera="main",
                 align_at_arrival=True, pre_align=True, look_at_target_frame="",
-                align_at_arrival_camera="main"):
+                align_at_arrival_camera="main", trajectory_tracking_mode="static"):
         """Run one move-to-target goal; returns a ``STATUS_*`` constant.
 
         ``look_at_target_frame`` is accepted but currently unused -- reserved
@@ -156,12 +270,28 @@ class GuidanceExecutor:
         main camera would have under ``q_target`` (:func:`compute_
         camera_relative_quat`), i.e. "show me through a different camera
         whatever the main camera would have seen".
+
+        ``trajectory_tracking_mode``: ``"static"`` (default) samples a single
+        open-loop trajectory generated at goal start, unchanged from prior
+        behavior. ``"replanning"`` continuously re-plans the translation leg
+        from live TF (``docs/guidance_realtime_replanning_design.md``); it
+        falls back to ``"static"`` with a warning if ``max_accel`` or
+        ``velocity_fn`` was not configured (both required by
+        :class:`~sobits_intball2_gnc.guidance.trajectory_tracking.
+        replanning_trajectory_tracker.ReplanningTrajectoryTracker`), or if
+        given an unrecognized value.
         """
         pose = self._tf.get_pose()
         if pose is None:
             self._log.warn("[GuidanceExecutor] no TF pose available, aborting")
             return STATUS_ABORTED
-        p0, q0, _stamp = pose
+        p0, q0, stamp = pose
+        if not self._tf_pose_fresh(stamp):
+            self._log.warn(
+                "[GuidanceExecutor] TF pose is stale (stamp not advancing "
+                "for >%.1fs), aborting" % self._tf_staleness_timeout
+            )
+            return STATUS_ABORTED
 
         forward_axis = self._camera_forward_axis.get(face_travel_camera)
         if face_travel and forward_axis is None:
@@ -183,7 +313,33 @@ class GuidanceExecutor:
             attitude_speed_threshold=self._attitude_speed_threshold,
             forward_axis=forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"],
             initial_q_des=q0, face_travel=face_travel,
+            max_angular_rate=self._max_angular_rate,
         )
+
+        mode = trajectory_tracking_mode
+        if mode not in TRAJECTORY_TRACKING_MODES:
+            self._log.warn(
+                "[GuidanceExecutor] unknown trajectory_tracking_mode=%r, "
+                "falling back to 'static'" % trajectory_tracking_mode
+            )
+            mode = "static"
+        if mode == "replanning" and (self._max_accel is None or self._velocity_fn is None):
+            self._log.warn(
+                "[GuidanceExecutor] trajectory_tracking_mode='replanning' "
+                "requires max_accel and velocity_fn to be configured -- "
+                "falling back to 'static'"
+            )
+            mode = "static"
+        if mode == "replanning":
+            tracker = ReplanningTrajectoryTracker(
+                traj, p_target, pose_fn=self._tf.get_pose,
+                tf_fresh_fn=self._tf_pose_fresh, velocity_fn=self._velocity_fn,
+                target_speed=self._target_speed, max_accel=self._max_accel,
+                distance_fallback_m=self._distance_fallback_m,
+                replan_every_n_ticks=self._replan_every_n_ticks,
+            )
+        else:
+            tracker = StaticTrajectoryTracker(traj)
 
         if self._speed_path_pub is not None:
             # Sample a throwaway Trajectory instance, not `traj` itself:
@@ -196,6 +352,7 @@ class GuidanceExecutor:
                 attitude_speed_threshold=self._attitude_speed_threshold,
                 forward_axis=forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"],
                 initial_q_des=q0, face_travel=face_travel,
+                max_angular_rate=self._max_angular_rate,
             )
             n = max(2, self._path_preview_points)
             samples = [preview_traj.sample(traj.total_duration * i / (n - 1))
@@ -242,13 +399,17 @@ class GuidanceExecutor:
                 if status != STATUS_SUCCESS:
                     return status
 
-        status = self._run_trajectory(traj, p_target, feedback_cb, is_cancel_requested)
+        status = self._run_trajectory(tracker, p_target, feedback_cb, is_cancel_requested)
         if status != STATUS_SUCCESS:
             return status
 
         if align_at_arrival:
             current = self._tf.get_pose()
-            cur_quat = current[1] if current is not None else q_target
+            cur_quat = (
+                current[1]
+                if current is not None and self._tf_pose_fresh(current[2])
+                else q_target
+            )
             arrival_target_quat = self._resolve_arrival_target_quat(
                 q_target, align_at_arrival_camera,
             )
@@ -284,22 +445,58 @@ class GuidanceExecutor:
             return q_target
         return compute_camera_relative_quat(q_target, main_axis, forward_axis)
 
-    def _run_trajectory(self, traj, p_target, feedback_cb, is_cancel_requested):
+    def _run_trajectory(self, tracker, p_target, feedback_cb, is_cancel_requested):
         t_start = self._clock_seconds()
+        # Set once, the tick the planned duration first elapses -- kept
+        # independent of tracker.total_duration itself so the replanning
+        # tracker's repeatedly-recomputed total_duration (docs/
+        # guidance_realtime_replanning_design.md 6-1) can't push this
+        # deadline back out; only the position-convergence check below reads
+        # live TF.
+        pos_timeout_deadline = None
+        # Time [s, sim clock] the TF position error first entered
+        # align_pos_tolerance_m on this unbroken streak; None while out of
+        # tolerance or no TF pose available. Same settle-time reasoning as
+        # _align_to's in_tolerance_since (a single in-tolerance sample isn't
+        # enough evidence of settling).
+        in_pos_tolerance_since = None
         while True:
             if is_cancel_requested():
                 return STATUS_CANCELED
             elapsed = self._clock_seconds() - t_start
-            sample_t = min(elapsed, traj.total_duration)
-            p, v, a, q = traj.sample(sample_t)
+            sample_t = min(elapsed, tracker.total_duration)
+            p, v, a, q = tracker.sample(sample_t)
             self._setpoint_pub.publish(p, v, a, q)
 
-            time_to_go = max(0.0, traj.total_duration - elapsed)
+            time_to_go = max(0.0, tracker.total_duration - elapsed)
             p_to_go = (np.asarray(p_target, dtype=float) - np.asarray(p)).tolist()
             feedback_cb(time_to_go, p_to_go, q.tolist())
 
-            if elapsed >= traj.total_duration:
-                return STATUS_SUCCESS
+            if elapsed >= tracker.total_duration:
+                now = self._clock_seconds()
+                if pos_timeout_deadline is None:
+                    pos_timeout_deadline = now + self._align_pos_timeout
+                pose = self._tf.get_pose()
+                if pose is not None and self._tf_pose_fresh(pose[2]):
+                    cur_pos, _quat, _stamp = pose
+                    pos_error = np.linalg.norm(
+                        np.asarray(p_target, dtype=float)
+                        - np.asarray(cur_pos, dtype=float)
+                    )
+                    if pos_error <= self._align_pos_tolerance_m:
+                        if in_pos_tolerance_since is None:
+                            in_pos_tolerance_since = now
+                        elif now - in_pos_tolerance_since >= self._align_pos_settle_time:
+                            return STATUS_SUCCESS
+                    else:
+                        in_pos_tolerance_since = None
+                if now >= pos_timeout_deadline:
+                    self._log.warn(
+                        "[GuidanceExecutor] position did not converge within "
+                        "%.1fs of the planned duration elapsing -- "
+                        "proceeding anyway" % self._align_pos_timeout
+                    )
+                    return STATUS_SUCCESS
             self._spin(self._dt)
 
     def _align_to(self, hold_pos, hold_quat, is_cancel_requested):
@@ -325,7 +522,7 @@ class GuidanceExecutor:
             if is_cancel_requested():
                 return STATUS_CANCELED
             pose = self._tf.get_pose()
-            if pose is not None:
+            if pose is not None and self._tf_pose_fresh(pose[2]):
                 _pos, quat, _stamp = pose
                 now = self._clock_seconds()
                 if _geodesic_angle(quat, hold_quat) <= self._align_tolerance_rad:

@@ -16,12 +16,19 @@ once ``min_snap.py``'s core lands (same
 contract, so no caller changes needed).
 
 Tangents at interior waypoints use a Catmull-Rom-style estimate (weighted by
-the two adjacent segment durations); start/end tangents are zero, matching
-this project's convention that a trajectory begins/ends at rest (see
+the two adjacent segment durations); start/end tangents are zero by default,
+matching this project's convention that a trajectory begins/ends at rest (see
 :mod:`sobits_intball2_gnc.guidance.utils.trajectory` module docstring on
 terminal behavior, and ``trajectory_force_duration_investigation.md`` 6-3
 節's note on why a moving reference should not start at nonzero ``v``
-unannounced).
+unannounced). ``generate()``'s optional ``v0`` argument overrides the start
+tangent -- added for real-time re-planning from a nonzero actual velocity
+(``docs/archive/achieved/session_2026-08-24_heuristic_segment_time_allocator_v0_extension.md``); the
+caller is expected to have paired it with a
+:class:`~sobits_intball2_gnc.guidance.segment_time.heuristic_segment_time_allocator.HeuristicSegmentTimeAllocator`
+call using the *same* ``v0``, since the segment time and the start tangent
+must agree on the same boundary condition (an unpaired ``v0`` here
+reintroduces exactly the overshoot risk that design doc derives).
 """
 import numpy as np
 
@@ -29,7 +36,7 @@ import numpy as np
 class HermiteSplineTrajectoryGenerator:
     """Piecewise cubic Hermite interpolation through the given waypoints."""
 
-    def generate(self, waypoints, segment_times):
+    def generate(self, waypoints, segment_times, v0=None):
         waypoints = np.asarray(waypoints, dtype=float)
         segment_times = np.asarray(segment_times, dtype=float)
 
@@ -42,8 +49,12 @@ class HermiteSplineTrajectoryGenerator:
             raise ValueError("segment_times must have shape (n_waypoints - 1,)")
         if np.any(segment_times <= 0.0):
             raise ValueError("segment_times must all be > 0")
+        if v0 is not None:
+            v0 = np.asarray(v0, dtype=float)
+            if v0.shape != (3,):
+                raise ValueError("v0 must have shape (3,)")
 
-        tangents = self._estimate_tangents(waypoints, segment_times)
+        tangents = self._estimate_tangents(waypoints, segment_times, v0=v0)
 
         n_segments = n_waypoints - 1
         coeffs = np.zeros((n_segments, 3, 8))
@@ -57,17 +68,23 @@ class HermiteSplineTrajectoryGenerator:
             coeffs[i, :, 3] = (2.0 * p0 - 2.0 * p1 + T * m0 + T * m1) / T ** 3
         return coeffs
 
-    def _estimate_tangents(self, waypoints, segment_times):
+    def _estimate_tangents(self, waypoints, segment_times, v0=None):
         """Return per-waypoint velocity tangents (shape ``(n_waypoints, 3)``).
 
-        Endpoints are clamped to zero (start/end at rest). Interior waypoint
-        ``j`` uses a Catmull-Rom-style estimate weighted by its two adjacent
-        segment durations, so a long segment on one side doesn't dominate a
-        short one on the other.
+        Endpoints are clamped to zero (start/end at rest), unless ``v0`` is
+        given, in which case it overrides the start tangent (see
+        ``generate()``'s docstring -- this is the only way a caller can make
+        the trajectory begin at a nonzero velocity, e.g. for real-time
+        re-planning from the vehicle's actual TF-estimated speed). Interior
+        waypoint ``j`` uses a Catmull-Rom-style estimate weighted by its two
+        adjacent segment durations, so a long segment on one side doesn't
+        dominate a short one on the other.
         """
         n_waypoints = waypoints.shape[0]
         tangents = np.zeros_like(waypoints)
         for j in range(1, n_waypoints - 1):
             t_in, t_out = segment_times[j - 1], segment_times[j]
             tangents[j] = (waypoints[j + 1] - waypoints[j - 1]) / (t_in + t_out)
+        if v0 is not None:
+            tangents[0] = v0
         return tangents

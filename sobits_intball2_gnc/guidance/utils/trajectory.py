@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Sampleable trajectory wrapper (ROS-agnostic).
 
-Holds the per-segment polynomial coefficients produced by
-:mod:`sobits_intball2_gnc.guidance.utils.min_snap` (see
-``docs/min_snap_interface_contract.md`` for the exact data layout) and
-exposes ``sample(t) -> (p, v, a, q_des)`` for a control-layer consumer (Phase
-3a/3b in ``docs/main_plan.md``). ``q_des`` is computed internally via
-:mod:`sobits_intball2_gnc.guidance.utils.attitude_reference`.
+Holds the per-segment polynomial coefficients produced by a
+:class:`~sobits_intball2_gnc.guidance.trajectory_generation.base_trajectory_generator.BaseTrajectoryGenerator`
+implementation (see ``docs/minimum_snap/min_snap_interface_contract.md`` for
+the exact data layout, originally written for min-snap but shared by every
+generator) and exposes ``sample(t) -> (p, v, a, q_des)`` for a control-layer
+consumer (Phase 3a/3b in ``docs/main_plan.md``). ``q_des`` is computed
+internally via :mod:`sobits_intball2_gnc.guidance.utils.attitude_reference`.
 
 ``sample(t)`` converts the global time ``t`` into a segment index and a
 segment-local ``tau`` (``min_snap_interface_contract.md`` 3 節: coefficients
@@ -29,15 +30,16 @@ from sobits_intball2_gnc.guidance.utils.polynomial import evaluate_vector
 
 
 class Trajectory:
-    """Time-sampleable min-snap trajectory.
+    """Time-sampleable trajectory (coefficients from any BaseTrajectoryGenerator).
 
     Args:
         waypoints: shape ``(n_waypoints, 3)``, reference-frame positions
-            (same list ``min_snap.solve_min_snap()`` was given).
+            (same list the trajectory generator's ``generate()`` was given).
         segment_times: shape ``(n_segments,)`` per-segment durations [s],
             ``n_segments == n_waypoints - 1``.
-        coeffs: shape ``(n_segments, 3, 8)``, ``min_snap.solve_min_snap()``'s
-            output (ascending-power per-axis polynomial coefficients).
+        coeffs: shape ``(n_segments, 3, 8)``, the trajectory generator's
+            ``generate()`` output (ascending-power per-axis polynomial
+            coefficients).
         attitude_speed_threshold: passed through to
             :func:`attitude_reference.compute_q_des`.
         forward_axis: passed through to
@@ -75,11 +77,16 @@ class Trajectory:
         initial_q_des=None,
         face_travel=True,
     ):
-        self.waypoints = np.asarray(waypoints, dtype=float)
-        self.segment_times = np.asarray(segment_times, dtype=float)
-        self.coeffs = np.asarray(coeffs, dtype=float)
-        self._cum_times = np.concatenate([[0.0], np.cumsum(self.segment_times)])
-        self.total_duration = float(self._cum_times[-1])
+        self._set_polynomial_data(waypoints, segment_times, coeffs)
+        # Global time (same axis `sample(t)`'s `t` argument lives on, e.g.
+        # `_run_trajectory`'s goal-start-relative `elapsed`) at which the
+        # current polynomial data's local origin (tau=0) sits. 0.0 here means
+        # the initial polynomial's local time already coincides with global
+        # time. Only `replace_coeffs` ever changes this -- see that method's
+        # docstring for why a re-planning caller needs this separate from
+        # `_last_sample_t` (docs/archive/achieved/
+        # 2026-08-24_trajectory_state_carryover_design.md).
+        self._t_origin = 0.0
         self._attitude_speed_threshold = float(attitude_speed_threshold)
         self._forward_axis = forward_axis
         self._max_angular_rate = max_angular_rate
@@ -90,17 +97,64 @@ class Trajectory:
         )
         self._last_sample_t = None
 
+    def _set_polynomial_data(self, waypoints, segment_times, coeffs):
+        self.waypoints = np.asarray(waypoints, dtype=float)
+        self.segment_times = np.asarray(segment_times, dtype=float)
+        self.coeffs = np.asarray(coeffs, dtype=float)
+        self._cum_times = np.concatenate([[0.0], np.cumsum(self.segment_times)])
+        self.total_duration = float(self._cum_times[-1])
+
+    @property
+    def global_total_duration(self):
+        """``total_duration`` expressed on the same global time axis as
+        ``sample(t)``'s ``t`` -- i.e. ``t_origin + total_duration``, the
+        global time at which the current polynomial data reaches its final
+        waypoint. Equals ``total_duration`` for a trajectory that has never
+        been re-planned (``t_origin == 0``); a caller driving a re-planning
+        tracker's "have we reached the target" check (e.g.
+        ``_run_trajectory``'s ``elapsed >= traj.total_duration``) must use
+        this instead of ``total_duration`` once ``replace_coeffs`` may have
+        been called, since ``total_duration`` alone is on the local (tau=0
+        at last replan) axis."""
+        return self._t_origin + self.total_duration
+
+    def replace_coeffs(self, waypoints, segment_times, coeffs, t_global):
+        """Swap in freshly re-planned polynomial data without resetting
+        attitude state (``_last_q_des``/``_last_sample_t``) -- for a
+        re-planning tracker that must not repeat the "every replan looks like
+        the first sample" failure a fresh ``Trajectory`` instance would cause
+        (rate-limiting silently disabled, roll-preservation basis reset every
+        tick, low-speed guard permanently reseeding ``q0``; see
+        ``docs/guidance_realtime_replanning_design.md`` 6-6 節 and
+        ``docs/archive/achieved/2026-08-24_trajectory_state_carryover_design.md``).
+
+        ``t_global`` is the global time (same axis as ``sample(t)``'s ``t``,
+        e.g. the goal's elapsed-since-start) at which this new polynomial's
+        local origin (tau=0) sits -- ``sample(t)`` evaluates the polynomial at
+        ``t - t_global`` while still computing ``q_des``'s rate-limiting
+        ``dt`` from raw, un-shifted ``t``. Without this split, evaluating the
+        new (locally-time-zeroed) polynomial directly against the
+        goal-elapsed ``t`` would either evaluate past its end immediately or
+        misplace it in time, while collapsing the two time axes into one
+        (i.e. resetting ``_last_sample_t`` here too) would reintroduce this
+        method's very purpose: 6-6 節's rate-limiting/roll/low-speed failures,
+        just via ``dt`` becoming wrong instead of ``None``.
+        """
+        self._set_polynomial_data(waypoints, segment_times, coeffs)
+        self._t_origin = float(t_global)
+
     def sample(self, t):
         """Return ``(p, v, a, q_des)`` at global time ``t`` (clamped to ``t >= 0``)."""
         t = max(float(t), 0.0)
+        t_local = max(t - self._t_origin, 0.0)
 
-        if t >= self.total_duration:
+        if t_local >= self.total_duration:
             p = self.waypoints[-1].copy()
             v = np.zeros(3)
             a = np.zeros(3)
         else:
-            seg_idx = self._segment_index(t)
-            tau = t - self._cum_times[seg_idx]
+            seg_idx = self._segment_index(t_local)
+            tau = t_local - self._cum_times[seg_idx]
             seg_coeffs = self.coeffs[seg_idx]
             p = evaluate_vector(seg_coeffs, tau, order=0)
             v = evaluate_vector(seg_coeffs, tau, order=1)
