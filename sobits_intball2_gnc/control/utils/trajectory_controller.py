@@ -122,6 +122,15 @@ class TrajectoryController:
         self._last_att_t = None
         self._omega_filtered = np.zeros(3)
 
+        # Last-tick observability state (docs/main_plan.md "[C] Controller
+        # 内部値の可観測性強化"): the pre-clamp requested force/torque (what
+        # this controller *wanted*, before compute()/compute_attitude()'s
+        # final clamp) and the raw P/D inputs, so a caller can tell "clamped"
+        # apart from "the law itself asked for something small" and inspect
+        # the P term (qe_vec) separately from the D term (omega_err).
+        self._last_force_raw = np.zeros(3)
+        self._last_torque_raw = np.zeros(3)
+
     def reset(self) -> None:
         """Forget the velocity/rate estimates (e.g. after a setpoint gap)."""
         self._last_pos = None
@@ -130,6 +139,34 @@ class TrajectoryController:
         self._last_qe_vec = None
         self._last_att_t = None
         self._omega_filtered = np.zeros(3)
+        self._last_force_raw = np.zeros(3)
+        self._last_torque_raw = np.zeros(3)
+
+    @property
+    def last_force_raw(self) -> list:
+        """Last tick's requested body-frame force [Fx,Fy,Fz] [N], BEFORE the
+        final ``max_force`` clamp in :meth:`compute`."""
+        return self._last_force_raw.tolist()
+
+    @property
+    def last_torque_raw(self) -> list:
+        """Last tick's requested body-frame torque [Tx,Ty,Tz] [N*m], BEFORE
+        the final ``max_torque`` clamp in :meth:`compute_attitude`."""
+        return self._last_torque_raw.tolist()
+
+    @property
+    def last_qe_vec(self) -> list:
+        """Last tick's quaternion-error vector part (P-term input to
+        :meth:`compute_attitude`'s torque law)."""
+        if self._last_qe_vec is None:
+            return [0.0, 0.0, 0.0]
+        return self._last_qe_vec.tolist()
+
+    @property
+    def last_omega_err(self) -> list:
+        """Last tick's filtered relative angular-rate estimate (D-term input
+        to :meth:`compute_attitude`'s torque law)."""
+        return self._omega_filtered.tolist()
 
     def compute(self, stamp, pos_now, quat_now, p_des, v_des, a_des):
         """Return a clamped body-frame force toward the moving setpoint.
@@ -201,6 +238,7 @@ class TrajectoryController:
         feedforward_body = quat_rotate(quat_conj(quat_now), feedforward_ref)
 
         force_body = feedback_body + feedforward_body
+        self._last_force_raw = force_body
         return np.clip(force_body, -self.max_force, self.max_force).tolist()
 
     def compute_attitude(self, stamp, quat_now, q_des):
@@ -238,10 +276,15 @@ class TrajectoryController:
             + (1.0 - self.att_filter_alpha) * self._omega_filtered
         )
 
-        torque = attitude_error_to_torque(
+        # Requested torque BEFORE the clamp (max_torque=inf), so a caller can
+        # tell "the P+D law wanted more than the clamp allows" apart from
+        # "the law itself asked for something small" (docs/main_plan.md "[C]
+        # Controller内部値の可観測性強化").
+        self._last_torque_raw = attitude_error_to_torque(
             self.kp_att, self.kd_att, q_des, quat_now, self._omega_filtered,
-            self.max_torque,
+            np.inf,
         )
+        torque = np.clip(self._last_torque_raw, -self.max_torque, self.max_torque)
         return torque.tolist()
 
     def set_gains(self, kp_pos=None, kd_pos=None, vel_filter_alpha=None,

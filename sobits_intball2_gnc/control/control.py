@@ -38,6 +38,7 @@ from sobits_intball2_gnc.control.utils.hover_controller import (
     HOVER_MODES,
     HoverController,
 )
+from sobits_intball2_gnc.control.ros.wrench_publisher import WrenchPublisher
 from sobits_intball2_gnc.control.utils.singleton_lock import (
     SingletonLockError,
     acquire_singleton_lock,
@@ -142,6 +143,13 @@ class ControlNode(Node):
             self._trajectory_sub,
         )
 
+        # Requested (pre-clamp/pre-allocation) wrench, for diagnosing
+        # saturation independent of the realized /ctl/duty (docs/main_plan.md
+        # "[C] Controller内部値の可観測性強化"). Meaningful in any mode
+        # (mirrors last_force_corr/last_torque_corr in imu-only mode, where
+        # both are always zero).
+        self._wrench_pub = WrenchPublisher(self)
+
         # Checkpoint array interface (poses in the TF reference frame).
         self._path = PoseArraySubscriber(
             self,
@@ -161,9 +169,17 @@ class ControlNode(Node):
         # Loop rate is owned/used here; it was declared by HoverController.
         self._rate = float(self.get_parameter("hover_control.control_rate").value)
         self._timer = self.create_timer(1.0 / self._rate, self._on_timer)
+        # Effective use_sim_time, logged at startup: a mismatch between this
+        # node's and guidance_node's use_sim_time silently desyncs their
+        # clocks (an epoch offset only became apparent by accident from a CSV
+        # timestamp mismatch during the 2026-08-25 investigation, docs/
+        # archive/achieved/2026-08-25_guidance_attitude_saturation_investigation.md
+        # -- this log is meant to surface that immediately instead).
         self.get_logger().info(
-            "ControlNode up: mode=%s, subscribing %s, publishing %s at %.1f Hz"
-            % (mode, IMU_TOPIC, DUTY_TOPIC, self._rate)
+            "ControlNode up: mode=%s, subscribing %s, publishing %s at %.1f Hz, "
+            "use_sim_time=%s"
+            % (mode, IMU_TOPIC, DUTY_TOPIC, self._rate,
+               self.get_parameter("use_sim_time").value)
         )
 
         # Periodic "do we actually own the fans?" status log.
@@ -316,11 +332,11 @@ class ControlNode(Node):
         t_corr = ", ".join("%.4f" % v for v in self._hover.last_torque_corr)
         summary = (
             "fan-control: ours=%d msgs, foreign=%d (other publishers=%d), "
-            "mode=%s, imu=%s, tf=%s, duty=[%s], "
+            "mode=%s, imu=%s, tf=%s, trajectory_active=%s, duty=[%s], "
             "force_imu=[%s], force_corr=[%s], torque_imu=[%s], torque_corr=[%s]"
             % (tx_delta, foreign, other_pubs, self._mode,
                "ok" if self._imu.ready else "WAITING",
-               self._hover.tf_status,
+               self._hover.tf_status, self._hover.trajectory_active,
                ", ".join("%.2f" % d for d in self._fan.duties),
                f_imu, f_corr, t_imu, t_corr)
         )
@@ -348,6 +364,7 @@ class ControlNode(Node):
         # passed" from "how far the vehicle actually got to move" -- see
         # docs/recording_cpu_load_control_degradation.md.
         self._hover.step(self.get_clock().now().nanoseconds * 1e-9)
+        self._wrench_pub.publish(self._hover.last_force_raw, self._hover.last_torque_raw)
         if hasattr(self, "_tx_zero_count") and self._is_zero_duty(self._fan.duties):
             self._tx_zero_count += 1
 

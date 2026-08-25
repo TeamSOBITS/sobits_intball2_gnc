@@ -137,3 +137,43 @@ def test_replan_updates_underlying_trajectory_global_total_duration():
     tracker.sample(5.0)
     after = tracker.total_duration
     assert after != before
+
+
+def test_last_replan_occurred_true_only_on_a_replanning_tick():
+    """A caller re-publishing an RViz preview on re-plan (docs/main_plan.md
+    [G] "再計画軌道のRVizプレビュー更新") needs to distinguish a tick that
+    actually re-planned from one that didn't -- ``last_replan_occurred``
+    must be True only on the former, and reset back to False by the very
+    next sample() call even if that next call doesn't re-plan either."""
+    def pose_fn():
+        return [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0
+
+    tracker = _make_tracker(pose_fn, replan_every_n_ticks=5)
+    for t in range(4):
+        tracker.sample(float(t))
+        assert tracker.last_replan_occurred is False
+    tracker.sample(4.0)
+    assert tracker.last_replan_occurred is True
+    tracker.sample(5.0)
+    assert tracker.last_replan_occurred is False  # not the 5th tick again yet
+
+
+def test_last_replan_occurred_false_once_fallback_latches():
+    def pose_fn():
+        # Already within distance_fallback_m of P_TARGET=[2,0,0].
+        return [1.8, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0
+
+    tracker = _make_tracker(pose_fn, distance_fallback_m=0.3, replan_every_n_ticks=1)
+    tracker.sample(0.0)
+    assert tracker.last_replan_occurred is True  # the fallback-triggering replan itself
+    tracker.sample(1.0)
+    assert tracker.last_replan_occurred is False  # latched, no further replans
+
+
+def test_trajectory_property_exposes_post_replan_state():
+    def pose_fn():
+        return [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0
+
+    tracker = _make_tracker(pose_fn, replan_every_n_ticks=1, distance_fallback_m=0.0)
+    tracker.sample(5.0)
+    assert np.allclose(tracker.trajectory.waypoints[0], [0.0, 0.0, 0.0])

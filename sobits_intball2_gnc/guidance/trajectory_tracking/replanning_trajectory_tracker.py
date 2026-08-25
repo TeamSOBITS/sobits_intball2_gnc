@@ -103,8 +103,22 @@ class ReplanningTrajectoryTracker:
         # One-way latch (module docstring): once True, sample() never
         # attempts another re-plan for the rest of this goal.
         self._fallen_back = False
+        # Whether the most recent sample() call also re-planned (i.e.
+        # replaced self._trajectory's coefficients) -- read by a caller that
+        # wants to keep an RViz preview of the current trajectory in sync
+        # with re-planning (e.g. GuidanceExecutor's speed-path Marker), not
+        # consumed internally by this class.
+        self.last_replan_occurred = False
+        # Which condition (module docstring) caused the one-way fallback
+        # latch to trip on the most recent sample() call: "tf_stale" | "distance"
+        # | None (latch not tripped this tick). Stays populated (not reset)
+        # after the tick it tripped on, so a caller logging once on the
+        # rising edge (docs/main_plan.md "[C] Controller内部値の可観測性強化")
+        # can still read *why* after the fact.
+        self.last_fallback_reason = None
 
     def sample(self, t):
+        self.last_replan_occurred = False
         if not self._fallen_back:
             self._tick_count += 1
             if self._tick_count >= self._replan_every_n_ticks:
@@ -116,6 +130,14 @@ class ReplanningTrajectoryTracker:
     def total_duration(self):
         return self._trajectory.global_total_duration
 
+    @property
+    def trajectory(self):
+        """The underlying, in-place-mutated ``Trajectory`` -- read-only
+        access for a caller that needs the current ``waypoints``/
+        ``segment_times``/``coeffs`` after a re-plan (e.g. to rebuild an
+        RViz preview), without reaching into this class's private state."""
+        return self._trajectory
+
     def _maybe_replan(self, t_global):
         pose = self._pose_fn()
         if pose is None or not self._tf_fresh_fn(pose[2]):
@@ -124,6 +146,7 @@ class ReplanningTrajectoryTracker:
             # (or the initial trajectory, if none yet) already produced,
             # rather than fabricating a position.
             self._fallen_back = True
+            self.last_fallback_reason = "tf_stale"
             return
 
         p_now, _quat, _stamp = pose
@@ -137,12 +160,14 @@ class ReplanningTrajectoryTracker:
         )
 
         self._replan(p_now, v0, t_global)
+        self.last_replan_occurred = True
 
         if distance < self._distance_fallback_m:
             # Condition 1 (module docstring): this was the last re-plan --
             # the freshly replaced trajectory now carries the vehicle the
             # rest of the way as a static leg.
             self._fallen_back = True
+            self.last_fallback_reason = "distance"
 
     def _replan(self, p_now, v0, t_global):
         waypoints = np.array([p_now, self._p_target])

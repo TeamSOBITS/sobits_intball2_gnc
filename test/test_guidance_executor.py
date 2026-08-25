@@ -92,6 +92,20 @@ class FakeLogger:
         self.warnings.append(msg)
 
 
+class FakeSpeedPathPublisher:
+    """Records each ``publish()`` call's sample count, for asserting how
+    many times (and roughly when) GuidanceExecutor re-publishes the RViz
+    speed-path preview -- once at goal start, and again on every re-plan in
+    ``trajectory_tracking_mode="replanning"`` (docs/main_plan.md [G]
+    "再計画軌道のRVizプレビュー更新")."""
+
+    def __init__(self):
+        self.calls = []
+
+    def publish(self, samples):
+        self.calls.append(list(samples))
+
+
 def _next_stamp(state, stamp_spec):
     """Shared stamp-generation logic for the Scripted*Tf fakes below.
 
@@ -665,6 +679,56 @@ def test_execute_replanning_mode_reaches_target():
     assert not any("falling back to 'static'" in w for w in logger.warnings)
     final_p, _v, _a, _q = setpoint_pub.calls[-1]
     assert np.allclose(final_p, [1.0, 0.0, 0.0], atol=0.1)
+
+
+def test_execute_replanning_mode_republishes_speed_path_preview_on_replan():
+    """The speed-path preview must be re-published beyond the initial
+    goal-start call once trajectory_tracking_mode="replanning" actually
+    re-plans, so RViz doesn't show a stale first-plan path (docs/
+    main_plan.md [G] "再計画軌道のRVizプレビュー更新")."""
+    setpoint_pub = FakeSetpointPublisher()
+    logger = FakeLogger()
+    speed_path_pub = FakeSpeedPathPublisher()
+    tf = MovingTowardTf([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], step=0.05)
+    executor = GuidanceExecutor(
+        tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05),
+        logger, target_speed=1.0, max_accel=0.02,
+        align_pos_tolerance_m=0.05, align_pos_settle_time=0.1, align_pos_timeout=2.0,
+        velocity_fn=lambda: FakeVelocityEstimate([0.0, 0.0, 0.0]),
+        distance_fallback_m=0.3, replan_rate_hz=20.0,
+        speed_path_publisher=speed_path_pub,
+    )
+    status = executor.execute(
+        [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=False,
+        trajectory_tracking_mode="replanning",
+    )
+    assert status == STATUS_SUCCESS
+    # 1 initial goal-start preview + at least one more from an actual re-plan.
+    assert len(speed_path_pub.calls) > 1
+
+
+def test_execute_static_mode_publishes_speed_path_preview_only_once():
+    """Contrast with the replanning case above: static mode never re-plans,
+    so the preview must stay published exactly once per goal, unchanged
+    from prior behavior."""
+    setpoint_pub = FakeSetpointPublisher()
+    logger = FakeLogger()
+    speed_path_pub = FakeSpeedPathPublisher()
+    tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
+    executor = GuidanceExecutor(
+        tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.1),
+        logger, target_speed=1.0, align_pos_timeout=0.1,
+        speed_path_publisher=speed_path_pub,
+    )
+    status = executor.execute(
+        [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=False,
+    )
+    assert status == STATUS_SUCCESS
+    assert len(speed_path_pub.calls) == 1
 
 
 def test_execute_replanning_mode_falls_back_to_static_without_max_accel():

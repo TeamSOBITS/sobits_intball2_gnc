@@ -19,6 +19,9 @@
 
 ## 未達成タスク（優先度順）
 
+### [C] Controller内部値の可観測性強化（要求→クランプ→配分→実現の各段階）
+replanning姿勢劣化調査で原因特定が遅れた主因は「配分後の実現値（`/ctl/duty`経由の逆算）」しか見えず、要求トルク・クランプ有無・どの姿勢制御パスが有効かを実行時に確認できなかったこと。追加すべき計装: (1) `TrajectoryController.compute`/`compute_attitude`が返す割当前の要求force/torque（`/ctl/wrench`相当のトピックが実は繋がっていなかった）、(2) `HoverController.step`内の`trajectory_active`（`TrajectoryController`と`PoseCorrector`のどちらが姿勢トルク源として有効か）、(3) `ReplanningTrajectoryTracker.last_replan_occurred`／distance fallback発火の1行ログ、(4) `TrajectoryController`内部の`omega_err`/`qe_vec`（P項・D項を分離して見るための状態）、(5) `guidance_node`/`control_node`起動時の`use_sim_time`実効値のログ出力（起動時に付け忘れると発覚しづらく、今回もCSVのepoch不一致から偶然発覚した）。詳細: `docs/archive/achieved/2026-08-25_guidance_attitude_saturation_investigation.md`。
+
 ### [G] Guidance軌道のリアルタイム更新（実TFフィードバックによる再計画）の前提条件整備
 `look_at`本体実装・90°超waypoint分離機動・経路の補間方式など複数の[G]タスクが実質的に「毎tick実TFを見て参照を更新する」という同じ基盤に帰着する。徹底調査の結果、素朴な実装（毎tick/10Hzで実位置・実速度から再計画）は到着判定のZeno的機能不全・オーバーシュート・目標近傍の飽和/チャタリング・姿勢制御の恒久機能不全など複数の破綻が数学的に確定しており、当初想定より前提条件の整備が先に必要。詳細・破綻の定量的根拠: `docs/guidance_realtime_replanning_design.md`。
 
@@ -26,11 +29,8 @@
 
 残るのは実装のみ: `base_trajectory_tracker.py`のシグネチャ設計（`docs/guidance_realtime_replanning_design.md` 4節のpackage構成）と`replanning_trajectory_tracker.py`本体、`test_guidance_executor.py`のfake TFを「動くpose」に対応させる変更（同doc8節）。
 
-### [G] 再計画軌道のRVizプレビュー更新
-`SpeedPathPublisher`は`execute()`開始時に1回だけ計画軌道をpreview publish（`/gnc/trajectory_path_speed`）するため、replanningモードで軌道が再計画されるたびに変わっても表示は最初の計画のまま更新されない。シム検証時に再計画後の実際の経路を目視確認する手段が無いことが判明（`docs/guidance_realtime_replanning_sim_verification.md`）。
-
-### [C] trajectory_controller.kp_att の再設計
-移動中の姿勢追従ゲイン。トルク予算0.0047Nm（力優先制約下で確定）を前提に再設計する。詳細: `docs/archive/achieved/2026-08-20_thrust_allocator_force_crush_fix.md`
+### [C] trajectory_controller.kp_att/max_torque の再設計
+移動中の姿勢追従ゲインとトルククランプ。ファン配置が物理的に実現できる最大トルクは軸ごとに0.0030〜0.0082Nmしかなく（`max_torque=0.32Nm`はその1/39〜1/107）、`kp_att`もこの規模を全く反映していない。詳細: `docs/archive/achieved/2026-08-20_thrust_allocator_force_crush_fix.md`、`docs/archive/achieved/2026-08-25_guidance_attitude_saturation_investigation.md`（6節）
 
 ### [G] 90°超waypointでの分離型機動
 偏角（進入方向と離脱方向の角度差）が90°を超える経路はゲインチューニングでは解決不可（ファンの物理的トルク上限）。停止→再配向（静止hold機構）→並進再開、の機動にGuidance側で自動的に切り替える設計が必要。90°以下は現行の連続追従（`kp_att=0.60`）で対応可能。詳細: `docs/archive/achieved/2026-08-19_trajectory_force_duration_investigation.md`（6-15/6-16節）
