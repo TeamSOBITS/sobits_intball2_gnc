@@ -301,6 +301,68 @@ class GuidanceExecutor:
             )
             forward_axis = self._camera_forward_axis["main"]
 
+        if face_travel and pre_align:
+            # Use the chord to the target, not a sampled trajectory
+            # velocity: v(0) == 0 by construction (see
+            # HermiteSplineTrajectoryGenerator), so an early-in-the-segment
+            # velocity sample can land below attitude_speed_threshold and
+            # get silently treated as "no direction change needed" by
+            # compute_q_des's low-speed guard -- this previously made
+            # pre_align skip entirely for a target straight behind the
+            # vehicle (see
+            # docs/archive/achieved/2026-08-21_pre_align_skipped_low_speed_bug.md).
+            # This is exactly the direction v_early would have pointed
+            # anyway (HermiteSplineTrajectoryGenerator interpolates a
+            # 2-waypoint, at-rest-at-both-ends trajectory as a straight
+            # line, so every non-zero v(t) already points p0 -> p_target).
+            #
+            # Pass q0 (not None) so compute_q_des fills the pointing task's
+            # free roll DOF to match the vehicle's current roll instead of
+            # the shortest-arc convention's incidental value -- otherwise
+            # pre_align chases a functionally unnecessary roll change (see
+            # docs/2026-08-21_tf_correction_align_optimization.md 8節).
+            q_align = compute_q_des(
+                np.asarray(p_target, dtype=float) - np.asarray(p0, dtype=float),
+                q0, self._attitude_speed_threshold, forward_axis
+            )
+            if _geodesic_angle(q0, q_align) > self._align_tolerance_rad:
+                self._log.info(
+                    "[GuidanceExecutor] pre-aligning to initial tangent "
+                    "direction before departure"
+                )
+                status = self._align_to(p0, q_align, is_cancel_requested)
+                if status != STATUS_SUCCESS:
+                    return status
+
+            # Re-read TF: pre_align may have just rotated the vehicle to
+            # q_align, but (p0, q0) above are from BEFORE that rotation.
+            # Without this re-read, Trajectory's initial_q_des below seeds
+            # face-travel's reference with the STALE pre-pre_align attitude
+            # -- once translation speed crosses attitude_speed_threshold,
+            # compute_q_des then has to visibly (rate-limited) catch up from
+            # that stale value to q_align, commanding a large, functionally
+            # unnecessary re-orientation away from where the vehicle
+            # actually already is. Confirmed in sim: pre_align correctly
+            # converges to q_align, yet the very first in-flight q_des
+            # differs from the vehicle's actual (already-aligned) attitude
+            # by ~127 degrees -- see docs/
+            # guidance_attitude_saturation_investigation.md 7節.
+            pose = self._tf.get_pose()
+            if pose is None:
+                self._log.warn(
+                    "[GuidanceExecutor] no TF pose available after "
+                    "pre_align, aborting"
+                )
+                return STATUS_ABORTED
+            p0, q0, stamp = pose
+            if not self._tf_pose_fresh(stamp):
+                self._log.warn(
+                    "[GuidanceExecutor] TF pose is stale after pre_align "
+                    "(stamp not advancing for >%.1fs), aborting"
+                    % self._tf_staleness_timeout
+                )
+                return STATUS_ABORTED
+
         waypoints = [p0, p_target]
         segment_times = HeuristicSegmentTimeAllocator(
             target_speed=self._target_speed, max_accel=self._max_accel
@@ -342,62 +404,7 @@ class GuidanceExecutor:
             tracker = StaticTrajectoryTracker(traj)
 
         if self._speed_path_pub is not None:
-            # Sample a throwaway Trajectory instance, not `traj` itself:
-            # Trajectory.sample() is stateful (face-travel rate-limiting
-            # via _last_sample_t/_last_q_des) and sampling it out of order
-            # here would corrupt that state before _run_trajectory's real,
-            # monotonically-increasing sampling begins below.
-            preview_traj = Trajectory(
-                waypoints, segment_times, coeffs,
-                attitude_speed_threshold=self._attitude_speed_threshold,
-                forward_axis=forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"],
-                initial_q_des=q0, face_travel=face_travel,
-                max_angular_rate=self._max_angular_rate,
-            )
-            n = max(2, self._path_preview_points)
-            samples = [preview_traj.sample(traj.total_duration * i / (n - 1))
-                       for i in range(n)]
-            self._speed_path_pub.publish(
-                [(p, np.linalg.norm(v)) for p, v, _a, _q in samples]
-            )
-
-        if face_travel and pre_align:
-            # Use the chord to the next waypoint, not a sampled trajectory
-            # velocity: v(0) == 0 by construction (see
-            # HermiteSplineTrajectoryGenerator), so an early-in-the-segment
-            # velocity sample can land below attitude_speed_threshold and
-            # get silently treated as "no direction change needed" by
-            # compute_q_des's low-speed guard -- this previously made
-            # pre_align skip entirely for a target straight behind the
-            # vehicle (see
-            # docs/archive/achieved/2026-08-21_pre_align_skipped_low_speed_bug.md).
-            # waypoints[1] (not p_target) so this keeps meaning "the next
-            # leg's direction" if/when multi-waypoint paths (e.g. a future
-            # obstacle-avoiding planner) replace today's 2-point
-            # ``[p0, p_target]`` list; today waypoints[1] is p_target, so
-            # this is exactly the direction v_early would have pointed
-            # anyway (HermiteSplineTrajectoryGenerator interpolates a
-            # 2-waypoint, at-rest-at-both-ends trajectory as a straight
-            # line, so every non-zero v(t) already points p0 -> p_target).
-            #
-            # Pass q0 (not None) so compute_q_des fills the pointing task's
-            # free roll DOF to match the vehicle's current roll instead of
-            # the shortest-arc convention's incidental value -- otherwise
-            # pre_align chases a functionally unnecessary roll change (see
-            # docs/2026-08-21_tf_correction_align_optimization.md 8節).
-            q_align = compute_q_des(
-                np.asarray(waypoints[1], dtype=float)
-                - np.asarray(waypoints[0], dtype=float),
-                q0, self._attitude_speed_threshold, forward_axis
-            )
-            if _geodesic_angle(q0, q_align) > self._align_tolerance_rad:
-                self._log.info(
-                    "[GuidanceExecutor] pre-aligning to initial tangent "
-                    "direction before departure"
-                )
-                status = self._align_to(p0, q_align, is_cancel_requested)
-                if status != STATUS_SUCCESS:
-                    return status
+            self._publish_speed_path_preview(traj)
 
         status = self._run_trajectory(tracker, p_target, feedback_cb, is_cancel_requested)
         if status != STATUS_SUCCESS:
@@ -445,6 +452,34 @@ class GuidanceExecutor:
             return q_target
         return compute_camera_relative_quat(q_target, main_axis, forward_axis)
 
+    def _publish_speed_path_preview(self, traj):
+        """Publish ``traj``'s current shape to ``self._speed_path_pub``, for
+        RViz-only visualization -- called once at goal start, and again on
+        every re-plan (see ``_run_trajectory``) so the preview tracks
+        ``trajectory_tracking_mode="replanning"``'s continuously-updated
+        trajectory instead of going stale after the first plan.
+
+        Samples a throwaway ``Trajectory`` instance built from ``traj``'s
+        current ``waypoints``/``segment_times``/``coeffs``, not ``traj``
+        itself: ``Trajectory.sample()`` is stateful (face-travel
+        rate-limiting via ``_last_sample_t``/``_last_q_des``) and sampling it
+        out of order here would corrupt that state before the real,
+        monotonically-increasing sampling in ``_run_trajectory``. The
+        preview never reads ``q_des`` (``SpeedPathPublisher.publish()`` only
+        wants position/speed), so ``face_travel=False`` skips the attitude
+        computation entirely rather than reproducing the goal's actual
+        attitude-reference settings here.
+        """
+        preview_traj = Trajectory(
+            traj.waypoints, traj.segment_times, traj.coeffs, face_travel=False,
+        )
+        n = max(2, self._path_preview_points)
+        samples = [preview_traj.sample(traj.total_duration * i / (n - 1))
+                   for i in range(n)]
+        self._speed_path_pub.publish(
+            [(p, np.linalg.norm(v)) for p, v, _a, _q in samples]
+        )
+
     def _run_trajectory(self, tracker, p_target, feedback_cb, is_cancel_requested):
         t_start = self._clock_seconds()
         # Set once, the tick the planned duration first elapses -- kept
@@ -460,6 +495,12 @@ class GuidanceExecutor:
         # _align_to's in_tolerance_since (a single in-tolerance sample isn't
         # enough evidence of settling).
         in_pos_tolerance_since = None
+        # Whether this tracker's fallback latch has already been logged
+        # (docs/main_plan.md "[C] Controller内部値の可観測性強化"):
+        # last_fallback_reason stays populated after the tick it trips on
+        # (module docstring), so without this guard the same event would
+        # otherwise appear to still be "happening" every remaining tick.
+        fallback_logged = False
         while True:
             if is_cancel_requested():
                 return STATUS_CANCELED
@@ -467,6 +508,22 @@ class GuidanceExecutor:
             sample_t = min(elapsed, tracker.total_duration)
             p, v, a, q = tracker.sample(sample_t)
             self._setpoint_pub.publish(p, v, a, q)
+            if getattr(tracker, "last_replan_occurred", False):
+                self._log.info(
+                    "[GuidanceExecutor] replanning: re-planned trajectory at "
+                    "t=%.2fs" % sample_t
+                )
+                if self._speed_path_pub is not None:
+                    self._publish_speed_path_preview(tracker.trajectory)
+            if not fallback_logged and getattr(
+                tracker, "last_fallback_reason", None
+            ) is not None:
+                fallback_logged = True
+                self._log.info(
+                    "[GuidanceExecutor] replanning: stopped re-planning for "
+                    "the rest of this goal (reason=%s) at t=%.2fs"
+                    % (tracker.last_fallback_reason, sample_t)
+                )
 
             time_to_go = max(0.0, tracker.total_duration - elapsed)
             p_to_go = (np.asarray(p_target, dtype=float) - np.asarray(p)).tolist()

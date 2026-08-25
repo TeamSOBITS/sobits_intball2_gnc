@@ -123,6 +123,14 @@ class HoverController:
         self._last_torque_imu = [0.0, 0.0, 0.0]
         self._last_force_corr = [0.0, 0.0, 0.0]
         self._last_torque_corr = [0.0, 0.0, 0.0]
+        # Requested (pre-clamp) force/torque, for /ctl/wrench (docs/
+        # main_plan.md "[C] Controller内部値の可観測性強化"): mirrors
+        # last_force_corr/last_torque_corr while trajectory following is
+        # active (sourced from TrajectoryController's own pre-clamp state),
+        # and falls back to the already-clamped corrector value otherwise
+        # (PoseCorrector does not expose a separate pre-clamp value).
+        self._last_force_raw = [0.0, 0.0, 0.0]
+        self._last_torque_raw = [0.0, 0.0, 0.0]
 
     @property
     def tf_status(self) -> str:
@@ -155,6 +163,16 @@ class HoverController:
     def last_torque_corr(self) -> list:
         """Last tick's TF-correction torque [Tx,Ty,Tz] (zero when corrector is off)."""
         return list(self._last_torque_corr)
+
+    @property
+    def last_force_raw(self) -> list:
+        """Last tick's requested (pre-clamp) correction force [Fx,Fy,Fz]."""
+        return list(self._last_force_raw)
+
+    @property
+    def last_torque_raw(self) -> list:
+        """Last tick's requested (pre-clamp) correction torque [Tx,Ty,Tz]."""
+        return list(self._last_torque_raw)
 
     @staticmethod
     def declare_parameters(node) -> None:
@@ -349,6 +367,8 @@ class HoverController:
             # tracking pose/liveness state even while its force output is
             # discarded during trajectory following (see module docstring).
             f_corr, t_corr = self._corrector.update(t, pose)
+            traj_force_used = False
+            traj_torque_used = False
 
             if trajectory_active and pose is not None:
                 pos_now, quat_now, stamp = pose
@@ -357,13 +377,23 @@ class HoverController:
                     self._trajectory_sub.p_des, self._trajectory_sub.v_des,
                     self._trajectory_sub.a_des,
                 )
+                traj_force_used = True
                 q_des = self._trajectory_sub.q_des
                 if q_des is not None:
                     t_corr = self._trajectory_ctrl.compute_attitude(
                         stamp, quat_now, q_des,
                     )
+                    traj_torque_used = True
 
             self._last_force_corr, self._last_torque_corr = f_corr, t_corr
+            self._last_force_raw = (
+                self._trajectory_ctrl.last_force_raw if traj_force_used
+                else list(f_corr)
+            )
+            self._last_torque_raw = (
+                self._trajectory_ctrl.last_torque_raw if traj_torque_used
+                else list(t_corr)
+            )
             force = np.clip(
                 np.asarray(force) + f_corr,
                 -self._law.max_force, self._law.max_force,

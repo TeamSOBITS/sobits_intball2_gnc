@@ -16,6 +16,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 
 from sobits_intball2_gnc.common.ros.tf_client import TfClient
 from sobits_intball2_gnc.control.utils.singleton_lock import (
@@ -99,7 +100,17 @@ class GuidanceNode(Node):
     """Single orchestrator node: wire wrappers to logic and serve the action."""
 
     def __init__(self) -> None:
-        super().__init__("guidance_node")
+        # Default use_sim_time=True since this node's whole timing model
+        # (clock_seconds_fn/spin_fn below) assumes self.get_clock() is sim
+        # time, and unlike control_node it is always run standalone
+        # (`ros2 run`, CLAUDE.md), never through a launch file that would
+        # otherwise inject this parameter (hover_control.launch.py does for
+        # control_node). A parameter_override is a default, not a lock: an
+        # explicit `--ros-args -p use_sim_time:=false` still wins over it.
+        super().__init__(
+            "guidance_node",
+            parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)],
+        )
 
         static_descriptor = ParameterDescriptor(read_only=True)
         # Timer periods are only ever read at node construction (below), so
@@ -225,7 +236,16 @@ class GuidanceNode(Node):
             expected_frame=reference_frame,
             callback_group=ReentrantCallbackGroup(),
         )
-        self.get_logger().info("GuidanceNode up: serving %s" % ACTION_NAME)
+        # Effective use_sim_time, logged at startup (same reasoning as
+        # control.py's equivalent log): this node's default-True
+        # parameter_override can still be overridden by an explicit
+        # --ros-args flag, and a mismatch with control_node's use_sim_time
+        # silently desyncs their clocks -- see docs/archive/achieved/
+        # 2026-08-25_guidance_attitude_saturation_investigation.md.
+        self.get_logger().info(
+            "GuidanceNode up: serving %s, use_sim_time=%s"
+            % (ACTION_NAME, self.get_parameter("use_sim_time").value)
+        )
 
         # Category-A dynamic parameter
         # (docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md):

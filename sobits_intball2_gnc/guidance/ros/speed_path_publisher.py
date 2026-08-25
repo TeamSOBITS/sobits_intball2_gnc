@@ -104,7 +104,11 @@ class SpeedPathPublisher:
             marker.points.append(point)
             marker.colors.append(_speed_to_color(speed, self._max_speed))
         self._pub.publish(marker)
-        self._node.get_logger().info(
+        # debug, not info: a replanning tracker's own tracker re-publishes
+        # this on every re-plan (up to replan_rate_hz), unlike the prior
+        # one-shot-per-goal behavior -- info here would flood the log at
+        # that rate.
+        self._node.get_logger().debug(
             "[SpeedPathPublisher] published %d-point speed path" % len(marker.points)
         )
 
