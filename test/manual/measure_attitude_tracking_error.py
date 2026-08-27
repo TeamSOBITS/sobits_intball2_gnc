@@ -46,7 +46,7 @@ from sobits_intball2_gnc.control.utils.quat_math import quat_conj, quat_mul
 
 REFERENCE_FRAME = "iss_body"
 TARGET_FRAME = "body"
-RATE_HZ = 20.0
+RATE_HZ = 5.0
 OUT_CSV = "/tmp/attitude_tracking_error.csv"
 
 # Per-axis moment of inertia [kg*m^2], x/y/z (docs/archive/achieved/

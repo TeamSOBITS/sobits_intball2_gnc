@@ -26,7 +26,26 @@ def position_error_to_force(kp_pos, kd_pos, target_pos, pos, vel, quat, max_forc
     return np.clip(f_body, -max_force, max_force)
 
 
-def attitude_error_to_torque(kp_att, kd_att, target_quat, quat, omega_err, max_torque):
+def clamp_torque(torque, max_torque, preserve_direction=False):
+    """Clamp a raw body-frame torque vector to ``max_torque``.
+
+    ``preserve_direction=False`` (default, matching prior behavior) clamps
+    each axis independently. ``True`` scales all three axes down by the same
+    factor instead, whenever any axis exceeds its budget -- see
+    :func:`attitude_error_to_torque`'s docstring for why this matters for
+    multi-axis (composite) corrections.
+    """
+    if preserve_direction:
+        max_torque_vec = np.broadcast_to(np.asarray(max_torque, dtype=float), (3,))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratios = np.where(max_torque_vec > 0, np.abs(torque) / max_torque_vec, 0.0)
+        scale = 1.0 / max(1.0, float(np.max(ratios)))
+        return torque * scale
+    return np.clip(torque, -max_torque, max_torque)
+
+
+def attitude_error_to_torque(kp_att, kd_att, target_quat, quat, omega_err,
+                              max_torque, preserve_direction=False):
     """P+D control on the quaternion error, expressed in the body frame.
 
     ``omega_err`` is the *relative* angular rate of the error (e.g. a finite
@@ -41,9 +60,23 @@ def attitude_error_to_torque(kp_att, kd_att, target_quat, quat, omega_err, max_t
     vanishes once tracking is locked, regardless of how fast the reference
     frame itself is turning.
 
+    ``preserve_direction`` (default False, matching prior behavior): when
+    True and the raw torque exceeds ``max_torque`` on any axis, all three
+    axes are scaled down by the *same* factor instead of being clamped
+    independently. Per-axis independent clamping distorts the commanded
+    torque's direction whenever the axes have different headroom (this
+    vehicle's per-axis torque budget is highly anisotropic, see
+    docs/2026-08-27_align_hold_gain_oscillation_investigation.md) -- for a
+    multi-axis (composite) large-angle correction this steers the rotation
+    off the direct path to the target, observed as large overshoot/undershoot
+    swings even though the same correction converges cleanly when confined
+    to a single axis. Scaling uniformly keeps the achieved rotation axis
+    aligned with the commanded one, at the cost of a smaller torque
+    magnitude while saturated on any axis.
+
     Returns a clamped body-frame torque (numpy array).
     """
     qe = quat_mul(quat_conj(target_quat), quat)
     sign = np.sign(qe[3] if qe[3] != 0.0 else 1.0)
     torque = -kp_att * sign * qe[:3] - kd_att * omega_err
-    return np.clip(torque, -max_torque, max_torque)
+    return clamp_torque(torque, max_torque, preserve_direction=preserve_direction)

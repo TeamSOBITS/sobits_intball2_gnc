@@ -76,6 +76,12 @@ DEFAULT_TF = {
     "att_filter_alpha": 1.0,
     "max_corr_force": 0.05,
     "max_corr_torque": 0.01,
+    # Off by default (matches prior per-axis-independent clamp behavior).
+    # See attitude_error_to_torque's preserve_direction docstring and
+    # docs/2026-08-27_align_hold_gain_oscillation_investigation.md -- flip
+    # live via `ros2 param set` to A/B test without a node restart (Category
+    # A dynamic parameter, see TF_CORRECTION_DYNAMIC_KEYS in control.py).
+    "torque_direction_preserving": False,
     "checkpoint_topic": "/gnc/checkpoints",
     # Below: align/hold gain-switch state machine, see
     # docs/archive/achieved/2026-08-21_tf_correction_align_hold_gain_split_design.md. Only
@@ -142,6 +148,7 @@ class PoseCorrector:
         att_filter_alpha=DEFAULT_TF["att_filter_alpha"],
         max_corr_force=DEFAULT_TF["max_corr_force"],
         max_corr_torque=DEFAULT_TF["max_corr_torque"],
+        torque_direction_preserving=DEFAULT_TF["torque_direction_preserving"],
         align_tolerance_deg=DEFAULT_TF["align_tolerance_deg"],
         align_settle_time=DEFAULT_TF["align_settle_time"],
         align_gain_max_duration=DEFAULT_TF["align_gain_max_duration"],
@@ -163,6 +170,7 @@ class PoseCorrector:
         self.align_gain_max_duration = float(align_gain_max_duration)
         self.max_corr_force = float(max_corr_force)
         self.max_corr_torque = float(max_corr_torque)
+        self.torque_direction_preserving = bool(torque_direction_preserving)
 
         self._buf = deque(maxlen=self.window)  # (pos, quat)
         self._last_ingest_t = None   # local monotonic time of last buffered sample
@@ -477,6 +485,7 @@ class PoseCorrector:
         torque = attitude_error_to_torque(
             kp_att, kd_att, target_quat, quat_s, self._omega_filtered,
             self.max_corr_torque,
+            preserve_direction=self.torque_direction_preserving,
         )
         return f_body.tolist(), torque.tolist()
 
@@ -485,6 +494,7 @@ class PoseCorrector:
                   kp_att_hold=None, kd_att_hold=None,
                   vel_filter_alpha=None, att_filter_alpha=None,
                   max_corr_force=None, max_corr_torque=None,
+                  torque_direction_preserving=None,
                   align_tolerance_deg=None, align_settle_time=None,
                   align_gain_max_duration=None,
                   timeout=None) -> None:
@@ -521,5 +531,7 @@ class PoseCorrector:
             self.max_corr_force = float(max_corr_force)
         if max_corr_torque is not None:
             self.max_corr_torque = float(max_corr_torque)
+        if torque_direction_preserving is not None:
+            self.torque_direction_preserving = bool(torque_direction_preserving)
         if timeout is not None:
             self.timeout = float(timeout)

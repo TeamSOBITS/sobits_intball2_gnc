@@ -22,6 +22,7 @@ Navigation OFF that controller stays in STAND_BY and never competes for
 import rclpy
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from std_srvs.srv import Trigger
 
 from sobits_intball2_gnc.common.ros.tf_client import TfClient
@@ -54,6 +55,9 @@ ADVANCE_CHECKPOINT_SERVICE = "/gnc/advance_checkpoint"
 
 # Period of the periodic "who owns the fans" status log [s] (0 disables it).
 DEFAULT_STATUS_LOG_PERIOD = 2.0
+# Node name the ROS1 bridge (parameter_bridge) registers as when relaying a
+# topic to ROS2 -- confirmed live via `ros2 topic info /ctl/duty --verbose`.
+BRIDGE_NODE_NAME = "ros_bridge"
 # How long to wait for the configured TF frames at startup [s].
 TF_STARTUP_TIMEOUT = 5.0
 
@@ -71,12 +75,13 @@ HOVER_DYNAMIC_KEYS = frozenset(
 TF_CORRECTION_DYNAMIC_KEYS = frozenset(
     {"kp_pos", "kd_pos", "kp_att_align", "kd_att_align",
      "kp_att_hold", "kd_att_hold", "vel_filter_alpha",
-     "att_filter_alpha", "max_corr_force", "max_corr_torque", "timeout",
+     "att_filter_alpha", "max_corr_force", "max_corr_torque",
+     "torque_direction_preserving", "timeout",
      "align_tolerance_deg", "align_settle_time", "align_gain_max_duration"}
 )
 TRAJECTORY_DYNAMIC_KEYS = frozenset(
     {"kp_pos", "kd_pos", "vel_filter_alpha", "max_force", "kp_att", "kd_att",
-     "att_filter_alpha", "max_torque", "timeout"}
+     "att_filter_alpha", "max_torque", "torque_direction_preserving", "timeout"}
 )
 THRUST_ALLOCATOR_DYNAMIC_KEYS = frozenset(
     {"force_weight_ref", "torque_weight_ref"}
@@ -87,7 +92,20 @@ class ControlNode(Node):
     """Single orchestrator node: wire wrappers to logic and run the loop."""
 
     def __init__(self) -> None:
-        super().__init__("control_node")
+        # Default use_sim_time=True, matching guidance_node
+        # (guidance/guidance.py): this node's TF-stamp-based dt math
+        # (trajectory_controller.py's compute()/compute_attitude()) assumes
+        # self.get_clock() is sim time. Previously this was only ever true
+        # because hover_control.launch.py injects use_sim_time as a launch
+        # parameter -- a bare `ros2 run sobits_intball2_gnc control` (bypassing
+        # the launch file) silently defaulted to wall-clock, asymmetric with
+        # guidance_node's code-level default. A parameter_override is a
+        # default, not a lock: an explicit `--ros-args -p use_sim_time:=false`
+        # (or the launch file's own override) still wins over it.
+        super().__init__(
+            "control_node",
+            parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)],
+        )
 
         # --- ROS I/O wrappers (attach to this node; none is itself a Node) ---
         self._fan = FanDutyPublisher(self)
@@ -187,23 +205,7 @@ class ControlNode(Node):
                                DEFAULT_STATUS_LOG_PERIOD)
         period = float(self.get_parameter("control.status_log_period").value)
         if period > 0.0:
-            # Listen to our own output topic so we can tell how many duty
-            # messages are really on the wire vs how many we sent: an excess
-            # means another node is actively driving the fans. (A merely
-            # *registered* foreign publisher is not proof of competition -- the
-            # JAXA controller keeps its publisher open while in STAND_BY.)
-            from std_msgs.msg import Float64MultiArray
-
-            self._duty_rx_count = 0
-            self._duty_rx_zero_count = 0
-            self._tx_zero_count = 0
-            self._last_duty_rx = 0
-            self._last_duty_rx_zero = 0
             self._last_duty_tx = 0
-            self._last_tx_zero = 0
-            self._sub_duty = self.create_subscription(
-                Float64MultiArray, DUTY_TOPIC, self._on_duty_echo, 10
-            )
             self._status_timer = self.create_timer(period, self._on_status_log)
 
         # Dynamic reconfiguration for Category-A parameters (gains/clamps/
@@ -214,24 +216,6 @@ class ControlNode(Node):
         # below -- rclpy accepts the value (there is no read_only guard) but
         # nothing re-reads it, matching "static, restart to change".
         self.add_on_set_parameters_callback(self._on_set_parameters)
-
-    @staticmethod
-    def _is_zero_duty(values, eps: float = 1e-6) -> bool:
-        """True when every duty in ``values`` is (near) zero."""
-        return all(abs(v) < eps for v in values)
-
-    def _on_duty_echo(self, msg) -> None:
-        """Count duty messages seen on the wire (including our own).
-
-        Zero-duty and non-zero-duty messages are counted separately: the
-        STAND_BY heartbeat from the bridged JAXA controller publishes an
-        all-zero duty array at ~1 Hz even with no competition, so counting it
-        as "foreign" alongside genuinely competing (non-zero) duty commands
-        produced false CONTESTED warnings (see docs/phase0_findings.md).
-        """
-        self._duty_rx_count += 1
-        if self._is_zero_duty(msg.data):
-            self._duty_rx_zero_count += 1
 
     def _set_status_log_period(self, period: float) -> None:
         """Change the status-log timer's period, or disable/re-enable it.
@@ -297,32 +281,52 @@ class ControlNode(Node):
         return response
 
     def _on_status_log(self) -> None:
-        """Periodically report whether this node actually drives the fans."""
-        # Messages on the wire this period vs messages we sent this period.
-        # foreign > 0 means someone else is actively publishing duties.
-        rx = self._duty_rx_count
-        rx_zero = self._duty_rx_zero_count
+        """Periodically report whether this node actually drives the fans.
+
+        Classifies other publishers on DUTY_TOPIC by *node name*
+        (``get_publishers_info_by_topic``) rather than by duty content:
+        content-based detection was tried and discarded (2026-08-27) -- the
+        bidirectional ROS1 bridge (no ``direction`` override in
+        bridge_topics.yaml) echoes every duty we publish back to us under
+        node name "ros_bridge", live-measured with a multi-second round trip
+        under the bridge's normal CPU load, so no fixed history window could
+        reliably tell "our own echo" apart from "genuinely new content"
+        without false positives. Node identity is simpler and doesn't depend
+        on timing at all:
+          - other publisher named exactly our own node name -> a duplicate
+            control_node instance (flagged regardless of content, since two
+            instances computing the same control law could plausibly agree
+            on values -- content-matching would hide exactly this case).
+          - other publisher named "ros_bridge" -> expected (our own commands
+            echoing back, or -- per this package's Navigation-OFF invariant,
+            see module docstring -- the JAXA controller's STAND_BY heartbeat);
+            not treated as contested.
+          - any other name -> genuinely unexplained, flagged as CONTESTED.
+        """
         tx = self._fan.publish_count
-        tx_zero = self._tx_zero_count
-        rx_delta = rx - self._last_duty_rx
-        rx_zero_delta = rx_zero - self._last_duty_rx_zero
         tx_delta = tx - self._last_duty_tx
-        tx_zero_delta = tx_zero - self._last_tx_zero
-        self._last_duty_rx, self._last_duty_rx_zero = rx, rx_zero
-        self._last_duty_tx, self._last_tx_zero = tx, tx_zero
+        self._last_duty_tx = tx
 
-        # Split the excess into zero-duty (benign STAND_BY heartbeat) and
-        # non-zero (genuinely competing) so a harmless idle heartbeat from the
-        # bridged JAXA controller doesn't get reported as CONTESTED.
-        foreign_zero = max(0, rx_zero_delta - tx_zero_delta)
-        foreign_nonzero = max(
-            0, (rx_delta - rx_zero_delta) - (tx_delta - tx_zero_delta)
+        pub_infos = self.get_publishers_info_by_topic(DUTY_TOPIC)
+        own_name = self.get_name()
+        name_counts = {}
+        for info in pub_infos:
+            name_counts[info.node_name] = name_counts.get(info.node_name, 0) + 1
+        duplicate_control_nodes = max(0, name_counts.get(own_name, 0) - 1)
+        unknown_names = sorted(
+            n for n in name_counts if n not in (own_name, BRIDGE_NODE_NAME)
         )
-        foreign = foreign_zero + foreign_nonzero
+        other_pubs = max(0, len(pub_infos) - 1)
+        if duplicate_control_nodes > 0:
+            self.get_logger().error(
+                "DUPLICATE %s DETECTED: %d other publisher(s) named %r on %s "
+                "-- is hover_control.launch.py running twice (possibly on "
+                "another host/container sharing this ROS_DOMAIN_ID)? Detected "
+                "by publisher identity, not duty content, so it won't be "
+                "hidden even if both instances happen to command the same "
+                "values." % (own_name, duplicate_control_nodes, own_name, DUTY_TOPIC)
+            )
 
-        # A registered foreign publisher is normal (the JAXA controller keeps
-        # its publisher open in STAND_BY); report it as context only.
-        other_pubs = max(0, self.count_publishers(DUTY_TOPIC) - 1)
         # Phase 0 diagnosis: force/torque split by source, pre-combination, to
         # see whether the TF correction and the IMU law cancel each other out
         # (see docs/main_plan.md Phase 0).
@@ -331,22 +335,20 @@ class ControlNode(Node):
         t_imu = ", ".join("%.4f" % v for v in self._hover.last_torque_imu)
         t_corr = ", ".join("%.4f" % v for v in self._hover.last_torque_corr)
         summary = (
-            "fan-control: ours=%d msgs, foreign=%d (other publishers=%d), "
+            "fan-control: ours=%d msgs, other publishers=%d (%s), "
             "mode=%s, imu=%s, tf=%s, trajectory_active=%s, duty=[%s], "
             "force_imu=[%s], force_corr=[%s], torque_imu=[%s], torque_corr=[%s]"
-            % (tx_delta, foreign, other_pubs, self._mode,
+            % (tx_delta, other_pubs, ", ".join(sorted(name_counts)) or "none",
+               self._mode,
                "ok" if self._imu.ready else "WAITING",
                self._hover.tf_status, self._hover.trajectory_active,
                ", ".join("%.2f" % d for d in self._fan.duties),
                f_imu, f_corr, t_imu, t_corr)
         )
-        if foreign_nonzero > 0:
+        if unknown_names:
             self.get_logger().warn(
-                summary + "  <-- FOREIGN duty messages: fan control is CONTESTED"
-            )
-        elif foreign_zero > 0:
-            self.get_logger().info(
-                summary + "  <-- benign zero-duty STAND_BY heartbeat only"
+                summary + "  <-- unrecognized publisher(s) %s on %s: fan "
+                "control is CONTESTED" % (unknown_names, DUTY_TOPIC)
             )
         elif tx_delta == 0:
             self.get_logger().warn(
@@ -365,8 +367,6 @@ class ControlNode(Node):
         # docs/recording_cpu_load_control_degradation.md.
         self._hover.step(self.get_clock().now().nanoseconds * 1e-9)
         self._wrench_pub.publish(self._hover.last_force_raw, self._hover.last_torque_raw)
-        if hasattr(self, "_tx_zero_count") and self._is_zero_duty(self._fan.duties):
-            self._tx_zero_count += 1
 
 
 def main(args=None) -> None:

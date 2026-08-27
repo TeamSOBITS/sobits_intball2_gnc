@@ -92,6 +92,11 @@ def dscalar(name, value):
     return ParameterMsg(name=name, value=pv)
 
 
+def dbool(name, value):
+    pv = ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=value)
+    return ParameterMsg(name=name, value=pv)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--restore", action="store_true",
@@ -111,6 +116,11 @@ def main():
                      help="offset angle for the checkpoint (default: 180)")
     ap.add_argument("--axis", default="z", choices=["x", "y", "z", "xyz"],
                      help="body-local rotation axis for the offset (default: z)")
+    ap.add_argument("--preserve-direction", action="store_true",
+                     help="set tf_correction.torque_direction_preserving=true "
+                          "(scale all torque axes uniformly instead of clamping "
+                          "independently -- see docs/2026-08-27_align_hold_gain_"
+                          "oscillation_investigation.md)")
     args = ap.parse_args()
     out_csv = args.out_csv
     att_filter_alpha = args.alpha
@@ -136,17 +146,30 @@ def main():
         print("control_node set_parameters service unavailable")
         return 1
 
-    def set_gains(kp, kd, max_torque, filt):
+    def set_gains(kp, kd, max_torque, filt, preserve_direction=False):
+        # NOTE: tf_correction.kp_att/kd_att do NOT exist since the 2026-08-21
+        # align/hold gain split (docs/archive/achieved/
+        # 2026-08-21_tf_correction_align_hold_gain_split_design.md) --
+        # setting them here used to silently no-op (SetParameters returns
+        # successful=False for an undeclared parameter, which this function's
+        # callers never checked). Target the _align variant: this script's
+        # checkpoints are is_align=True the whole time (no align->hold
+        # transition happens mid-offset for the angles this script tests).
         req = SetParameters.Request()
         req.parameters = [
-            dparam("tf_correction.kp_att", kp),
-            dparam("tf_correction.kd_att", kd),
+            dparam("tf_correction.kp_att_align", kp),
+            dparam("tf_correction.kd_att_align", kd),
             dscalar("tf_correction.max_corr_torque", max_torque),
             dscalar("tf_correction.att_filter_alpha", filt),
+            dbool("tf_correction.torque_direction_preserving", preserve_direction),
         ]
         future = cli.call_async(req)
         rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
-        return future.result()
+        result = future.result()
+        if result is None or not all(r.successful for r in result.results):
+            reasons = [r.reason for r in (result.results if result else []) if not r.successful]
+            print(f"WARNING: set_gains partially/fully failed: {reasons}")
+        return result
 
     checkpoint_pub = node.create_publisher(PoseArray, CHECKPOINT_TOPIC, 5)
 

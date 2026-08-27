@@ -42,7 +42,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("location_name")
     ap.add_argument("--out-csv", default=OUT_CSV_DEFAULT)
-    ap.add_argument("--rate-hz", type=float, default=20.0)
+    ap.add_argument("--rate-hz", type=float, default=10.0)
     args = ap.parse_args()
 
     rclpy.init()

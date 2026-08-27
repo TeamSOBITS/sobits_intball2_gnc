@@ -235,6 +235,7 @@ class HoverController:
                 att_filter_alpha=f("att_filter_alpha"),
                 max_corr_force=f("max_corr_force"),
                 max_corr_torque=f("max_corr_torque"),
+                torque_direction_preserving=f("torque_direction_preserving"),
                 align_tolerance_deg=f("align_tolerance_deg"),
                 align_settle_time=f("align_settle_time"),
                 align_gain_max_duration=f("align_gain_max_duration"),
@@ -244,6 +245,7 @@ class HoverController:
                 vel_filter_alpha=g("vel_filter_alpha"), max_force=g("max_force"),
                 kp_att=g("kp_att"), kd_att=g("kd_att"),
                 att_filter_alpha=g("att_filter_alpha"), max_torque=g("max_torque"),
+                torque_direction_preserving=g("torque_direction_preserving"),
             )
         return cls(imu_subscriber, fan_publisher, allocator, law,
                    tf_client, corrector, trajectory_subscriber, trajectory_ctrl,

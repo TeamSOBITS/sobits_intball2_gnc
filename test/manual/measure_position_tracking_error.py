@@ -27,7 +27,7 @@ from sobits_intball2_gnc.control.ros.multi_dof_joint_trajectory_subscriber impor
 
 REFERENCE_FRAME = "iss_body"
 TARGET_FRAME = "body"
-RATE_HZ = 20.0
+RATE_HZ = 5.0
 OUT_CSV = "/tmp/position_tracking_error.csv"
 
 

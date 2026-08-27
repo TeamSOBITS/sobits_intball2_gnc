@@ -151,8 +151,14 @@ class HeuristicSegmentTimeAllocator(BaseSegmentTimeAllocator):
     @staticmethod
     def _apply_v0_bound(naive_t, d, delta0, v0, a_max):
         """Clamp the first segment's naive time into the ``[T_min, T_max]``
-        range the ``v0``-aware Hermite cubic requires (exact, see
-        :meth:`_v0_aware_bounds`), raising if that range is empty.
+        range the ``v0``-aware Hermite cubic requires, raising if that range
+        is empty. ``T_min`` is the larger of two independent lower bounds --
+        one from ``v0``'s component along ``delta0`` (:meth:`_v0_aware_bounds`,
+        exact quadratic-root form) and one from ``v0``'s perpendicular
+        residual (``T_min_perp = 4*v_perp/a_max``, computed inline below).
+        ``T_max`` only ever comes from the parallel component -- the
+        perpendicular channel never overshoots (see
+        ``docs/2026-08-25_v0_aware_time_allocation_lateral_velocity_fix.md``).
 
         Unlike this class's other adjustments (which only ever raise a
         segment time via ``np.maximum``), this can *lower* ``naive_t`` --
@@ -161,17 +167,37 @@ class HeuristicSegmentTimeAllocator(BaseSegmentTimeAllocator):
         4-4 節) could otherwise leave the first segment above ``T_max``,
         which would make the actual trajectory overshoot the target.
         """
-        v_parallel = max(float(np.dot(v0, delta0 / d)), 0.0)
+        delta0_hat = delta0 / d
+        v_parallel_raw = float(np.dot(v0, delta0_hat))
+        v_parallel = max(v_parallel_raw, 0.0)
         t_min, t_max = HeuristicSegmentTimeAllocator._v0_aware_bounds(
             d, v_parallel, a_max
         )
+
+        # v0's component orthogonal to delta0 (the raw, unclamped projection
+        # is subtracted here -- unlike v_parallel above, which is clamped to
+        # >= 0 for the T_max/T_min-along-delta0 formula, extracting the
+        # perpendicular residual must use the true projection or a negative
+        # v_parallel_raw would leave part of v0's along-delta0 component
+        # miscounted as perpendicular). See docs/2026-08-25_v0_aware_time_allocation_lateral_velocity_fix.md
+        # for the derivation: the Hermite cubic's perpendicular channel has
+        # boundary conditions p(0)=p(T)=0, m0=v_perp, m1=0, whose peak
+        # acceleration is |a(0)| = 4*v_perp/T (always >= |a(T)|=2*v_perp/T),
+        # giving a closed-form T_min_perp with no matching T_max (that
+        # channel returns monotonically to 0, no overshoot is possible).
+        v_perp_vec = v0 - v_parallel_raw * delta0_hat
+        v_perp = float(np.linalg.norm(v_perp_vec))
+        t_min_perp = 4.0 * v_perp / a_max
+        t_min = max(t_min, t_min_perp)
+
         if t_min > t_max:
             raise SegmentTimeInfeasibleError(
                 "no feasible first-segment time for the given v0: "
                 "T_min=%.4fs > T_max=%.4fs (d=%.4fm, v_parallel=%.4fm/s, "
-                "max_accel=%.4fm/s^2) -- caller must fall back to a static "
-                "trajectory instead of replanning this close/this fast"
-                % (t_min, t_max, d, v_parallel, a_max)
+                "v_perp=%.4fm/s, max_accel=%.4fm/s^2) -- caller must fall "
+                "back to a static trajectory instead of replanning this "
+                "close/this fast"
+                % (t_min, t_max, d, v_parallel, v_perp, a_max)
             )
         return min(max(naive_t, t_min), t_max)
 

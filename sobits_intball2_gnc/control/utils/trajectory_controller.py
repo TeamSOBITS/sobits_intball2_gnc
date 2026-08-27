@@ -35,6 +35,7 @@ import numpy as np
 
 from sobits_intball2_gnc.control.utils.pose_control_law import (
     attitude_error_to_torque,
+    clamp_torque,
     position_error_to_force,
 )
 from sobits_intball2_gnc.control.utils.quat_math import (
@@ -44,8 +45,13 @@ from sobits_intball2_gnc.control.utils.quat_math import (
 )
 
 DEFAULT_TRAJECTORY = {
-    "mass": 4.5,
-    "max_force": 0.1,
+    # Ground-truth sim mass (docs/2026-08-27_sim_ground_truth_params.md),
+    # matches config/gnc_params.yaml's trajectory_controller.mass.
+    "mass": 3.216,
+    # Per-axis theoretical max, derived from the fan model (4 saturating
+    # fans dedicated to that axis), not a uniform scalar -- see
+    # docs/2026-08-27_max_force_anisotropy_from_fan_model.md.
+    "max_force": [0.181, 0.0996, 0.122],
     "timeout": 0.2,
     # Reuses the same theoretically-designed position gains as the checkpoint
     # hold loop (tf_correction.kp_pos/kd_pos, docs/phase0_findings.md
@@ -65,6 +71,12 @@ DEFAULT_TRAJECTORY = {
     "kd_att": [0.0, 0.0, 0.0],
     "att_filter_alpha": 1.0,
     "max_torque": 0.01,
+    # Off by default (matches prior per-axis-independent clamp behavior).
+    # See pose_control_law.attitude_error_to_torque's preserve_direction
+    # docstring and docs/2026-08-27_align_hold_gain_oscillation_investigation.md
+    # -- flip live via `ros2 param set` to A/B test without a node restart
+    # (Category A dynamic parameter, see TRAJECTORY_DYNAMIC_KEYS in control.py).
+    "torque_direction_preserving": False,
 }
 
 
@@ -77,12 +89,16 @@ class TrajectoryController:
         kd_pos: Velocity-error -> force gain [N/(m/s)], 3 elements.
         vel_filter_alpha: EMA blend weight for this controller's own
             finite-difference velocity estimate (1.0 = no filtering).
-        max_force: Output force clamp (per axis) [N].
+        max_force: Output force clamp [N], scalar or 3-element per-axis
+            vector (body frame).
         kp_att: Quaternion-error -> torque gain, 3 elements.
         kd_att: Relative tracking-rate -> torque gain, 3 elements.
         att_filter_alpha: EMA blend weight for this controller's own
             finite-difference omega_err estimate (1.0 = no filtering).
         max_torque: Output torque clamp (per axis) [N*m].
+        torque_direction_preserving: When True, scale all torque axes
+            uniformly instead of clamping each independently -- see
+            :func:`~sobits_intball2_gnc.control.utils.pose_control_law.attitude_error_to_torque`.
     """
 
     def __init__(
@@ -96,16 +112,18 @@ class TrajectoryController:
         kd_att=DEFAULT_TRAJECTORY["kd_att"],
         att_filter_alpha=DEFAULT_TRAJECTORY["att_filter_alpha"],
         max_torque=DEFAULT_TRAJECTORY["max_torque"],
+        torque_direction_preserving=DEFAULT_TRAJECTORY["torque_direction_preserving"],
     ) -> None:
         self.mass = float(mass)
         self.kp_pos = np.asarray(kp_pos, dtype=float)
         self.kd_pos = np.asarray(kd_pos, dtype=float)
         self.vel_filter_alpha = float(vel_filter_alpha)
-        self.max_force = float(max_force)
+        self.max_force = np.asarray(max_force, dtype=float)
         self.kp_att = np.asarray(kp_att, dtype=float)
         self.kd_att = np.asarray(kd_att, dtype=float)
         self.att_filter_alpha = float(att_filter_alpha)
         self.max_torque = float(max_torque)
+        self.torque_direction_preserving = bool(torque_direction_preserving)
 
         # Velocity estimate: finite difference of the TF position between
         # successive compute() calls, independent of PoseCorrector's own
@@ -284,12 +302,16 @@ class TrajectoryController:
             self.kp_att, self.kd_att, q_des, quat_now, self._omega_filtered,
             np.inf,
         )
-        torque = np.clip(self._last_torque_raw, -self.max_torque, self.max_torque)
+        torque = clamp_torque(
+            self._last_torque_raw, self.max_torque,
+            preserve_direction=self.torque_direction_preserving,
+        )
         return torque.tolist()
 
     def set_gains(self, kp_pos=None, kd_pos=None, vel_filter_alpha=None,
                   max_force=None, kp_att=None, kd_att=None,
-                  att_filter_alpha=None, max_torque=None) -> None:
+                  att_filter_alpha=None, max_torque=None,
+                  torque_direction_preserving=None) -> None:
         """Update gains/clamps in place (dynamic reconfiguration).
 
         Any argument left as ``None`` keeps its current value. Does not touch
@@ -305,7 +327,7 @@ class TrajectoryController:
         if vel_filter_alpha is not None:
             self.vel_filter_alpha = float(vel_filter_alpha)
         if max_force is not None:
-            self.max_force = float(max_force)
+            self.max_force = np.asarray(max_force, dtype=float)
         if kp_att is not None:
             self.kp_att = np.asarray(kp_att, dtype=float)
         if kd_att is not None:
@@ -314,3 +336,5 @@ class TrajectoryController:
             self.att_filter_alpha = float(att_filter_alpha)
         if max_torque is not None:
             self.max_torque = float(max_torque)
+        if torque_direction_preserving is not None:
+            self.torque_direction_preserving = bool(torque_direction_preserving)
