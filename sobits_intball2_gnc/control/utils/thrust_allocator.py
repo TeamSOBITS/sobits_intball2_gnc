@@ -49,7 +49,7 @@ an array of maps.
 """
 import math
 
-from scipy.optimize import lsq_linear
+from scipy.optimize import lsq_linear, linprog
 
 import numpy as np
 from rcl_interfaces.msg import ParameterDescriptor
@@ -65,6 +65,16 @@ DEFAULT_CG = [0.001489, 0.001363, 0.000249]
 # in the weighted least-squares fit.
 DEFAULT_FORCE_WEIGHT_REF = 0.1   # [N]
 DEFAULT_TORQUE_WEIGHT_REF = 0.32  # [N*m]
+# Per-axis physically achievable torque ceiling (x,y,z), measured from this
+# fan geometry -- see docs/archive/achieved/
+# 2026-08-27_max_force_anisotropy_from_fan_model.md and
+# docs/2026-08-27_thrust_allocator_single_axis_saturation_findings.md. Used
+# only when torque_axis_balance=True, to weight each torque row by its own
+# achievable budget (mirroring the force/torque channel weighting above,
+# one level deeper) instead of one shared torque_weight_ref for all three
+# axes -- an attempt at countering the observed single-axis-dominant
+# allocation during composite-axis saturation.
+DEFAULT_TORQUE_AXIS_MAX = [0.00303, 0.00455, 0.00819]
 DEFAULT_FAN_POSITIONS = [
     0.045, 0.070, 0.0555,     # fan1
     0.045, -0.070, 0.0555,    # fan2
@@ -125,6 +135,9 @@ class ThrustAllocator:
         fan_vectors=DEFAULT_FAN_VECTORS,
         force_weight_ref: float = DEFAULT_FORCE_WEIGHT_REF,
         torque_weight_ref: float = DEFAULT_TORQUE_WEIGHT_REF,
+        torque_axis_balance: bool = False,
+        torque_axis_max=DEFAULT_TORQUE_AXIS_MAX,
+        minimax_objective: bool = False,
     ) -> None:
         self.kj = float(kj)
         self.fj_max = float(fj_max)
@@ -133,6 +146,9 @@ class ThrustAllocator:
         # changing) without the caller having to resupply both.
         self._force_weight_ref = float(force_weight_ref)
         self._torque_weight_ref = float(torque_weight_ref)
+        self._torque_axis_balance = bool(torque_axis_balance)
+        self._torque_axis_max = np.asarray(torque_axis_max, dtype=float)
+        self._minimax_objective = bool(minimax_objective)
         self._weight = self._make_weight(
             self._force_weight_ref, self._torque_weight_ref
         )
@@ -151,14 +167,25 @@ class ThrustAllocator:
             cols.append(np.concatenate([vec, torque]))
         self.A = np.column_stack(cols)          # 6 x N
 
-    @staticmethod
-    def _make_weight(force_weight_ref: float, torque_weight_ref: float):
-        """Per-row weight vector (see module docstring point 2)."""
-        return np.array(
-            [1.0 / force_weight_ref] * 3 + [1.0 / torque_weight_ref] * 3
-        )
+    def _make_weight(self, force_weight_ref: float, torque_weight_ref: float):
+        """Per-row weight vector (see module docstring point 2).
 
-    def set_weights(self, force_weight_ref=None, torque_weight_ref=None) -> None:
+        When ``torque_axis_balance`` is set, the shared ``torque_weight_ref``
+        is split across x/y/z by each axis's own achievable torque ceiling
+        (harmonic-mean-normalized so the overall torque-vs-force balance
+        stays the same as the uniform case) instead of weighting all three
+        torque rows equally -- see ``DEFAULT_TORQUE_AXIS_MAX`` above.
+        """
+        if self._torque_axis_balance:
+            axis_max = self._torque_axis_max
+            harmonic_mean = 3.0 / np.sum(1.0 / axis_max)
+            torque_w = (1.0 / torque_weight_ref) * (harmonic_mean / axis_max)
+        else:
+            torque_w = np.array([1.0 / torque_weight_ref] * 3)
+        return np.concatenate([[1.0 / force_weight_ref] * 3, torque_w])
+
+    def set_weights(self, force_weight_ref=None, torque_weight_ref=None,
+                     torque_axis_balance=None, minimax_objective=None) -> None:
         """Update the force/torque weighting references (dynamic reconfiguration).
 
         Recomputes ``self._weight`` only -- ``kj``/``fj_max``/``fan_count``/
@@ -170,6 +197,10 @@ class ThrustAllocator:
             self._force_weight_ref = float(force_weight_ref)
         if torque_weight_ref is not None:
             self._torque_weight_ref = float(torque_weight_ref)
+        if torque_axis_balance is not None:
+            self._torque_axis_balance = bool(torque_axis_balance)
+        if minimax_objective is not None:
+            self._minimax_objective = bool(minimax_objective)
         self._weight = self._make_weight(
             self._force_weight_ref, self._torque_weight_ref
         )
@@ -190,6 +221,8 @@ class ThrustAllocator:
         for name, default in (
             ("thrust_allocator.force_weight_ref", DEFAULT_FORCE_WEIGHT_REF),
             ("thrust_allocator.torque_weight_ref", DEFAULT_TORQUE_WEIGHT_REF),
+            ("thrust_allocator.torque_axis_balance", False),
+            ("thrust_allocator.minimax_objective", False),
         ):
             if not node.has_parameter(name):
                 node.declare_parameter(name, default)
@@ -210,6 +243,8 @@ class ThrustAllocator:
             fan_vectors=g("thrust_allocator.fan_vectors"),
             force_weight_ref=g("thrust_allocator.force_weight_ref"),
             torque_weight_ref=g("thrust_allocator.torque_weight_ref"),
+            torque_axis_balance=g("thrust_allocator.torque_axis_balance"),
+            minimax_objective=g("thrust_allocator.minimax_objective"),
         )
 
     def allocate(self, force, torque) -> list:
@@ -223,6 +258,12 @@ class ThrustAllocator:
         if not np.any(y):
             return [0.0] * self.fan_count
 
+        f = self._allocate_minimax(y) if self._minimax_objective else self._allocate_lsq(y)
+
+        return [self._force_to_duty(fj) for fj in f]
+
+    def _allocate_lsq(self, y):
+        """Weighted bounded least squares (default, see module docstring)."""
         # Bounded least squares directly on 0 <= f <= fj_max (no post-hoc
         # rescale -- see module docstring point 1), weighted so the force and
         # torque rows are compared as a fraction of their own reference budget
@@ -246,14 +287,58 @@ class ThrustAllocator:
         A_aug = np.vstack([Aw, reg])
         y_aug = np.concatenate([yw, np.zeros(self.fan_count)])
         result = lsq_linear(A_aug, y_aug, bounds=(0.0, self.fj_max))
-        f = result.x
+        return result.x
 
-        return [self._force_to_duty(fj) for fj in f]
+    def _allocate_minimax(self, y):
+        """Minimize the worst-case (weighted) per-row residual instead of the
+        sum of squared residuals -- an attempt at avoiding the single-axis-
+        dominant ("winner takes all") allocation observed under saturation
+        with ``_allocate_lsq``'s L2 objective, see
+        docs/2026-08-27_thrust_allocator_single_axis_saturation_findings.md.
+        An L2 fit can freely drive one row's residual to zero while leaving
+        another row's residual large, as long as the sum of squares is
+        smaller; an L-infinity (minimax) fit cannot let any one row's
+        residual exceed the others without penalty, so it is structurally
+        biased toward distributing the shortfall across axes instead of
+        fully satisfying one at the expense of the rest.
+
+        Formulated as a linear program: minimize t subject to
+        ``-t <= Aw@f - yw <= t`` (elementwise, all 6 wrench rows) and
+        ``0 <= f <= fj_max``.
+        """
+        Aw = self.A * self._weight[:, np.newaxis]
+        yw = y * self._weight
+        n = self.fan_count
+        c = np.zeros(n + 1)
+        c[-1] = 1.0
+        ones = np.ones((Aw.shape[0], 1))
+        A_ub = np.vstack([
+            np.hstack([Aw, -ones]),
+            np.hstack([-Aw, -ones]),
+        ])
+        b_ub = np.concatenate([yw, -yw])
+        bounds = [(0.0, self.fj_max)] * n + [(0.0, None)]
+        result = linprog(c, A_ub=A_ub, b_ub=b_ub, bounds=bounds, method="highs")
+        if not result.success:
+            return self._allocate_lsq(y)
+        return result.x[:n]
 
     def _force_to_duty(self, f: float) -> float:
         """duty = kj * sqrt(f), clamped to [0, 1]."""
         duty = self.kj * math.sqrt(max(0.0, f))
         return max(0.0, min(1.0, duty))
+
+    def achieved_wrench(self, duties) -> tuple:
+        """Invert ``_force_to_duty`` (``f = (duty/kj)**2``) and re-apply ``A``
+        to get the (force, torque) actually realized by a duty array -- the
+        exact inverse of ``allocate()``, for diagnosing how much of a
+        request was actually achieved. Exact whenever ``duties`` came from
+        this same allocator's ``allocate()`` (duty=1.0 <=> f=fj_max, since
+        ``kj*sqrt(fj_max) == 1.0`` by construction).
+        """
+        thrust = [(d / self.kj) ** 2 for d in duties]
+        wrench = self.A @ np.asarray(thrust)
+        return tuple(wrench[0:3]), tuple(wrench[3:6])
 
 
 def _demo() -> None:
