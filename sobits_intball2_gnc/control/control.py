@@ -39,7 +39,9 @@ from sobits_intball2_gnc.control.utils.hover_controller import (
     HOVER_MODES,
     HoverController,
 )
-from sobits_intball2_gnc.control.ros.wrench_publisher import WrenchPublisher
+from sobits_intball2_gnc.control.ros.wrench_publisher import (
+    WrenchPublisher, WRENCH_TOTAL_TOPIC, WRENCH_ACHIEVED_TOPIC,
+)
 from sobits_intball2_gnc.control.utils.singleton_lock import (
     SingletonLockError,
     acquire_singleton_lock,
@@ -84,7 +86,7 @@ TRAJECTORY_DYNAMIC_KEYS = frozenset(
      "att_filter_alpha", "max_torque", "torque_direction_preserving", "timeout"}
 )
 THRUST_ALLOCATOR_DYNAMIC_KEYS = frozenset(
-    {"force_weight_ref", "torque_weight_ref"}
+    {"force_weight_ref", "torque_weight_ref", "torque_axis_balance", "minimax_objective"}
 )
 
 
@@ -167,6 +169,12 @@ class ControlNode(Node):
         # (mirrors last_force_corr/last_torque_corr in imu-only mode, where
         # both are always zero).
         self._wrench_pub = WrenchPublisher(self)
+        # (IMU-law + correction), summed and clamped -- the exact wrench
+        # ThrustAllocator.allocate() actually receives each tick, for
+        # diagnosing where a request becomes axis-dominant (docs/
+        # 2026-08-27_thrust_allocator_single_axis_saturation_findings.md).
+        self._wrench_total_pub = WrenchPublisher(self, topic=WRENCH_TOTAL_TOPIC)
+        self._wrench_achieved_pub = WrenchPublisher(self, topic=WRENCH_ACHIEVED_TOPIC)
 
         # Checkpoint array interface (poses in the TF reference frame).
         self._path = PoseArraySubscriber(
@@ -367,6 +375,8 @@ class ControlNode(Node):
         # docs/recording_cpu_load_control_degradation.md.
         self._hover.step(self.get_clock().now().nanoseconds * 1e-9)
         self._wrench_pub.publish(self._hover.last_force_raw, self._hover.last_torque_raw)
+        self._wrench_total_pub.publish(self._hover.last_force_total, self._hover.last_torque_total)
+        self._wrench_achieved_pub.publish(self._hover.last_force_achieved, self._hover.last_torque_achieved)
 
 
 def main(args=None) -> None:

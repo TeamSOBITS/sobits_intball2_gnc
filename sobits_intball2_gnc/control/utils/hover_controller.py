@@ -131,6 +131,23 @@ class HoverController:
         # (PoseCorrector does not expose a separate pre-clamp value).
         self._last_force_raw = [0.0, 0.0, 0.0]
         self._last_torque_raw = [0.0, 0.0, 0.0]
+        # (IMU-law + correction), summed and clamped -- the exact (force,
+        # torque) passed to ThrustAllocator.allocate() this tick. Exposed
+        # separately from last_force_corr/last_torque_corr because neither
+        # alone is what the allocator actually sees; see
+        # docs/2026-08-27_thrust_allocator_single_axis_saturation_findings.md
+        # ("why is the requested torque itself axis-dominant").
+        self._last_force_total = [0.0, 0.0, 0.0]
+        self._last_torque_total = [0.0, 0.0, 0.0]
+        # Wrench actually realized by this tick's duties (allocator.
+        # achieved_wrench()), computed synchronously alongside
+        # last_force_total/last_torque_total -- unlike reconstructing this
+        # from a separately-subscribed /ctl/duty message (as test/manual/
+        # diagnose_align_gains.py originally did), this is guaranteed to be
+        # from the exact same tick, no cross-topic staleness possible. See
+        # docs/2026-08-27_thrust_allocator_single_axis_saturation_findings.md.
+        self._last_force_achieved = [0.0, 0.0, 0.0]
+        self._last_torque_achieved = [0.0, 0.0, 0.0]
 
     @property
     def tf_status(self) -> str:
@@ -173,6 +190,32 @@ class HoverController:
     def last_torque_raw(self) -> list:
         """Last tick's requested (pre-clamp) correction torque [Tx,Ty,Tz]."""
         return list(self._last_torque_raw)
+
+    @property
+    def last_force_total(self) -> list:
+        """Last tick's (IMU-law + correction) force actually passed to the
+        allocator, post ``hover_control.max_force`` clamp [Fx,Fy,Fz]."""
+        return list(self._last_force_total)
+
+    @property
+    def last_torque_total(self) -> list:
+        """Last tick's (IMU-law + correction) torque actually passed to the
+        allocator, post ``hover_control.max_torque`` clamp [Tx,Ty,Tz]."""
+        return list(self._last_torque_total)
+
+    @property
+    def last_force_achieved(self) -> list:
+        """Last tick's force actually realized by the allocated duties
+        [Fx,Fy,Fz], computed synchronously with last_force_total (same tick,
+        no cross-topic staleness)."""
+        return list(self._last_force_achieved)
+
+    @property
+    def last_torque_achieved(self) -> list:
+        """Last tick's torque actually realized by the allocated duties
+        [Tx,Ty,Tz], computed synchronously with last_torque_total (same
+        tick, no cross-topic staleness)."""
+        return list(self._last_torque_achieved)
 
     @staticmethod
     def declare_parameters(node) -> None:
@@ -407,5 +450,9 @@ class HoverController:
         else:
             self._last_force_corr = [0.0, 0.0, 0.0]
             self._last_torque_corr = [0.0, 0.0, 0.0]
+        self._last_force_total, self._last_torque_total = list(force), list(torque)
         duties = self._allocator.allocate(force, torque)
+        self._last_force_achieved, self._last_torque_achieved = (
+            self._allocator.achieved_wrench(duties)
+        )
         self._fan.set_duty_array(duties)

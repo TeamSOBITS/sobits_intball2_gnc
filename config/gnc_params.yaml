@@ -78,6 +78,20 @@
         - 0.754
         - 0.415
         - 0.509      # fan8
+      # Experimental (default off): split torque_weight_ref across x/y/z by
+      # each axis's own physical torque ceiling instead of weighting all
+      # three equally -- an attempt at countering the single-axis-dominant
+      # allocation observed during composite-axis saturation, see
+      # docs/2026-08-27_thrust_allocator_single_axis_saturation_findings.md.
+      # Sim A/B-tested and found to make convergence/overshoot WORSE
+      # (see that doc) -- kept as a toggle, left off.
+      torque_axis_balance: false
+      # Experimental (default off): minimize the worst-case per-axis
+      # (weighted) residual (L-infinity) instead of the sum of squared
+      # residuals (L2) -- another attempt at countering the same
+      # single-axis-dominant allocation, see the doc above. Not yet
+      # validated; toggle live via `ros2 param set` to A/B test.
+      minimax_objective: false
 
     # Guidance node: drives the CtlCommand action server (docs/guidance_node_implementation_plan.md).
     guidance:

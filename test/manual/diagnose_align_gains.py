@@ -9,10 +9,12 @@ Does NOT modify tf_correction's persisted config. Only:
     restored to the current baseline afterward, or use --restore to just
     restore and exit)
   - publishes a single offset checkpoint to /gnc/checkpoints
-  - polls TF (iss_body <- body), /ctl/duty and /imu/imu, recomputing the
-    quaternion error/sign locally with the same formula as
+  - polls TF (iss_body <- body), /ctl/duty, /imu/imu and /ctl/wrench,
+    recomputing the quaternion error/sign locally with the same formula as
     pose_control_law.attitude_error_to_torque
-  - logs every tick to CSV and flags sign-flip ticks
+  - logs every tick to CSV (including per-axis requested torque from
+    /ctl/wrench vs. torque actually realized by /ctl/duty, reconstructed via
+    the live thrust_allocator's wrench matrix) and flags sign-flip ticks
 
 All timing is on the node clock (use_sim_time=True), no wall-clock sleep.
 
@@ -30,19 +32,32 @@ import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rcl_interfaces.msg import Parameter as ParameterMsg, ParameterValue, ParameterType
-from rcl_interfaces.srv import SetParameters
-from geometry_msgs.msg import PoseArray, Pose
+from rcl_interfaces.srv import SetParameters, GetParameters
+from geometry_msgs.msg import PoseArray, Pose, WrenchStamped
 from std_msgs.msg import Float64MultiArray
 from ib2_msgs.msg import IMU
 
 from sobits_intball2_gnc.common.ros.tf_client import TfClient
+from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
 
 REFERENCE_FRAME = "iss_body"
 TARGET_FRAME = "body"
 CHECKPOINT_TOPIC = "/gnc/checkpoints"
 DUTY_TOPIC = "/ctl/duty"
 IMU_TOPIC = "/imu/imu"
+WRENCH_TOPIC = "/ctl/wrench"
+WRENCH_TOTAL_TOPIC = "/ctl/wrench_total"
+WRENCH_ACHIEVED_TOPIC = "/ctl/wrench_achieved"
 POLL_HZ = 20.0
+THRUST_ALLOCATOR_PARAM_NAMES = [
+    "thrust_allocator.kj",
+    "thrust_allocator.fj_max",
+    "thrust_allocator.cg",
+    "thrust_allocator.fan_positions",
+    "thrust_allocator.fan_vectors",
+    "thrust_allocator.force_weight_ref",
+    "thrust_allocator.torque_weight_ref",
+]
 DURATION_S_DEFAULT = 25.0
 OUT_CSV_DEFAULT = "/tmp/diagnose_align_gains_log.csv"
 
@@ -97,6 +112,45 @@ def dbool(name, value):
     return ParameterMsg(name=name, value=pv)
 
 
+def _parameter_value_to_python(pv: ParameterValue):
+    if pv.type == ParameterType.PARAMETER_DOUBLE:
+        return pv.double_value
+    if pv.type == ParameterType.PARAMETER_DOUBLE_ARRAY:
+        return list(pv.double_array_value)
+    if pv.type == ParameterType.PARAMETER_BOOL:
+        return pv.bool_value
+    raise ValueError(f"unsupported parameter type {pv.type}")
+
+
+def fetch_thrust_allocator(node: Node) -> ThrustAllocator:
+    """Build a ThrustAllocator mirroring control_node's live thrust_allocator.*
+    parameters (fetched via GetParameters, not the module's DEFAULT_* values),
+    so the achieved-torque reconstruction below matches whatever weighting
+    control_node is actually running with -- including force_weight_ref/
+    torque_weight_ref, which are dynamically reconfigurable and may not match
+    config/gnc_params.yaml's on-disk defaults if tuned live."""
+    cli = node.create_client(GetParameters, "/control_node/get_parameters")
+    if not cli.wait_for_service(timeout_sec=5.0):
+        raise RuntimeError("control_node get_parameters service unavailable")
+    req = GetParameters.Request()
+    req.names = THRUST_ALLOCATOR_PARAM_NAMES
+    future = cli.call_async(req)
+    rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+    result = future.result()
+    if result is None:
+        raise RuntimeError("get_parameters call to control_node failed")
+    values = dict(zip(THRUST_ALLOCATOR_PARAM_NAMES, result.values))
+    return ThrustAllocator(
+        kj=_parameter_value_to_python(values["thrust_allocator.kj"]),
+        fj_max=_parameter_value_to_python(values["thrust_allocator.fj_max"]),
+        cg=_parameter_value_to_python(values["thrust_allocator.cg"]),
+        fan_positions=_parameter_value_to_python(values["thrust_allocator.fan_positions"]),
+        fan_vectors=_parameter_value_to_python(values["thrust_allocator.fan_vectors"]),
+        force_weight_ref=_parameter_value_to_python(values["thrust_allocator.force_weight_ref"]),
+        torque_weight_ref=_parameter_value_to_python(values["thrust_allocator.torque_weight_ref"]),
+    )
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--restore", action="store_true",
@@ -119,8 +173,23 @@ def main():
     ap.add_argument("--preserve-direction", action="store_true",
                      help="set tf_correction.torque_direction_preserving=true "
                           "(scale all torque axes uniformly instead of clamping "
-                          "independently -- see docs/2026-08-27_align_hold_gain_"
+                          "independently -- see docs/2026-08-21_align_hold_gain_"
                           "oscillation_investigation.md)")
+    ap.add_argument("--hover-max-torque", type=float, default=None,
+                     help="temporarily override hover_control.max_torque (the "
+                          "OUTER clamp applied after tf_correction's own clamp, "
+                          "config default 0.02 Nm, independent-axis np.clip with "
+                          "no preserve_direction option -- see docs/2026-08-27_"
+                          "composite_axis_overshoot_next_steps.md) for this run "
+                          "only; restored to its current live value afterward")
+    ap.add_argument("--minimax", action="store_true",
+                     help="temporarily set thrust_allocator.minimax_objective=true "
+                          "(config default false -- L-infinity fit instead of the "
+                          "default weighted L2 lsq_linear fit, meant to avoid "
+                          "winner-takes-all single-axis-dominant allocation under "
+                          "saturation, see docs/2026-08-27_thrust_allocator_single_"
+                          "axis_saturation_findings.md) for this run only; "
+                          "restored to its current live value afterward")
     args = ap.parse_args()
     out_csv = args.out_csv
     att_filter_alpha = args.alpha
@@ -145,6 +214,50 @@ def main():
     if not cli.wait_for_service(timeout_sec=5.0):
         print("control_node set_parameters service unavailable")
         return 1
+    get_cli = node.create_client(GetParameters, "/control_node/get_parameters")
+    if not get_cli.wait_for_service(timeout_sec=5.0):
+        print("control_node get_parameters service unavailable")
+        return 1
+
+    def get_hover_max_torque():
+        req = GetParameters.Request()
+        req.names = ["hover_control.max_torque"]
+        future = get_cli.call_async(req)
+        rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+        result = future.result()
+        if result is None:
+            raise RuntimeError("get_parameters(hover_control.max_torque) failed")
+        return _parameter_value_to_python(result.values[0])
+
+    def set_hover_max_torque(value):
+        req = SetParameters.Request()
+        req.parameters = [dscalar("hover_control.max_torque", value)]
+        future = cli.call_async(req)
+        rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+        result = future.result()
+        if result is None or not all(r.successful for r in result.results):
+            reasons = [r.reason for r in (result.results if result else []) if not r.successful]
+            print(f"WARNING: set_hover_max_torque failed: {reasons}")
+
+    def get_minimax_objective():
+        req = GetParameters.Request()
+        req.names = ["thrust_allocator.minimax_objective"]
+        future = get_cli.call_async(req)
+        rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+        result = future.result()
+        if result is None:
+            raise RuntimeError("get_parameters(thrust_allocator.minimax_objective) failed")
+        return _parameter_value_to_python(result.values[0])
+
+    def set_minimax_objective(value):
+        req = SetParameters.Request()
+        req.parameters = [dbool("thrust_allocator.minimax_objective", value)]
+        future = cli.call_async(req)
+        rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+        result = future.result()
+        if result is None or not all(r.successful for r in result.results):
+            reasons = [r.reason for r in (result.results if result else []) if not r.successful]
+            print(f"WARNING: set_minimax_objective failed: {reasons}")
 
     def set_gains(kp, kd, max_torque, filt, preserve_direction=False):
         # NOTE: tf_correction.kp_att/kd_att do NOT exist since the 2026-08-21
@@ -193,6 +306,8 @@ def main():
     pos0, quat0, _ = tf_client.get_pose()
     quat0 = np.asarray(quat0, dtype=float)
 
+    allocator = fetch_thrust_allocator(node)
+
     # Offset about the body's local axis.
     half = np.radians(args.offset_deg) / 2.0
     offset_q = np.array([*(np.sin(half) * axis_vec), np.cos(half)])
@@ -211,6 +326,59 @@ def main():
         latest_gyro["values"] = (msg.gyro_x, msg.gyro_y, msg.gyro_z)
 
     node.create_subscription(IMU, IMU_TOPIC, on_imu, 10)
+
+    latest_req_torque = {"values": None}
+    latest_req_force = {"values": None}
+
+    def on_wrench(msg: WrenchStamped):
+        latest_req_torque["values"] = (
+            msg.wrench.torque.x, msg.wrench.torque.y, msg.wrench.torque.z,
+        )
+        latest_req_force["values"] = (
+            msg.wrench.force.x, msg.wrench.force.y, msg.wrench.force.z,
+        )
+
+    node.create_subscription(WrenchStamped, WRENCH_TOPIC, on_wrench, 10)
+
+    latest_req_torque_total = {"values": None}
+    latest_req_force_total = {"values": None}
+
+    def on_wrench_total(msg: WrenchStamped):
+        latest_req_torque_total["values"] = (
+            msg.wrench.torque.x, msg.wrench.torque.y, msg.wrench.torque.z,
+        )
+        latest_req_force_total["values"] = (
+            msg.wrench.force.x, msg.wrench.force.y, msg.wrench.force.z,
+        )
+
+    node.create_subscription(WrenchStamped, WRENCH_TOTAL_TOPIC, on_wrench_total, 10)
+
+    latest_ach_torque_sync = {"values": None}
+    latest_ach_force_sync = {"values": None}
+
+    def on_wrench_achieved(msg: WrenchStamped):
+        latest_ach_torque_sync["values"] = (
+            msg.wrench.torque.x, msg.wrench.torque.y, msg.wrench.torque.z,
+        )
+        latest_ach_force_sync["values"] = (
+            msg.wrench.force.x, msg.wrench.force.y, msg.wrench.force.z,
+        )
+
+    node.create_subscription(WrenchStamped, WRENCH_ACHIEVED_TOPIC, on_wrench_achieved, 10)
+
+    hover_max_torque_baseline = None
+    if args.hover_max_torque is not None:
+        hover_max_torque_baseline = get_hover_max_torque()
+        print(f"overriding hover_control.max_torque {hover_max_torque_baseline} "
+              f"-> {args.hover_max_torque} (restored after this run) ...")
+        set_hover_max_torque(args.hover_max_torque)
+
+    minimax_baseline = None
+    if args.minimax:
+        minimax_baseline = get_minimax_objective()
+        print(f"overriding thrust_allocator.minimax_objective {minimax_baseline} "
+              f"-> True (restored after this run) ...")
+        set_minimax_objective(True)
 
     print("setting align gains via SetParameters ...")
     set_gains(kp_att, kd_att, max_corr_torque, att_filter_alpha)
@@ -242,6 +410,25 @@ def main():
         duty = latest_duty["values"]
         n_saturated = sum(1 for d in duty if d >= 0.999) if duty else None
         gyro = latest_gyro["values"]
+        req_torque = latest_req_torque["values"]
+        req_force = latest_req_force["values"]
+        req_torque_total = latest_req_torque_total["values"]
+        req_force_total = latest_req_force_total["values"]
+        ach_torque_sync = latest_ach_torque_sync["values"]
+        ach_force_sync = latest_ach_force_sync["values"]
+        if duty is not None:
+            # Invert _force_to_duty (duty = kj*sqrt(f)) to recover per-fan
+            # thrust, then re-apply the allocator's wrench matrix to get the
+            # force/torque actually realized by that duty -- as opposed to what
+            # was requested (req_force/req_torque, pre-allocation/pre-clamp,
+            # from /ctl/wrench).
+            thrust = [(d / allocator.kj) ** 2 for d in duty]
+            achieved = allocator.A @ np.asarray(thrust)
+            ach_force = tuple(achieved[0:3])
+            ach_torque = tuple(achieved[3:6])
+        else:
+            ach_force = None
+            ach_torque = None
         rows.append({
             "stamp": stamp,
             "angle_deg": angle_deg,
@@ -253,6 +440,31 @@ def main():
             "gyro_y": gyro[1] if gyro else None,
             "gyro_z": gyro[2] if gyro else None,
             "n_saturated": n_saturated,
+            **{f"duty_{i}": (duty[i] if duty else None) for i in range(8)},
+            "req_fx": req_force[0] if req_force else None,
+            "req_fy": req_force[1] if req_force else None,
+            "req_fz": req_force[2] if req_force else None,
+            "req_tx": req_torque[0] if req_torque else None,
+            "req_ty": req_torque[1] if req_torque else None,
+            "req_tz": req_torque[2] if req_torque else None,
+            "req_total_tx": req_torque_total[0] if req_torque_total else None,
+            "req_total_ty": req_torque_total[1] if req_torque_total else None,
+            "req_total_tz": req_torque_total[2] if req_torque_total else None,
+            "req_total_fx": req_force_total[0] if req_force_total else None,
+            "req_total_fy": req_force_total[1] if req_force_total else None,
+            "req_total_fz": req_force_total[2] if req_force_total else None,
+            "ach_fx": ach_force[0] if ach_force else None,
+            "ach_fy": ach_force[1] if ach_force else None,
+            "ach_fz": ach_force[2] if ach_force else None,
+            "ach_tx": ach_torque[0] if ach_torque else None,
+            "ach_ty": ach_torque[1] if ach_torque else None,
+            "ach_tz": ach_torque[2] if ach_torque else None,
+            "ach_sync_fx": ach_force_sync[0] if ach_force_sync else None,
+            "ach_sync_fy": ach_force_sync[1] if ach_force_sync else None,
+            "ach_sync_fz": ach_force_sync[2] if ach_force_sync else None,
+            "ach_sync_tx": ach_torque_sync[0] if ach_torque_sync else None,
+            "ach_sync_ty": ach_torque_sync[1] if ach_torque_sync else None,
+            "ach_sync_tz": ach_torque_sync[2] if ach_torque_sync else None,
         })
 
     timer = node.create_timer(1.0 / POLL_HZ, tick)
@@ -283,6 +495,12 @@ def main():
     print("\nrestoring baseline gains and clearing checkpoints ...")
     set_gains(BASELINE_KP_ATT, BASELINE_KD_ATT, BASELINE_MAX_CORR_TORQUE,
               BASELINE_ATT_FILTER_ALPHA)
+    if hover_max_torque_baseline is not None:
+        print(f"restoring hover_control.max_torque -> {hover_max_torque_baseline} ...")
+        set_hover_max_torque(hover_max_torque_baseline)
+    if minimax_baseline is not None:
+        print(f"restoring thrust_allocator.minimax_objective -> {minimax_baseline} ...")
+        set_minimax_objective(minimax_baseline)
     clear_checkpoints()
 
     rclpy.shutdown()

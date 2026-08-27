@@ -19,6 +19,16 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile
 
 WRENCH_TOPIC = "/ctl/wrench"
+# (IMU-law + correction), summed and clamped -- the exact wrench passed to
+# ThrustAllocator.allocate() each tick, as opposed to WRENCH_TOPIC's
+# correction-only value. See docs/2026-08-27_thrust_allocator_single_axis_
+# saturation_findings.md.
+WRENCH_TOTAL_TOPIC = "/ctl/wrench_total"
+# The wrench actually realized by this tick's duties (ThrustAllocator.
+# achieved_wrench()), published from the same tick as WRENCH_TOTAL_TOPIC so
+# the two can be compared without cross-topic staleness. See docs/
+# 2026-08-27_thrust_allocator_single_axis_saturation_findings.md.
+WRENCH_ACHIEVED_TOPIC = "/ctl/wrench_achieved"
 DEFAULT_QOS = QoSProfile(depth=1)
 
 
@@ -35,10 +45,11 @@ class WrenchPublisher:
     """
 
     def __init__(self, node: Node, frame_id: str = "body",
-                 qos_profile: QoSProfile = DEFAULT_QOS) -> None:
+                 qos_profile: QoSProfile = DEFAULT_QOS,
+                 topic: str = WRENCH_TOPIC) -> None:
         self._node = node
         self._frame_id = frame_id
-        self._pub = node.create_publisher(WrenchStamped, WRENCH_TOPIC, qos_profile)
+        self._pub = node.create_publisher(WrenchStamped, topic, qos_profile)
 
     def publish(self, force, torque, stamp=None) -> None:
         """Publish ``force``/``torque`` (each a 3-element sequence [N]/[N*m])."""
