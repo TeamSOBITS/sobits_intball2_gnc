@@ -701,3 +701,51 @@ def test_trajectory_controller_resets_on_reactivation():
     # kd_pos * vel_now should be ~0 on this first tick of the new move, not a
     # huge spurious value from the stale _last_pos.
     assert all(abs(v) < 1e-6 for v in alloc.last_force)
+
+
+def test_last_force_raw_sources_from_trajectory_controller_when_active():
+    tf = _FakeTf(pose=([0.0, 0.0, 0.0], _IDENTITY, 100.0))
+    pc = _corrector(smooth_window=1, kp_pos=[1.0, 1.0, 1.0], max_corr_force=10.0)
+    # A tiny max_force so the clamp actually bites, and the raw (pre-clamp)
+    # request differs from what actually gets used downstream.
+    traj_ctrl = TrajectoryController(mass=1.0, kp_pos=[2.0, 2.0, 2.0],
+                                      kd_pos=[0.0, 0.0, 0.0],
+                                      vel_filter_alpha=1.0, max_force=0.1)
+    traj_sub = _FakeTrajectorySub(
+        p_des=[2.0, 0.0, 0.0], v_des=[0.0, 0.0, 0.0], a_des=[0.0, 0.0, 0.0],
+        last_received_t=0.0,
+    )
+    alloc = _FakeAllocator()
+    hc = HoverController(
+        _FakeImu(gyro=[0, 0, 0], acc=[0, 0, 0]), _FakeFan(), alloc,
+        HoverLaw(max_force=100.0),
+        tf_client=tf, corrector=pc,
+        trajectory_subscriber=traj_sub, trajectory_controller=traj_ctrl,
+        trajectory_timeout=0.2,
+    )
+    hc.step(0.0)
+    # kp * (p_des - pos) = 2 * 2.0 = 4.0, well above the 0.1 clamp.
+    assert hc.last_force_raw[0] > 0.1
+    assert math.isclose(hc.last_force_corr[0], 0.1, abs_tol=1e-9)
+
+
+def test_last_force_raw_falls_back_to_corrector_when_trajectory_inactive():
+    tf = _FakeTf(pose=([0.0, 0.0, 0.0], _IDENTITY, 100.0))
+    pc = _corrector(smooth_window=1, kp_pos=[1.0, 1.0, 1.0], max_corr_force=10.0)
+    pc.set_checkpoints([([3.0, 0.0, 0.0], _IDENTITY)])
+    traj_ctrl = TrajectoryController(max_force=10.0)
+    traj_sub = _FakeTrajectorySub(
+        p_des=[9.0, 0.0, 0.0], v_des=[0, 0, 0], a_des=[0, 0, 0],
+        last_received_t=-10.0,
+    )
+    alloc = _FakeAllocator()
+    hc = HoverController(
+        _FakeImu(gyro=[0, 0, 0], acc=[0, 0, 0]), _FakeFan(), alloc,
+        HoverLaw(max_force=100.0),
+        tf_client=tf, corrector=pc,
+        trajectory_subscriber=traj_sub, trajectory_controller=traj_ctrl,
+        trajectory_timeout=0.2,
+    )
+    hc.step(0.0)
+    assert hc.trajectory_active is False
+    assert math.isclose(hc.last_force_raw[0], hc.last_force_corr[0], abs_tol=1e-9)

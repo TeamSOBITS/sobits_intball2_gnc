@@ -166,6 +166,52 @@ def test_v0_negative_parallel_component_falls_back_to_exact_rest_to_rest():
     assert np.isclose(segment_times[0], np.sqrt(6.0), atol=1e-6)
 
 
+# --- v_perp (start velocity component perpendicular to delta0) ----------
+# docs/2026-08-25_v0_aware_time_allocation_lateral_velocity_fix.md: T_min
+# must also account for v0's component orthogonal to delta0, via the
+# closed-form T_min_perp = 4*v_perp/a_max (no matching T_max -- that channel
+# never overshoots).
+
+
+def test_v0_perpendicular_component_raises_time_above_naive_estimate():
+    # delta0 along +x, v0 purely along +y (v_parallel=0 -> T_max=inf).
+    # T_min_perp = 4*v_perp/a_max = 4*10/1 = 40, far above both the naive
+    # distance/target_speed estimate (1.0) and the v_parallel=0 fallback
+    # bound sqrt(6*d/a_max) ~= 2.449.
+    allocator = HeuristicSegmentTimeAllocator(target_speed=1.0, max_accel=1.0)
+    segment_times = allocator.allocate(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], v0=[0.0, 10.0, 0.0]
+    )
+    assert np.isclose(segment_times[0], 40.0, atol=1e-6)
+
+
+def test_v0_perpendicular_component_can_trigger_infeasible():
+    # v_parallel=1.0 -> T_max=3d/v_parallel=3.0. v_perp=1.0 ->
+    # T_min_perp=4*v_perp/a_max=4.0, which exceeds T_max: no segment time
+    # satisfies both the overshoot bound (parallel) and the acceleration
+    # bound (perpendicular) simultaneously.
+    allocator = HeuristicSegmentTimeAllocator(target_speed=1.0, max_accel=1.0)
+    with pytest.raises(SegmentTimeInfeasibleError):
+        allocator.allocate(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], v0=[1.0, 1.0, 0.0]
+        )
+
+
+def test_v0_perpendicular_extraction_uses_raw_not_clamped_projection():
+    # v0=[-1, 2, 0], delta0=[1, 0, 0]: the raw projection onto delta0 is
+    # -1 (clamped to 0 for v_parallel/T_max purposes), but extracting
+    # v_perp must subtract the *raw* -1, not the clamped 0 -- otherwise
+    # v_perp_vec would wrongly be v0 itself (norm sqrt(5)) instead of the
+    # true perpendicular residual [0, 2, 0] (norm 2). With a_max=1.0,
+    # T_min_perp=4*2/1=8.0, above the v_parallel=0 fallback bound
+    # sqrt(6*1/1)~=2.449, so this distinguishes the two computations.
+    allocator = HeuristicSegmentTimeAllocator(target_speed=1.0, max_accel=1.0)
+    segment_times = allocator.allocate(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], v0=[-1.0, 2.0, 0.0]
+    )
+    assert np.isclose(segment_times[0], 8.0, atol=1e-6)
+
+
 def test_v0_aware_bounds_never_infeasible_for_positive_v_parallel():
     # docs/archive/achieved/session_2026-08-24_heuristic_segment_time_allocator_v0_extension.md 3 節/
     # _v0_aware_bounds's docstring: T_min < T_max is provable for any

@@ -36,7 +36,7 @@ from sobits_intball2_gnc.common.ros.tf_client import TfClient
 
 REFERENCE_FRAME = "iss_body"
 TARGET_FRAME = "body"
-RATE_HZ = 50.0
+RATE_HZ = 5.0
 OUT_CSV = "/tmp/pose_stability.csv"
 
 # Tentative -- not yet calibrated against a confirmed "safe" baseline. Purpose

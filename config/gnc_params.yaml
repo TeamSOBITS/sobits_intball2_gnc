@@ -1,26 +1,18 @@
 # IntBall2 GNC parameters (ROS2 parameter file).
 #
-# Loaded through the ROS2 parameter system by the `control` orchestrator node
-# (control.py), e.g.:
+# Loaded by control_node, e.g.:
 #   ros2 run sobits_intball2_gnc control --ros-args --params-file <this file>
 #
-# Each control module declares and reads only the parameters it uses (parameter
-# ownership is co-located with the code). Dotted names group parameters per
-# module. Fan geometry / thrust model initial values come from
-# tmp/sim/report_fan.md (derived from the simulator's sim.yaml / ctl.yaml).
+# Each module declares/reads only the parameters it owns (dotted-name groups
+# = module). Self-position comes from TF (iss_body <- body) with Navigation
+# OFF -- no nav_correction settings here; a stale key from an old revision is
+# silently ignored by ROS2 (never declared -> no error, just no effect).
 #
-# Self-position comes from the TF tree (iss_body <- body), which the simulator
-# publishes with Navigation OFF. This file has no Navigation settings: the
-# package does not subscribe to /sensor_fusion/navigation and does not talk to
-# the JAXA ctl_only controller.
-#
-# NOTE: ROS2 parameters cannot represent an array of maps, so the 8-fan geometry
-# is flattened into two double[24] arrays (fan_positions / fan_vectors), read
-# 3 elements at a time (x,y,z) per fan. See utils/thrust_allocator.py.
-#
-# NOTE: ROS2 silently ignores parameter overrides that the node never declares.
-# A key left over from an older revision (e.g. anything under `nav_correction`)
-# therefore has no effect and produces no error -- it just quietly does nothing.
+# Ground-truth physical constants (mass/inertia/fan model) are cross-checked
+# against the simulator's own ROS1 rosparam values, see
+# docs/2026-08-27_sim_ground_truth_params.md. Design-derivation history for
+# tuned gains lives in docs/ (referenced per-parameter below); this file only
+# keeps the current value + a one-line rationale.
 
 /**:
   ros__parameters:
@@ -28,19 +20,14 @@
     thrust_allocator:
       kj: 4.082482905          # thrust -> duty coefficient: duty = kj * sqrt(f)
       fj_max: 0.06             # max thrust per fan [N] (duty = 1.0)
-      cg: [0.001489, 0.001363, 0.000249]   # center of gravity [m]
-      # Weighting references for the bounded least-squares allocation (2026-08-20,
-      # see thrust_allocator.py module docstring): a request expressed as raw
-      # [Fx,Fy,Fz,Tx,Ty,Tz] mixes N and N*m, so without normalizing by each
-      # channel's own reference budget, even a small torque request (this fan
-      # geometry's short ~0.05-0.07m moment arms make torque numerically
-      # expensive) dominated the least-squares fit and crushed co-requested
-      # force by 40-90%+. Mirror trajectory_controller.max_force/max_torque
-      # below so a full-scale error on either channel counts the same.
-      force_weight_ref: 0.1    # [N], mirrors trajectory_controller.max_force
-      torque_weight_ref: 0.32  # [N*m], mirrors trajectory_controller.max_torque
-      # 8 fans, flattened [x1,y1,z1, x2,y2,z2, ...] (body frame).
-      # pos = mounting position [m], vec = thrust unit vector.
+      cg: [0.001489, 0.001363, 0.000249]   # center of gravity [m], matches sim ground truth
+      # Bounded least-squares weighting refs (thrust_allocator.py): normalize
+      # force/torque channels by these budgets so a small torque request
+      # doesn't dominate the fit and crush co-requested force. Mirrors
+      # trajectory_controller.max_force/max_torque below.
+      force_weight_ref: 0.1    # [N]
+      torque_weight_ref: 0.32  # [N*m]
+      # 8 fans, flattened [x,y,z, ...] body frame. pos = mount [m], vec = thrust unit vector.
       fan_positions:
         - 0.045
         - 0.070
@@ -92,413 +79,194 @@
         - 0.415
         - 0.509      # fan8
 
-    # Guidance node (docs/guidance_node_implementation_plan.md): drives the
-    # CtlCommand action server's execute_fn.
+    # Guidance node: drives the CtlCommand action server (docs/guidance_node_implementation_plan.md).
     guidance:
-      # forward_axis (body frame, see attitude_reference.compute_q_des) for
-      # each "which camera faces the direction of travel" option
-      # (face_travel_camera). Measured via TF (2026-08-20): body -> cameraF_link
-      # is an identity rotation (main camera's optical axis is body +X);
-      # body -> cameraL_link is a +90 deg yaw (Z-axis) rotation, so
-      # cameraL_link's own +X (optical axis) axis expressed in the body frame
-      # is body +Y.
+      # forward_axis (body frame) per face_travel_camera option. Measured via
+      # TF (2026-08-20): body->cameraF_link identity, body->cameraL_link +90deg yaw.
       camera_forward_axis:
         main: [1.0, 0.0, 0.0]
         stereo: [0.0, 1.0, 0.0]
       target_speed: 0.5        # cruise speed for HeuristicSegmentTimeAllocator [m/s]
-      attitude_speed_threshold: 0.02  # passed to Trajectory (see trajectory.py)
+      attitude_speed_threshold: 0.02  # see trajectory.py
       align_tolerance_deg: 3.0     # pre-/post-alignment convergence tolerance [deg]
-      align_timeout: 60.0           # pre-/post-alignment safety cap [s]
-      # Minimum unbroken time within align_tolerance_deg before _align_to
-      # declares convergence -- a single in-tolerance TF sample isn't enough
-      # evidence of settling: an underdamped correction swings through the
-      # target, and without this a mid-swing pass gets mistaken for arrival
-      # (observed for pre_align, see docs/archive/achieved/
-      # 2026-08-21_pre_align_skipped_low_speed_bug.md). Untuned initial
-      # guess -- revisit against the observed oscillation period.
+      align_timeout: 60.0          # pre-/post-alignment safety cap [s]
+      # Minimum unbroken in-tolerance time before declaring convergence, so an
+      # underdamped swing-through isn't mistaken for arrival (docs/archive/achieved/2026-08-21_pre_align_skipped_low_speed_bug.md).
       align_settle_time: 0.5        # [s]
-      # Position-error counterpart of align_tolerance_deg/align_settle_time/
-      # align_timeout above, checked by _run_trajectory once its planned
-      # duration elapses (docs/align_at_arrival_position_based_plan.md).
-      # Kept as separate parameters, not shared with the attitude trio --
-      # translation and attitude correction have different loop dynamics
-      # (mass vs. inertia, kp_pos vs. kp_att).
-      align_pos_tolerance_m: 0.05   # move-to arrival convergence tolerance [m]. Untuned initial guess -- revisit against observed arrival error (measured 1.2mm-6cm across runs, docs/archive/achieved/).
-      align_pos_settle_time: 0.5    # [s] -- same settle-time reasoning as align_settle_time
-      # Deliberately much shorter than align_timeout (60s): this only waits
-      # out the residual translation error left after the planned duration
-      # elapses (expected: a few cm, settled by the P+D trajectory_controller
-      # in a few seconds), not a whole goal's worth of safety margin.
-      align_pos_timeout: 10.0       # [s]
-      # TF liveness (docs/guidance_realtime_replanning_design.md 6-8/7-4): a
-      # pose is treated as stale once its transform's stamp stops advancing
-      # for this long, timed on this node's own sim clock -- mirrors
-      # tf_correction.timeout's convention (stamps are compared to other
-      # stamps, never to this process's clock). A stale pose is treated the
-      # same as no pose at all (execute() aborts on its initial fetch;
-      # _run_trajectory/_align_to skip that tick's convergence check).
-      tf_staleness_timeout: 1.0     # stamp stalled this long -> treat as no TF [s]
+      # Position-error counterpart of the align_* trio above, checked once the
+      # planned duration elapses (docs/align_at_arrival_position_based_plan.md).
+      # Kept separate: translation vs. attitude have different loop dynamics.
+      align_pos_tolerance_m: 0.05   # move-to arrival tolerance [m], untuned guess
+      align_pos_settle_time: 0.5    # [s]
+      align_pos_timeout: 10.0       # [s] -- short: only waits out residual error after planned duration, not a full goal's margin
+      # TF liveness (docs/guidance_realtime_replanning_design.md 6-8/7-4): stamp
+      # stalled this long on this node's own sim clock -> treat as no TF.
+      tf_staleness_timeout: 1.0     # [s]
       rate: 50.0                    # /gnc/trajectory_setpoint publish rate [Hz]
-      # Guidance-side TF velocity estimator (docs/
-      # guidance_velocity_estimator_design.md), independent of
-      # TrajectoryController's own estimator. Deliberately much lower than
-      # `rate` (50Hz Control P+D loop) -- frequency separation to avoid
-      # coupling two independent feedback loops that both read the same TF
-      # (docs/guidance_realtime_replanning_design.md 3-2 節). Untuned initial
-      # guess -- revisit against measured TF position noise.
-      velocity_estimate_rate: 10.0  # finite-difference update rate [Hz]
-      velocity_estimate_alpha: 0.3  # EMA blend weight (1.0 = no filtering), same convention/default as trajectory_controller.vel_filter_alpha
-      # Attitude-reference mode for the in-trajectory q_des(t) (docs/
-      # movement_mode_design.md): "fixed" (don't rotate while moving),
-      # "face_travel" (face direction of travel, compute_q_des), or
-      # "look_at" (accepted but not yet implemented -- falls back to
-      # face_travel with a warning, see GuidanceNode._execute_fn).
+      # Guidance-side TF velocity estimator (docs/guidance_velocity_estimator_design.md),
+      # independent of TrajectoryController's own estimator -- deliberately far
+      # below `rate` to avoid coupling two feedback loops reading the same TF.
+      velocity_estimate_rate: 10.0  # [Hz]
+      velocity_estimate_alpha: 0.3  # EMA blend weight (1.0 = no filtering)
+      # In-trajectory q_des(t) mode (docs/movement_mode_design.md): fixed /
+      # face_travel (compute_q_des) / look_at (not implemented, falls back to face_travel).
       attitude_reference_mode: face_travel
-      pre_align: true               # pre-align to the initial tangent before departure (only takes effect when attitude_reference_mode == face_travel)
-      align_at_arrival: true        # re-align on arrival (target computed per align_at_arrival_mode below)
-      face_travel_camera: main      # which camera axis faces the direction of travel when attitude_reference_mode == face_travel ("main"/"stereo", see camera_forward_axis above)
-      # TF frame to face when attitude_reference_mode == "look_at" (not yet
-      # implemented). Latched at goal receipt.
-      look_at_target_frame: ""
-      # On arrival, align so this camera's axis faces where the goal's
-      # q_target implies -- "main" aligns to q_target as-is; any other
-      # camera (e.g. "stereo") aligns so that camera's axis faces where the
-      # main camera would have under q_target (compute_camera_relative_quat).
-      align_at_arrival_camera: main
+      pre_align: true               # pre-align to initial tangent before departure (face_travel only)
+      align_at_arrival: true        # re-align on arrival
+      face_travel_camera: main      # camera axis facing travel direction (face_travel)
+      look_at_target_frame: ""      # not yet implemented
+      align_at_arrival_camera: main # camera aligned to q_target on arrival
       # Real-time re-planning (docs/guidance_realtime_replanning_design.md):
-      # "static" (default, open-loop single trajectory, unchanged prior
-      # behavior) or "replanning" (continuously re-plans the translation leg
-      # from live TF). Latched at goal receipt, like attitude_reference_mode.
+      # static (open-loop single trajectory) or replanning (re-plans from live
+      # TF). Latched at goal receipt, like attitude_reference_mode.
       trajectory_tracking_mode: static
-      # q_des rate limit (docs/archive/achieved/
-      # 2026-08-24_trajectory_state_carryover_design.md 3-4節), applied in
-      # both tracking modes. Untuned initial guess.
-      max_angular_rate_deg: 90.0
-      # trajectory_tracking_mode=replanning only: remaining-distance
-      # threshold below which re-planning permanently stops for the rest of
-      # that goal (docs/archive/achieved/
-      # 2026-08-24_replanning_distance_fallback_decision.md).
+      max_angular_rate_deg: 90.0    # q_des rate limit, both tracking modes, untuned guess
+      # replanning only: remaining-distance below which re-planning stops for
+      # the rest of the goal (docs/archive/achieved/2026-08-24_replanning_distance_fallback_decision.md).
       distance_fallback_m: 0.3
-      # trajectory_tracking_mode=replanning only: re-plan cadence, far below
-      # `rate` above by design (docs/archive/achieved/
-      # 2026-08-24_replan_rate_design.md) -- matches velocity_estimate_rate
-      # since that's this feature's actual v0 refresh rate.
+      # replanning only: re-plan cadence, matches velocity_estimate_rate
+      # (docs/archive/achieved/2026-08-24_replan_rate_design.md).
       replan_rate_hz: 10.0
 
     control:
-      # Period of the periodic "who owns the fans" status log [s].
-      # Logs /ctl/duty publisher count, IMU/Nav liveness, JAXA ctl status and
-      # the current duty array. Set 0.0 to disable.
+      # Period of the periodic "who owns the fans" status log [s]. 0.0 disables.
       status_log_period: 2.0
 
-    # Translation-only direction-vector control (control/utils/
-    # translation_direction_controller.py). Not yet wired to any node -- a
-    # future teleoperation building block. Named "translation_direction_
-    # control", not "direction_control": this class only ever commands a
-    # translation force, no attitude/rotation, so the generic name would
-    # overstate its scope once a real teleope orchestrator exists alongside it.
+    # Translation-only direction-vector control (control/utils/translation_direction_controller.py).
+    # Not yet wired to any node -- future teleoperation building block.
     translation_direction_control:
       control_rate: 50.0       # publish rate [Hz]
-      force_magnitude: 0.02    # commanded translation force per direction cmd [N]
+      force_magnitude: 0.02    # commanded force per direction cmd [N]
       max_force: 0.1           # clamp on commanded force magnitude [N]
 
     hover_control:
-      # Hover strategy:
-      #   imu    -> IMU only (no TF lookups at all)
-      #   tf_imu -> TF self-position + IMU (TF correction layered on the IMU law)
-      # An unrecognized value fails at startup rather than falling back.
+      # imu = IMU only (no TF), tf_imu = TF self-position + IMU (TF correction
+      # layered on the IMU law). Unrecognized value fails at startup.
       mode: tf_imu
-      control_rate: 50.0       # control loop rate [Hz]
-      # NOTE: kd_w damps the IMU's ABSOLUTE angular rate toward zero -- it is
-      # NOT the attitude loop's D term (see tf_correction.kd_att for that).
-      # An earlier revision tried reusing kd_w as the attitude D term, since
-      # it is summed with PoseCorrector's torque either way, but this made
-      # hold accuracy worse: iss_body itself rotates in the world (docs/
-      # phase0_findings.md observations 8/11), so holding a fixed relative
-      # attitude requires a non-zero absolute rate, and damping the absolute
-      # rate fights that needed motion (docs/phase0_5_findings.md). Left at
-      # its original guessed value; only relevant as a general anti-tumble
-      # term (most useful in imu-only mode, where there is no attitude
-      # target to track at all).
+      control_rate: 50.0       # [Hz]
+      # Damps IMU's ABSOLUTE angular rate toward zero -- NOT the attitude D
+      # term (that's tf_correction.kd_att). Reusing it as the attitude D term
+      # made hold worse: iss_body itself rotates in world, so holding a fixed
+      # relative attitude needs nonzero absolute rate (docs/phase0_5_findings.md).
+      # Untuned guess; mainly an anti-tumble term for imu-only mode.
       kd_w: [0.02, 0.02, 0.02]  # angular-rate damping gain (torque per rad/s)
-      kp_a: [0.5, 0.5, 0.5]    # acceleration disturbance rejection gain (force per m/s^2)
-      deadband_w: 0.01         # gyro deadband [rad/s] (below -> no torque)
-      deadband_a: 0.02         # acc residual deadband [m/s^2] (below -> no force)
+      kp_a: [0.5, 0.5, 0.5]    # accel disturbance rejection gain (force per m/s^2)
+      deadband_w: 0.01         # gyro deadband [rad/s]
+      deadband_a: 0.02         # acc residual deadband [m/s^2]
       acc_bias_alpha: 0.01     # EMA coefficient for accelerometer bias estimate
-      max_force: 0.1           # output force clamp (per axis) [N]
-      max_torque: 0.02         # output torque clamp (per axis) [Nm]
+      max_force: 0.1           # output force clamp per axis [N]
+      max_torque: 0.02         # output torque clamp per axis [Nm]
 
-    # TF-pose correction layered on top of the IMU hover law (mode: tf_imu).
-    # IMU stays primary; this correction is independently clamped so it can
-    # never dominate. No Navigation required.
-    #
-    # These are NOT the old nav_correction values. TF is a pull source carrying
-    # near-truth poses at ~300 Hz, so the decimation and heavy smoothing that
-    # the noisy 200 Hz navigation stream needed would only add phase lag here.
+    # TF-pose correction layered on the IMU hover law (mode: tf_imu). IMU stays
+    # primary; this correction is independently clamped so it can never
+    # dominate. TF is a near-truth ~300Hz pull source (unlike the old, noisy
+    # 200Hz nav_correction stream), so no decimation/heavy smoothing here.
     tf_correction:
-      reference_frame: iss_body  # parent frame (self-position is expressed here)
+      reference_frame: iss_body  # parent frame (self-position expressed here)
       target_frame: body         # vehicle frame
-      poll_rate: 50.0          # TF lookup rate [Hz] (measured /tf rate is ~300Hz)
-      # Liveness: the pose is dropped when the transform's stamp stops advancing
-      # for this long. Stamps are compared to other stamps, never to this
-      # process's clock -- the simulator stamps on sim time and has no /clock.
-      timeout: 1.0             # stamp stalled this long -> pure IMU [s]
-      smooth_window: 5         # Gaussian smoothing window [samples]; 1 disables
-      smooth_sigma: 2.0        # Gaussian weight sigma [samples]
-      # kp_pos/kd_pos derived from a 2nd-order (mass-spring-damper) design,
-      # NOT guessed: the position loop is m*x_ddot = kp_pos*(target-x) -
-      # kd_pos*x_dot for a single decoupled axis, so
-      #   wn = sqrt(kp_pos/m), zeta = kd_pos / (2*sqrt(kp_pos*m))
-      # Measured vehicle mass m ~= 4.5 kg (docs/phase0_findings.md
-      # observation 7: despin + known-force step test, cross-checked twice).
-      # Target zeta=0.9 (near-critically damped), settling time ts~=10s ->
-      # wn = 4/(zeta*ts) = 0.444 rad/s -> kp_pos = m*wn^2, kd_pos = 2*zeta*m*wn.
-      # The prior guessed values (kp_pos=0.05, kd_pos=0.1) worked out to
-      # zeta~=0.105 -- almost undamped, matching the ~60s-period oscillation
-      # that was actually observed (see docs/phase0_findings.md observation 2).
-      kp_pos: [0.89, 0.89, 0.89]   # position error -> force gain [N/m]
-      # kp_att/kd_att/att_filter_alpha: Phase 0.5 (docs/phase0_5_findings.md)
-      # tried re-deriving these the same way as kp_pos/kd_pos, from measured
-      # per-axis moment of inertia (I = [0.0470, 0.0375, 0.0179] kg*m^2,
-      # x/y/z) via I*theta_err_ddot = -kp_att*(error) - kd_att*omega_err
-      # (omega_err = finite-difference rate of the quaternion error, NOT the
-      # IMU's absolute rate -- reusing kd_w for that made things worse, see
-      # docs/phase0_5_findings.md). Measured with the quaternion geodesic
-      # angle (NOT RPY, which is distorted by this vehicle's ~176 degree
-      # attitude offset -- see docs/phase0_5_findings.md observation B), the
-      # theoretical redesign in every variant tried (kd_w reuse, kd_att alone,
-      # kd_att + EMA filter) underperformed this original guessed value.
-      # Reverted here; kp_att/kd_att/att_filter_alpha are kept as declared
-      # parameters (PoseCorrector/HoverController) so Phase 3b can retune them
-      # once there is an actual moving q_des(t) to track, rather than a
-      # static hold target.
-      #
-      # 2026-08-21 first attempt: tried raising this to trajectory_controller's
-      # verified-safe values (kp_att/kd_att/max_corr_torque = 0.60/0.20/0.32)
-      # to fix align_at_arrival not converging within align_timeout=60s on
-      # large (~90-100 deg) residuals (docs/movement_mode_design.md). Tested
-      # live via ros2 param set on control_node: pre-alignment (same
-      # _align_to/checkpoint path) visibly misbehaved in sim and was aborted
-      # by the user before reaching steady state -- trajectory_controller's
-      # gain was verified safe for its own feedforward+feedback moving-target
-      # control loop, not for tf_correction's static-hold P+D loop (different
-      # plant behavior, e.g. the finite-difference velocity estimate feeding
-      # kd_pos/kd_att here), so it doesn't transfer as directly as assumed.
-      # Reverted at the time.
-      #
-      # 2026-08-21 second attempt (adopted below): re-derived from-scratch via
-      # the same zeta=0.9 mass-spring-damper design as kp_pos/kd_pos above,
-      # then widened per docs/2026-08-21_tf_correction_align_optimization.md
-      # (6節: kp_att=0.20 fixed + kd_att at 3x the theoretical zeta=0.9 value
-      # beat every angle-dependent gain map tried, across small/mid/large
-      # single-axis angles and composite rotations, in isolated
-      # test/manual/diagnose_align_gains.py runs). Initial real-move_to
-      # round-trips with this gain showed severe sustained oscillation in
-      # both pre_align and align_at_arrival (docs/
-      # 2026-08-21_align_torque_budget_crush_hypothesis.md) -- but that
-      # investigation's decisive final check found the live control_node's
-      # gains at the time had never actually been confirmed to be this value
-      # (likely stale from an earlier, un-logged experiment); re-verifying
-      # with these exact values freshly set via `ros2 param get` beforehand,
-      # a capture_point_2<->nav_entry round trip converged cleanly (no
-      # oscillation) for both pre_align (~82 deg in ~4s) and align_at_arrival
-      # (~172 deg in ~16s). See that doc for the full trace data and the
-      # "always ros2 param get before trusting a move_to result" lesson.
-      # Caveat: verified on only one waypoint pair/rotation so far -- treat
-      # as provisionally adopted, re-check on other routes before treating as
-      # final.
-      #
-      # 2026-08-21: split into separate align-only/hold-only gains per
-      # docs/2026-08-21_tf_correction_align_optimization.md 5節's
-      # recommendation (untried noise sensitivity risk for hold, since sim TF
-      # is a noise-free oracle) -- see
-      # docs/archive/achieved/2026-08-21_tf_correction_align_hold_gain_split_design.md for the
-      # switch mechanism (PoseCorrector picks align vs hold gain based on TF
-      # convergence, see align_tolerance_deg/align_settle_time/
-      # align_gain_max_duration below). Both variants start at the same
-      # verified value below -- the split itself is not meant to change
-      # behavior; only future re-tuning of kp_att_hold/kd_att_hold for hold's
-      # noise sensitivity would.
+      poll_rate: 50.0           # TF lookup rate [Hz] (measured /tf rate ~300Hz)
+      # Liveness: stamp stalled this long -> pure IMU. Stamps compared to
+      # other stamps, never this process's clock (sim has no /clock).
+      timeout: 1.0              # [s]
+      smooth_window: 5          # Gaussian smoothing window [samples]; 1 disables
+      smooth_sigma: 2.0         # Gaussian weight sigma [samples]
+      # kp_pos/kd_pos: mass-spring-damper design, m*x_ddot = kp_pos*(target-x) -
+      # kd_pos*x_dot, wn=sqrt(kp_pos/m), zeta=kd_pos/(2*sqrt(kp_pos*m)).
+      # zeta=0.9, ts=10s -> wn=4/(zeta*ts)=0.444 rad/s -> kp_pos=m*wn^2,
+      # kd_pos=2*zeta*m*wn. 2026-08-27: recomputed with the sim's ground-truth
+      # mass 3.216kg (docs/2026-08-27_sim_ground_truth_params.md), replacing
+      # the prior measured-but-wrong m=4.5kg estimate (docs/phase0_findings.md
+      # despin+force-step). NOT YET re-verified live -- re-check via move_to
+      # round trips before treating as final.
+      kp_pos: [0.635, 0.635, 0.635]   # position error -> force gain [N/m]
+      # kp_att/kd_att: same zeta=0.9 mass-spring-damper design as kp_pos/kd_pos,
+      # kp_att fixed at 0.20 + kd_att at 3x the theoretical zeta=0.9 value
+      # (beat every angle-dependent gain map tried, docs/2026-08-21_tf_correction_align_optimization.md).
+      # Live-verified via real move_to round trips (docs/2026-08-21_align_torque_budget_crush_hypothesis.md):
+      # always `ros2 param get` before trusting a result -- a stale live gain
+      # once caused an oscillation false-alarm.
+      # 2026-08-27: recomputed kd_att_align/hold below using the sim's
+      # ground-truth inertia (isotropic 0.0136 kg*m^2, docs/2026-08-27_sim_ground_truth_params.md
+      # /ctl_body/Is) in place of the prior measured-but-wrong anisotropic
+      # estimate [0.0470, 0.0375, 0.0179] kg*m^2 (docs/phase0_5_findings.md).
+      # NOT YET re-verified live -- re-check via move_to round trips before
+      # treating as final.
+      # Split into align/hold variants (docs/2026-08-21_tf_correction_align_optimization.md
+      # 5節 / docs/archive/achieved/2026-08-21_tf_correction_align_hold_gain_split_design.md):
+      # PoseCorrector switches align->hold gain once align_tolerance_deg/
+      # align_settle_time convergence holds (align_gain_max_duration is the backstop).
       kp_att_align: [0.20, 0.20, 0.20]   # attitude quaternion error -> torque gain [Nm], align phase
-      kp_att_hold: [0.20, 0.20, 0.20]    # same, hold phase (untuned separately yet)
-      # Attitude-loop damping (torque per rad/s of relative tracking-error
-      # rate, see PoseCorrector.kd_att_align/kd_att_hold /
-      # pose_control_law.attitude_error_to_torque). 3x the theoretical
-      # zeta=0.9 value (2*0.9*sqrt(kp_att*I) per axis, I=[0.0470, 0.0375,
-      # 0.0179] kg*m^2 x/y/z) -- see kp_att_align's comment above.
-      kd_att_align: [0.4635, 0.4077, 0.264]   # relative angular-rate error -> torque gain [Nm/(rad/s)], align phase
-      # 2026-08-24: halved from kd_att_align's value. At the align-phase gain,
-      # steady hover showed a persistent ~0.7deg peak-to-peak / ~0.67s-period
-      # attitude jitter -- too fast to be gain-margin oscillation against the
-      # kp_att_hold=0.20 design (undamped natural period ~2.8s), so it was
-      # diagnosed as finite-difference omega_err noise (TF differentiated at
-      # poll_rate, only att_filter_alpha=0.3 EMA'd) being amplified by this
-      # gain rather than real angular-rate error being damped. Live
-      # `ros2 param set` test at half this value cut peak-to-peak to ~0.06deg
-      # (~1/11, nonlinear vs. the 2x gain change -- consistent with noise
-      # amplification, not a linear damping effect) with period lengthening
-      # to ~1.23s. kd_att_align (used only during active alignment, where
-      # tracking bandwidth matters more than hold-stillness) left untouched.
-      kd_att_hold: [0.23175, 0.20385, 0.132]  # relative angular-rate error -> torque gain [Nm/(rad/s)], hold phase
-      # Angle threshold [deg] below which PoseCorrector considers an
-      # is_align=True checkpoint converged and switches from the align gain
-      # to the hold gain above. Independent of guidance.align_tolerance_deg
-      # (this only picks a gain, not whether GuidanceExecutor reports the
-      # move as done) -- need not match it exactly.
-      align_tolerance_deg: 3.0
-      # Minimum unbroken time [s] within align_tolerance_deg before switching
-      # to the hold gain -- mirrors guidance.align_settle_time's hysteresis so
-      # a single noisy near-miss sample doesn't trigger an early switch (see
-      # docs/archive/achieved/2026-08-21_pre_align_skipped_low_speed_bug.md).
-      align_settle_time: 0.5
-      # Safety-net upper bound [s] on how long the align gain is used for one
-      # checkpoint, in case TF noise/loss keeps the angle check above from
-      # ever reporting convergence. Deliberately generous -- a backstop, not
-      # the primary switch trigger.
-      align_gain_max_duration: 30.0
-      # EMA low-pass on the finite-difference omega_err fed to kd_att above,
-      # mirroring vel_filter_alpha. 0.3 verified alongside kp_att/kd_att above
-      # (docs/2026-08-21_align_torque_budget_crush_hypothesis.md); replaces
-      # the prior 1.0 (no filtering).
-      att_filter_alpha: 0.3
-      # Damping term (finite-difference velocity of the TF-estimated hold
-      # target, see PoseCorrector). Was previously guessed/untuned; now
-      # derived alongside kp_pos above (2*zeta*m*wn).
-      kd_pos: [3.6, 3.6, 3.6]      # velocity -> force gain [N/(m/s)]
-      # EMA low-pass on the finite-difference velocity fed to kd_pos above.
-      # 1.0 = no filtering. The raw finite difference is noisy enough that it
-      # is suspected to be the main remaining gap to JAXA-level (mm) hold
-      # precision (docs/phase0_findings.md). Untuned Phase 0 experiment.
-      vel_filter_alpha: 0.3        # EMA blend weight for the new raw sample
-      max_corr_force: 0.05     # correction force clamp (independent of IMU term) [N]
-      max_corr_torque: 0.3     # correction torque clamp [Nm] (2026-08-21, adopted alongside kp_att/kd_att above -- see that comment)
+      kp_att_hold: [0.20, 0.20, 0.20]    # same, hold phase
+      kd_att_align: [0.2816, 0.2816, 0.2816]   # relative angular-rate error -> torque gain [Nm/(rad/s)], align phase (recomputed 2026-08-27, see note above)
+      # 2026-08-24: halved from align. At the align-phase gain, steady hover
+      # showed ~0.7deg p-p jitter traced to finite-difference omega_err noise
+      # amplification (not real angular-rate error) -- half the gain cut it
+      # to ~0.06deg p-p. align phase keeps the higher gain (tracking bandwidth
+      # matters more there than hold-stillness).
+      kd_att_hold: [0.1408, 0.1408, 0.1408]  # relative angular-rate error -> torque gain [Nm/(rad/s)], hold phase (recomputed 2026-08-27, see note above)
+      align_tolerance_deg: 3.0      # angle threshold [deg] to switch align->hold gain (independent of guidance.align_tolerance_deg)
+      align_settle_time: 0.5        # min unbroken in-tolerance time [s] before switching, mirrors guidance.align_settle_time hysteresis
+      align_gain_max_duration: 30.0 # safety-net cap [s] on align-gain duration if convergence never reports (TF noise/loss)
+      att_filter_alpha: 0.3         # EMA low-pass on finite-difference omega_err fed to kd_att (docs/2026-08-21_align_torque_budget_crush_hypothesis.md)
+      kd_pos: [2.573, 2.573, 2.573]  # velocity -> force gain [N/(m/s)], derived alongside kp_pos above (2*zeta*m*wn); see kp_pos note re: mass
+      vel_filter_alpha: 0.3         # EMA blend weight for finite-difference velocity feeding kd_pos; raw signal suspected main gap to JAXA-level (mm) hold precision (docs/phase0_findings.md)
+      max_corr_force: 0.05      # correction force clamp, independent of IMU term [N]
+      max_corr_torque: 0.3      # correction torque clamp [Nm]
+      # Off by default (matches prior per-axis-independent clamp). Multi-axis
+      # (composite) large-angle corrections were found to wander off the
+      # commanded rotation axis under saturation because each axis has very
+      # different real torque headroom (0.003/0.0045/0.0082 Nm x/y/z) and gets
+      # clamped independently -- toggle live via `ros2 param set` to A/B test.
+      # docs/2026-08-27_align_hold_gain_oscillation_investigation.md
+      torque_direction_preserving: false
       checkpoint_topic: /gnc/checkpoints   # PoseArray (reference frame) path interface
 
-    # Phase 3a (docs/main_plan.md, openspec/changes/add-trajectory-following):
-    # follows a moving trajectory setpoint (p_des/v_des/a_des) published by the
-    # Guidance node on /gnc/trajectory_setpoint, in the reference frame
-    # (iss_body). Mutually exclusive with tf_correction's checkpoint hold: see
-    # HoverController -- trajectory following takes over the translation
-    # force entirely while setpoints are live, falling back to checkpoint
-    # hold once they go stale. Phase 3b adds the same split for attitude: while
-    # a setpoint is live AND a q_des has been received, TrajectoryController
-    # also supplies the torque (kp_att/kd_att/att_filter_alpha/max_torque
-    # below, seeded from tf_correction's own values -- untuned against a
-    # moving q_des(t), same caveat as tf_correction's). Otherwise attitude
-    # torque keeps coming from PoseCorrector's checkpoint/hold target.
+    # Phase 3a/3b (docs/main_plan.md, openspec/changes/add-trajectory-following):
+    # follows a moving p_des/v_des/a_des setpoint on /gnc/trajectory_setpoint.
+    # Mutually exclusive with tf_correction's checkpoint hold -- takes over
+    # translation force while setpoints are live, falls back to checkpoint
+    # hold once stale. Attitude: while a setpoint is live AND q_des received,
+    # this module supplies torque too; otherwise PoseCorrector's checkpoint/
+    # hold target does.
     trajectory_controller:
-      # Measured despin + known-force step test (docs/phase0_findings.md
-      # observation 7, cross-checked twice: 4.46kg / 4.61kg).
-      mass: 4.5                # vehicle mass [kg]
-      # Tried raising to 0.2 (2026-08-19) to give feedforward more headroom
-      # on a curved trajectory that was measuring ~50mm peak tracking error
-      # at 0.1N. Made it WORSE, not better: same curve measured ~590mm peak
-      # error at 0.2N, with visible overshoot/oscillation (y stuck near
-      # nav_entry while z overshot past the target) rather than convergence.
-      # The 0.1N clamp was apparently providing implicit damping that kp/kd
-      # rely on; raising it without retuning those gains destabilizes
-      # tracking instead of improving it. Reverted to 0.1 pending a real
-      # gain retune (see docs/future_design_notes.md).
-      # 6-14 (docs/trajectory_force_duration_investigation.md): treating the
-      # 144.7 deg hairpin maneuver (6-12) as the worst case to design for,
-      # the peak |a_des| for that curve at DURATION_SEC=40s is ~0.0211 m/s^2
-      # (numerically differentiated from the curve's own kinematics, not a
-      # closed-loop measurement) -> required max_force ~0.0949N at this
-      # mass. Tried 0.75x that (~0.0712N, deliberately below the no-clamp
-      # requirement) alongside the kp_att jump below -- reverted along with
-      # kp_att/kd_att/max_torque after that combination produced a
-      # non-converging (68 deg final error) run; see the note below.
-      max_force: 0.1           # output force clamp (per axis) [N], independent of tf_correction.max_corr_force
-      # Shorter than tf_correction.timeout (1.0s): TF is a near-passive oracle,
-      # but a trajectory setpoint carries an active feedforward (a_des) --
-      # riding a stale one is riskier, so the fallback to checkpoint hold
-      # should kick in quickly. ~10 missed messages at the 50Hz publish rate.
-      timeout: 0.2              # setpoint stalled this long -> fall back to checkpoint hold [s]
-      # Phase 3b (docs/trajectory_force_duration_investigation.md 6節): a
-      # curved trajectory with a facing-direction-of-travel q_des(t) showed
-      # torque_corr pinned at tf_correction's static-hold clamp (0.01 Nm) --
-      # same "clamp acting as implicit damping" failure mode as max_force
-      # above (3節), but for attitude. First step (kp_att 3x, max_torque 2x,
-      # 6-1/6-2) stopped the clamp saturation, but 6-3 through 6-5 then showed
-      # -- by measuring the actual geodesic tracking-error angle, not just
-      # clamp saturation, and cross-checking across several q_des(t)
-      # generation strategies (instantaneous direction, rate-limited,
-      # lookahead) -- a ~20-28 degree tracking error persists through the
-      # curve's body regardless of how q_des(t) is generated. That result
-      # isolates the remaining error to the controller's own bandwidth being
-      # too low, not the reference. Second step (9x, 6-6) plus pre-alignment
-      # (avoids the unavoidable startup-mismatch transient, see
-      # ALIGN_TOLERANCE_DEG in the naventry test scripts) got the curve-body
-      # error down to ~1-2 deg average, but a ~20-28 deg peak remained right
-      # at nav_entry's peak-curvature crossing regardless of q_des(t)
-      # generation strategy (6-7 re-confirmed lookahead doesn't help post-gain
-      # -increase either). Softening the maneuver itself (longer DURATION_SEC)
-      # was rejected -- defeats the point of testing an aggressive maneuver --
-      # so this third step pushed the gain further (kp_att ~1.7x, kd_att
-      # scaled with it, max_torque given more headroom). Round-trip
-      # re-verification (6-9) confirmed the ~20-30 deg peak is a real,
-      # nav_entry-body phenomenon (not an end-of-trajectory artifact), and
-      # derived a theoretical kp_att lower bound (e_ss ~= I*theta_ref''/kp_att,
-      # target error 5 deg) of ~8-11 -- ~55-74x this value. Per the
-      # small-steps caution above, a fourth step (2x, 6-10) reduced the
-      # peak by ~28-32% (24.3/29.7 deg -> 16.6/21.5 deg) round-trip, still
-      # well short of theory. A fifth step (2x, 6-11) improved further on
-      # the near_dock->above_dock_2 curve, but 6-12 found that curve's
-      # ~89 deg turn isn't the worst case: a sharper 144.7 deg hairpin
-      # (near_dock<->above_dock via an extended nav_entry bulge) measured a
-      # peak angular accel of 55.88 rad/s^2 -> theoretical kp_att >= 30.10,
-      # ~3x the 89-deg curve's requirement, and produced an 82 deg tracking
-      # error at kp_att=0.60 (6-13 confirmed 0.60 itself doesn't hurt gentle/
-      # straight-line tracking, so headroom to push further is available).
-      # 6-14: treating the 144.7 deg hairpin as the design worst case, tried
-      # jumping to 0.75x that theoretical kp_att (22.57, under-provisioned
-      # on purpose). First attempt kept kd_att = kp_att/3 (the ratio used at
-      # every prior, much smaller step) -- WRONG: damping ratio
-      # zeta = kd_att/(2*sqrt(kp_att*I)) scales as sqrt(kp_att) under a
-      # linear kd_att/kp_att ratio, so the 37.6x jump in kp_att drove zeta
-      # from ~0.6 (fine at kp_att=0.60) to ~3.65 (badly overdamped),
-      # slowing the dominant pole and making tracking WORSE (82 -> 95 deg
-      # peak). Corrected kd_att to hold zeta~0.6 (kd_att=2*0.6*sqrt(kp_att*I)
-      # = 1.24) -- but at kp_att=22.57 and max_torque=12.04 (kept at the
-      # prior kp_att*8/15 ratio), a realistic tens-of-degrees error already
-      # demands kp_att*error far beyond max_torque (e.g. 30 deg error alone
-      # needs ~11.8 Nm, near the clamp), so the controller was saturated
-      # almost continuously -- not operating as the linear PD the zeta
-      # analysis assumed. That produced torque_corr chattering between
-      # +/-max_torque (sign flips every ~2s) and a non-converging run (68
-      # deg final error, never settled). Reverted kp_att/kd_att/max_torque
-      # (and max_force above) to the last verified-safe values (6-11/6-13:
-      # kp_att=0.60 round-trip verified on both the 89 and 144.7 deg curves
-      # without runaway, plus a straight-line check for gentle-curve
-      # side effects) pending a redesign that keeps max_torque headroom
-      # ahead of kp_att*(realistic peak error), not just a fixed ratio to
-      # kp_att.
-      # 6-17: 6-16 found the fan hardware's real torque ceiling
-      # (0.0030-0.0082 Nm, docs 6-15) is far below every max_torque value
-      # tried here (even 0.32) -- duty saturation (physical, not this
-      # clamp) was always the true bottleneck for any meaningfully large
-      # error. At DURATION_SEC=100s the 144.7 deg hairpin's required peak
-      # accel (~0.057 rad/s^2, clean analytic) finally fits under the
-      # hardware ceiling with a little margin, and a round-trip at
-      # kp_att=0.60 confirmed the vehicle completes the maneuver (converges
-      # to ~1.6 deg final) but with a large transient lag (132 deg peak).
-      # Doubling kp_att to 1.20 (kd_att scaled via 2*0.6*sqrt(kp_att*I) to
-      # hold zeta=0.6) did NOT meaningfully help (131 deg peak, mean error
-      # actually got slightly worse, 15.9 vs 11.9 deg) -- 144.7 deg is
-      # provisionally out of reach by gain tuning alone even with the
-      # hardware margin 100s provides. Reverted to the 6-11/6-13
-      # verified-safe kp_att=0.60/kd_att=0.20/max_torque=0.32. The team
-      # provisionally adopted a 90 deg deflection-angle design limit (see
-      # 6-18) instead of continuing to chase 144.7 deg.
-      # 6-19: swept kp_att=0.90 (kd_att=0.25 via 2*0.6*sqrt(kp_att*I)) on the
-      # original 89 deg cobra maneuver (near_dock<->above_dock_2), safely
-      # within the provisional 90 deg design limit (6-18), to see whether
-      # the 24->17->13 deg improvement trend (6-9 through 6-11) continues
-      # past 0.60. Result: near_dock->above_dock_2 13.0 deg (~same as 0.60's
-      # 12.9), above_dock_2->near_dock 26.5 deg (WORSE than 0.60's 21.5) --
-      # no improvement, and the round-trip asymmetry from 6-11 reappeared.
-      # kp_att=0.60 looks like the sweet spot for this curve; reverted.
-      kp_att: [0.60, 0.60, 0.60]   # attitude quaternion error -> torque gain [Nm], sweet spot for the 89 deg curve (6-9/6-11/6-19)
-      kd_att: [0.20, 0.20, 0.20]   # relative angular-rate error -> torque gain [Nm/(rad/s)]; scaled with kp_att
-      att_filter_alpha: 1.0        # EMA blend weight for the finite-difference omega_err estimate (1.0 = no filtering)
-      max_torque: 0.32             # output torque clamp (per axis) [Nm], last verified-safe value (6-11/6-13)
+      # Ground-truth sim mass (docs/2026-08-27_sim_ground_truth_params.md,
+      # /robot_mass_property/mass via ROS1 rosparam) -- replaces the prior IMU
+      # despin+force-step estimate (4.46/4.61kg, docs/phase0_findings.md),
+      # which the physics engine's own value shows was off by ~40%.
+      mass: 3.216               # vehicle mass [kg]
+      # kp_pos/kd_pos: same mass-spring-damper design as tf_correction.kp_pos/kd_pos (zeta=0.9, ts=10s), m=3.216kg. Previously undeclared here -> was silently using trajectory_controller.py's stale hardcoded defaults (0.89/3.6, tuned for the old m=4.5kg).
+      kp_pos: [0.635, 0.635, 0.635]   # position error -> force gain [N/m]
+      kd_pos: [2.573, 2.573, 2.573]   # velocity error -> force gain [N/(m/s)]
+      # max_force/kp_att/kd_att/max_torque below were tuned through many
+      # sim round trips against increasingly sharp curves (peak 144.7deg
+      # hairpin) -- full history in docs/trajectory_force_duration_investigation.md.
+      # Key findings: (1) the clamp was acting as implicit damping -- raising
+      # it without retuning kp/kd destabilizes tracking rather than helping;
+      # (2) the fan hardware's real torque ceiling (0.0030-0.0082 Nm) is the
+      # true bottleneck for large errors, not this software clamp;
+      # (3) kp_att=0.60 is the empirically verified sweet spot for the design
+      # curves tested -- pushing higher didn't consistently help and the team
+      # adopted a 90deg deflection-angle design limit instead of chasing 144.7deg.
+      # Per-axis theoretical max from the fan model (docs/2026-08-27_max_force_anisotropy_from_fan_model.md),
+      # replacing the prior uniform 0.1N clamp. Independent of tf_correction.max_corr_force.
+      max_force: [0.181, 0.0996, 0.122]   # output force clamp [N] (x,y,z)
+      # Shorter than tf_correction.timeout (1.0s): a moving setpoint carries
+      # active feedforward (a_des), so a stale one is riskier than a stale
+      # static hold target -- fall back to checkpoint hold quickly (~10 missed
+      # messages at rate=50Hz).
+      timeout: 0.2               # [s]
+      kp_att: [0.60, 0.60, 0.60]   # attitude quaternion error -> torque gain [Nm], empirically tuned (see history above)
+      # kd_att = 2*zeta*sqrt(kp_att*I), zeta=0.6. Recomputed 2026-08-27 with
+      # the sim's ground-truth isotropic inertia 0.0136 kg*m^2 (docs/2026-08-27_sim_ground_truth_params.md
+      # /ctl_body/Is), replacing the prior measured-but-wrong I~=0.047 kg*m^2
+      # (docs/phase0_5_findings.md) that the old 0.20 value assumed.
+      # NOT YET re-verified live -- re-check via move_to round trips (straight
+      # + curved) before treating as final; kp_att itself untouched since it
+      # was chosen empirically, not from this formula.
+      kd_att: [0.108, 0.108, 0.108]   # relative angular-rate error -> torque gain [Nm/(rad/s)] (recomputed 2026-08-27, see note above)
+      att_filter_alpha: 1.0        # EMA blend weight for finite-difference omega_err (1.0 = no filtering)
+      max_torque: 0.32             # output torque clamp per axis [Nm]
+      # Off by default (matches prior per-axis-independent clamp). See
+      # tf_correction.torque_direction_preserving above and
+      # docs/2026-08-27_align_hold_gain_oscillation_investigation.md
+      torque_direction_preserving: false

@@ -51,7 +51,7 @@ def main():
     parser.add_argument("--output", required=True, help="CSV output path")
     parser.add_argument("--duration", type=float, default=0.0,
                          help="sim seconds to log; 0 = until Ctrl-C (default: 0)")
-    parser.add_argument("--rate", type=float, default=50.0, help="sample rate [Hz]")
+    parser.add_argument("--rate", type=float, default=5.0, help="sample rate [Hz]")
     parser.add_argument("--label", default="",
                          help="free-text tag written to every row, e.g. the "
                               "hover_control.mode under test")

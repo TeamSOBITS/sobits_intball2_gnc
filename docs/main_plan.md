@@ -19,9 +19,6 @@
 
 ## 未達成タスク（優先度順）
 
-### [C] Controller内部値の可観測性強化（要求→クランプ→配分→実現の各段階）
-replanning姿勢劣化調査で原因特定が遅れた主因は「配分後の実現値（`/ctl/duty`経由の逆算）」しか見えず、要求トルク・クランプ有無・どの姿勢制御パスが有効かを実行時に確認できなかったこと。追加すべき計装: (1) `TrajectoryController.compute`/`compute_attitude`が返す割当前の要求force/torque（`/ctl/wrench`相当のトピックが実は繋がっていなかった）、(2) `HoverController.step`内の`trajectory_active`（`TrajectoryController`と`PoseCorrector`のどちらが姿勢トルク源として有効か）、(3) `ReplanningTrajectoryTracker.last_replan_occurred`／distance fallback発火の1行ログ、(4) `TrajectoryController`内部の`omega_err`/`qe_vec`（P項・D項を分離して見るための状態）、(5) `guidance_node`/`control_node`起動時の`use_sim_time`実効値のログ出力（起動時に付け忘れると発覚しづらく、今回もCSVのepoch不一致から偶然発覚した）。詳細: `docs/archive/achieved/2026-08-25_guidance_attitude_saturation_investigation.md`。
-
 ### [G] Guidance軌道のリアルタイム更新（実TFフィードバックによる再計画）の前提条件整備
 `look_at`本体実装・90°超waypoint分離機動・経路の補間方式など複数の[G]タスクが実質的に「毎tick実TFを見て参照を更新する」という同じ基盤に帰着する。徹底調査の結果、素朴な実装（毎tick/10Hzで実位置・実速度から再計画）は到着判定のZeno的機能不全・オーバーシュート・目標近傍の飽和/チャタリング・姿勢制御の恒久機能不全など複数の破綻が数学的に確定しており、当初想定より前提条件の整備が先に必要。詳細・破綻の定量的根拠: `docs/guidance_realtime_replanning_design.md`。
 
@@ -68,9 +65,6 @@ GNC最小構成と組み合わせた場合の効果は未検証（現在停止�
 
 ### [運用] 一時デバッグ計装・作業ファイルの後片付け
 `trajectory_controller.py`内の`/tmp/trajectory_reference_race_timing.log`書き込み（`# TEMPORARY debug instrumentation`で検索）、関連送信スクリプトの一時ログ、`/root/bridge/`配下の未使用ファイル（`bridge_topics_tf.yaml`、`bridge_topics.yaml.bak_*`）の要否判断。消すなら恒久的なデバッグフラグ化も検討可。
-
-### [運用] /ctl/duty のforeign publisher競合の調査
-`control_node`のログに`FOREIGN duty messages: fan control is CONTESTED`（`ros_bridge`経由の別publisher）が断続的に出る。JAXA Navigation機能からの独立要件と関連する可能性があり、原因未調査。
 
 ### [運用] シム/bridge/gnc_bringup起動順序によるホバー保持不能の再発調査
 シム・ROS1↔ROS2ブリッジ・`gnc_bringup.launch.py`の起動順序やタイミングのズレが原因と思われる、ホバー保持ができなくなる現象が複数回再発している（`/ctl/duty`のforeign publisher競合は原因ではないと確認済み）。`control_node`再起動で復帰することは確認済みだが、根本原因（起動順・タイミング依存の何か）は未特定。再現条件の特定と恒久対策が必要。TFのデータや時間が汚染され自己位置が汚染される可能性

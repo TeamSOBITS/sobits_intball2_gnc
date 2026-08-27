@@ -17,12 +17,15 @@ already-constructed ROS I/O wrappers (``tf_client``, ``setpoint_publisher``,
 ``spin_fn``) so it is directly unit-testable with fakes, following this
 package's DI convention (see ``docs/architecture_guidelines.md``).
 
-Only a single ``(current_pose, p_target)`` 2-waypoint trajectory is generated
+Only a ``(current_pose, [via_waypoint], p_target)`` trajectory is generated
 per call -- no global path planning is invoked (``docs/
-guidance_node_implementation_plan.md`` decision 1). Genuine multi-waypoint
-smooth transit (a client streaming several ``CtlCommand`` goals in a row
-stops at each one, same granularity as ``PoseCorrector``'s existing
-checkpoint chaining) is out of scope here.
+guidance_node_implementation_plan.md`` decision 1). ``via_waypoint`` is an
+optional single interior relay point (``docs/
+2026-08-25_guidance_waypoint_insertion_curve_verification.md``), passed
+through this goal's ``execute()`` call as an already TF-resolved position --
+resolving a further chain of several waypoints (a client streaming several
+``CtlCommand`` goals in a row stops at each one, same granularity as
+``PoseCorrector``'s existing checkpoint chaining) is still out of scope here.
 """
 import numpy as np
 
@@ -255,8 +258,19 @@ class GuidanceExecutor:
     def execute(self, p_target, q_target, feedback_cb, is_cancel_requested,
                 face_travel=True, face_travel_camera="main",
                 align_at_arrival=True, pre_align=True, look_at_target_frame="",
-                align_at_arrival_camera="main", trajectory_tracking_mode="static"):
+                align_at_arrival_camera="main", trajectory_tracking_mode="static",
+                via_waypoint=None):
         """Run one move-to-target goal; returns a ``STATUS_*`` constant.
+
+        ``via_waypoint``: an optional single interior relay point (already
+        TF-resolved to a ``[x, y, z]`` position by the caller, e.g.
+        ``guidance.py``'s ``guidance.via_waypoint`` param), inserted between
+        ``p0`` and ``p_target`` (``docs/
+        2026-08-25_guidance_waypoint_insertion_curve_verification.md``). Its
+        own orientation is not used for anything -- only its position feeds
+        the 3-waypoint trajectory and ``pre_align``'s initial facing
+        direction. ``None`` (default) reproduces the prior 2-waypoint
+        behavior exactly.
 
         ``look_at_target_frame`` is accepted but currently unused -- reserved
         for the future ``look_at`` attitude-reference mode (docs/
@@ -316,13 +330,23 @@ class GuidanceExecutor:
             # 2-waypoint, at-rest-at-both-ends trajectory as a straight
             # line, so every non-zero v(t) already points p0 -> p_target).
             #
+            # With via_waypoint, face the first leg's chord (p0 -> via) since
+            # that's the direction of imminent travel -- unlike the 2-point
+            # case this is only an approximation once via_waypoint's
+            # interior tangent is nonzero (docs/
+            # 2026-08-25_guidance_waypoint_insertion_curve_verification.md),
+            # but it's a reasonable initial facing since face_travel's
+            # continuous per-tick compute_q_des (below) takes over once
+            # translation starts.
+            #
             # Pass q0 (not None) so compute_q_des fills the pointing task's
             # free roll DOF to match the vehicle's current roll instead of
             # the shortest-arc convention's incidental value -- otherwise
             # pre_align chases a functionally unnecessary roll change (see
             # docs/2026-08-21_tf_correction_align_optimization.md 8節).
+            pre_align_target = p_target if via_waypoint is None else via_waypoint
             q_align = compute_q_des(
-                np.asarray(p_target, dtype=float) - np.asarray(p0, dtype=float),
+                np.asarray(pre_align_target, dtype=float) - np.asarray(p0, dtype=float),
                 q0, self._attitude_speed_threshold, forward_axis
             )
             if _geodesic_angle(q0, q_align) > self._align_tolerance_rad:
@@ -363,7 +387,11 @@ class GuidanceExecutor:
                 )
                 return STATUS_ABORTED
 
-        waypoints = [p0, p_target]
+        if via_waypoint is None:
+            waypoints = [p0, p_target]
+        else:
+            waypoints = [p0, via_waypoint, p_target]
+            self._warn_if_sharp_turn(p0, via_waypoint, p_target)
         segment_times = HeuristicSegmentTimeAllocator(
             target_speed=self._target_speed, max_accel=self._max_accel
         ).allocate(waypoints)
@@ -399,6 +427,7 @@ class GuidanceExecutor:
                 target_speed=self._target_speed, max_accel=self._max_accel,
                 distance_fallback_m=self._distance_fallback_m,
                 replan_every_n_ticks=self._replan_every_n_ticks,
+                via_waypoint=via_waypoint,
             )
         else:
             tracker = StaticTrajectoryTracker(traj)
@@ -431,6 +460,34 @@ class GuidanceExecutor:
                     return status
 
         return STATUS_SUCCESS
+
+    def _warn_if_sharp_turn(self, p0, via_waypoint, p_target) -> None:
+        """Log a warning if the route bends more than 90 deg at ``via_waypoint``.
+
+        Static-geometry check only, computed once from the goal's
+        ``(p0, via_waypoint, p_target)`` -- not the live re-planned ``v0``
+        (that's a separate, already-existing concern:
+        ``HeuristicSegmentTimeAllocator``'s ``v_perp``/``T_min_perp``
+        handling). A turn this sharp cannot actually be flown without
+        slowing to a stop first (``docs/
+        2026-08-25_guidance_waypoint_insertion_curve_verification.md``); that
+        stop-and-turn behavior is not implemented, so this is advisory only.
+        """
+        leg1 = np.asarray(via_waypoint, dtype=float) - np.asarray(p0, dtype=float)
+        leg2 = np.asarray(p_target, dtype=float) - np.asarray(via_waypoint, dtype=float)
+        n1 = np.linalg.norm(leg1)
+        n2 = np.linalg.norm(leg2)
+        if n1 < 1e-9 or n2 < 1e-9:
+            return
+        cos_angle = np.clip(np.dot(leg1, leg2) / (n1 * n2), -1.0, 1.0)
+        angle_deg = np.degrees(np.arccos(cos_angle))
+        if angle_deg > 90.0:
+            self._log.warn(
+                "[GuidanceExecutor] via_waypoint turn angle is %.1f deg "
+                "(>90 deg) -- the vehicle cannot fly this corner without "
+                "slowing to a stop first; no such behavior is implemented, "
+                "proceeding anyway" % angle_deg
+            )
 
     def _resolve_arrival_target_quat(self, q_target, camera):
         """Return the quaternion ``align_at_arrival`` should converge to.

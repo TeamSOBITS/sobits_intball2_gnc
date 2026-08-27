@@ -287,7 +287,7 @@ Visualization Manager:
       Buffer Length: 1
       Class: rviz_default_plugins/Path
       Color: 25; 255; 0
-      Enabled: true
+      Enabled: false
       Head Diameter: 0.30000001192092896
       Head Length: 0.20000000298023224
       Length: 0.30000001192092896
@@ -310,7 +310,7 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Best Effort
         Value: /gnc/trajectory_path
-      Value: true
+      Value: false
     - Class: rviz_default_plugins/Marker
       Enabled: true
       Name: Marker (trajectory speed, viz-only)
@@ -359,25 +359,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 3.3483541011810303
+      Distance: 12.54946231842041
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 11.771143913269043
-        Y: -4.15015172958374
-        Z: 6.006209850311279
+        X: 11.83144474029541
+        Y: -6.638326644897461
+        Z: 5.11568021774292
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.5497956871986389
+      Pitch: 0.7147957682609558
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 6.062256336212158
+      Yaw: 0.019075538963079453
     Saved: ~
 Window Geometry:
   Displays:

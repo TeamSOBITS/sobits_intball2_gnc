@@ -50,39 +50,6 @@ ros2 run sobits_intball2_gnc guidance --ros-args --params-file \
 
 パラメータは`config/gnc_params.yaml`の`guidance`セクションと、Control側と共有する`tf_correction.reference_frame`/`target_frame`・`trajectory_controller.max_force`/`mass`（区間時間配分が機体の加速度能力を超えないようにするため、Control側と同じ値を使う）から読む。詳細は次節参照。
 
-## パラメータ
-
-分類の考え方（固定/動的）の詳細は[docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md](../../docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md)を参照。
-
-### 固定パラメータ（起動時のみ、実行中は変更不可）
-
-| パラメータ名 | 役割 | デフォルト値 |
-|---|---|---|
-| `guidance.target_speed` | 巡航速度（区間時間配分用）[m/s] | `0.5` |
-| `guidance.attitude_speed_threshold` | 進行方向姿勢参照を更新する速度の下限 [m/s] | `0.02` |
-| `guidance.rate` | `/gnc/trajectory_setpoint`発行レート [Hz] | `50.0` |
-| `guidance.camera_forward_axis.main` | メインカメラの前方軸（機体座標系） | `[1.0, 0.0, 0.0]` |
-| `guidance.camera_forward_axis.stereo` | ステレオカメラの前方軸（機体座標系） | `[0.0, 1.0, 0.0]` |
-| `tf_correction.reference_frame` | 自己位置の親フレーム（Control側と共有） | `iss_body` |
-| `tf_correction.target_frame` | 機体フレーム（Control側と共有） | `body` |
-| `trajectory_controller.max_force` | 区間時間配分の加速度上限算出に使う力 [N]（Control側と共有） | `0.1` |
-| `trajectory_controller.mass` | 区間時間配分の加速度上限算出に使う質量 [kg]（Control側と共有） | `4.5` |
-
-### 動的パラメータ（`ros2 param set`で実行中に変更可能）
-
-| パラメータ名 | 役割 | デフォルト値 |
-|---|---|---|
-| `guidance.align_tolerance_deg` | 事前/事後アラインメントの収束判定角度 [deg] | `3.0` |
-| `guidance.align_timeout` | 事前/事後アラインメントの安全カットオフ [s] | `60.0` |
-| `guidance.align_pos_tolerance_m` | 軌道追従（`_run_trajectory`）の到着判定に使う位置誤差許容値 [m]。計画所要時間経過後、この誤差以下に収まるまで待つ（`align_tolerance_deg`の位置版、独立パラメータ） | `0.05` |
-| `guidance.align_pos_settle_time` | 上記の許容値内に連続して留まるべき最小時間 [s]（オーバーシュート通過の誤検知防止、`align_settle_time`と同じ目的） | `0.5` |
-| `guidance.align_pos_timeout` | 位置収束待ちの安全カットオフ [s]。超えると警告ログを出して進行（`align_timeout`より短い——並進残差を詰めるだけの待ちのため） | `10.0` |
-| `guidance.attitude_reference_mode` | 移動中の姿勢参照モード（`fixed`/`face_travel`/`look_at`、goal受理時にラッチ）。`look_at`は未実装で`face_travel`にフォールバック（警告ログ） | `face_travel` |
-| `guidance.pre_align` | 出発前の事前整列を行うか（goal受理時にラッチ、`attitude_reference_mode=face_travel`のときのみ効く） | `true` |
-| `guidance.align_at_arrival` | 到着後、再整列するか（目標は`align_at_arrival_camera`で決まる。goal受理時にラッチ） | `true` |
-| `guidance.face_travel_camera` | `attitude_reference_mode=face_travel`のとき進行方向に向けるカメラ軸（`main`/`stereo`、goal受理時にラッチ） | `main` |
-| `guidance.look_at_target_frame` | `attitude_reference_mode=look_at`（未実装）で見る対象のTFフレーム名（goal受理時にラッチ） | `""` |
-| `guidance.align_at_arrival_camera` | 到着後どのカメラ軸を基準に整列するか。`main`はgoalの`q_target`そのまま、他のカメラ（例: `stereo`）は「`q_target`のときメインカメラが見ていたはずの方向」をそのカメラの軸で向くよう計算（`compute_camera_relative_quat`） | `main` |
 
 ### goalを送る（`move_to_client` CLI、手動検証用）
 
@@ -113,6 +80,41 @@ ros2 action send_goal /gnc/move_to ib2_msgs/action/CtlCommand \
 3. 到着後、目標姿勢とのズレが大きければ整列（同じく`/gnc/checkpoints`、最大`align_timeout`秒）
 
 現状`face_travel=True`・`face_travel_camera="main"`・`align_at_arrival=True`固定（`CtlCommand.action`にオプションを渡すフィールドが無いため、インターフェース拡張待ち）。
+
+## パラメータ
+
+分類の考え方（固定/動的）の詳細は[docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md](../../docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md)を参照。
+
+### 固定パラメータ（起動時のみ、実行中は変更不可）
+
+| パラメータ名 | 役割 | デフォルト値 |
+|---|---|---|
+| `guidance.target_speed` | 巡航速度（区間時間配分用）[m/s] | `0.5` |
+| `guidance.attitude_speed_threshold` | 進行方向姿勢参照を更新する速度の下限 [m/s] | `0.02` |
+| `guidance.rate` | `/gnc/trajectory_setpoint`発行レート [Hz] | `50.0` |
+| `guidance.camera_forward_axis.main` | メインカメラの前方軸（機体座標系） | `[1.0, 0.0, 0.0]` |
+| `guidance.camera_forward_axis.stereo` | ステレオカメラの前方軸（機体座標系） | `[0.0, 1.0, 0.0]` |
+| `tf_correction.reference_frame` | 自己位置の親フレーム（Control側と共有） | `iss_body` |
+| `tf_correction.target_frame` | 機体フレーム（Control側と共有） | `body` |
+| `trajectory_controller.max_force` | 区間時間配分の加速度上限算出に使う力 [N]（Control側と共有、軸別ベクトル。加速度上限は最も厳しい軸=min値を採用） | `[0.181, 0.0996, 0.122]` |
+| `trajectory_controller.mass` | 区間時間配分の加速度上限算出に使う質量 [kg]（Control側と共有） | `3.216` |
+
+### 動的パラメータ（`ros2 param set`で実行中に変更可能）
+
+| パラメータ名 | 役割 | デフォルト値 |
+|---|---|---|
+| `guidance.align_tolerance_deg` | 事前/事後アラインメントの収束判定角度 [deg] | `3.0` |
+| `guidance.align_timeout` | 事前/事後アラインメントの安全カットオフ [s] | `60.0` |
+| `guidance.align_pos_tolerance_m` | 軌道追従（`_run_trajectory`）の到着判定に使う位置誤差許容値 [m]。計画所要時間経過後、この誤差以下に収まるまで待つ（`align_tolerance_deg`の位置版、独立パラメータ） | `0.05` |
+| `guidance.align_pos_settle_time` | 上記の許容値内に連続して留まるべき最小時間 [s]（オーバーシュート通過の誤検知防止、`align_settle_time`と同じ目的） | `0.5` |
+| `guidance.align_pos_timeout` | 位置収束待ちの安全カットオフ [s]。超えると警告ログを出して進行（`align_timeout`より短い——並進残差を詰めるだけの待ちのため） | `10.0` |
+| `guidance.attitude_reference_mode` | 移動中の姿勢参照モード（`fixed`/`face_travel`/`look_at`、goal受理時にラッチ）。`look_at`は未実装で`face_travel`にフォールバック（警告ログ） | `face_travel` |
+| `guidance.pre_align` | 出発前の事前整列を行うか（goal受理時にラッチ、`attitude_reference_mode=face_travel`のときのみ効く） | `true` |
+| `guidance.align_at_arrival` | 到着後、再整列するか（目標は`align_at_arrival_camera`で決まる。goal受理時にラッチ） | `true` |
+| `guidance.face_travel_camera` | `attitude_reference_mode=face_travel`のとき進行方向に向けるカメラ軸（`main`/`stereo`、goal受理時にラッチ） | `main` |
+| `guidance.look_at_target_frame` | `attitude_reference_mode=look_at`（未実装）で見る対象のTFフレーム名（goal受理時にラッチ） | `""` |
+| `guidance.align_at_arrival_camera` | 到着後どのカメラ軸を基準に整列するか。`main`はgoalの`q_target`そのまま、他のカメラ（例: `stereo`）は「`q_target`のときメインカメラが見ていたはずの方向」をそのカメラの軸で向くよう計算（`compute_camera_relative_quat`） | `main` |
+
 
 ### その他のROS I/Oラッパ
 

@@ -67,6 +67,13 @@ _GUIDANCE_PARAM_DEFAULTS = {
     "guidance.pre_align": True,
     "guidance.align_at_arrival": True,
     "guidance.look_at_target_frame": "",
+    # Optional single interior relay point (docs/
+    # 2026-08-25_guidance_waypoint_insertion_curve_verification.md): a TF
+    # frame name (e.g. a maps/iss_location.yaml entry) resolved via self._tf
+    # at goal receipt in _execute_fn, same Category B latching as the other
+    # per-goal options here. "" (default) means no via_waypoint -- unchanged
+    # prior 2-waypoint behavior.
+    "guidance.via_waypoint": "",
     "guidance.face_travel_camera": "main",
     "guidance.align_at_arrival_camera": "main",
     # Real-time re-planning (docs/guidance_realtime_replanning_design.md):
@@ -147,9 +154,12 @@ class GuidanceNode(Node):
         # budget the control side will actually track with (see
         # HeuristicSegmentTimeAllocator's docstring and
         # docs/guidance_move_to_debug_2026-08-20.md).
-        self.declare_parameter("trajectory_controller.max_force", 0.1)
+        self.declare_parameter("trajectory_controller.max_force", [0.181, 0.0996, 0.122])
         self.declare_parameter("trajectory_controller.mass", 4.5, static_descriptor)
-        trajectory_max_force = float(
+        # Per-axis vector (docs/2026-08-27_max_force_anisotropy_from_fan_model.md);
+        # take the worst axis so max_accel stays a safe bound regardless of
+        # travel direction.
+        trajectory_max_force = min(
             self.get_parameter("trajectory_controller.max_force").value
         )
         trajectory_mass = float(self.get_parameter("trajectory_controller.mass").value)
@@ -353,8 +363,35 @@ class GuidanceNode(Node):
                 "implemented; falling back to face_travel"
             )
             mode = "face_travel"
+
+        via_waypoint_name = str(self.get_parameter("guidance.via_waypoint").value)
+        via_waypoint = None
+        if via_waypoint_name:
+            # Reuse self._tf's already-populated buffer instead of standing
+            # up a fresh TfClient here: its /tf subscription has been
+            # accumulating every published transform (not just
+            # reference_frame<-target_frame) since node startup, so this is
+            # a non-blocking lookup with no wait_for_frame() needed -- that
+            # matters because wait_for_frame() calls rclpy.spin_once() on
+            # this node, which would corrupt callback-group bookkeeping if
+            # called from inside _execute_fn (already being spun by the
+            # action server's own MultiThreadedExecutor, see
+            # GuidanceExecutor's spin_fn comment above).
+            t = self._tf.get_transform(
+                target_frame=self._tf.reference_frame, source_frame=via_waypoint_name
+            )
+            if t is None:
+                self.get_logger().error(
+                    "[GuidanceNode] via_waypoint TF frame '%s' not "
+                    "available, aborting goal" % via_waypoint_name
+                )
+                return TERMINATE_ABORTED
+            tr = t.transform.translation
+            via_waypoint = [tr.x, tr.y, tr.z]
+
         status = self._executor_logic.execute(
             p_target, q_target, feedback_cb, is_cancel_requested,
+            via_waypoint=via_waypoint,
             face_travel=(mode == "face_travel"),
             face_travel_camera=str(
                 self.get_parameter("guidance.face_travel_camera").value
