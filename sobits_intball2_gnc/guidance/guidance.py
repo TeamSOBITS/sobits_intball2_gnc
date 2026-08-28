@@ -23,6 +23,10 @@ from sobits_intball2_gnc.control.utils.singleton_lock import (
     SingletonLockError,
     acquire_singleton_lock,
 )
+from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
+from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
+    wrench_envelope_halfspaces,
+)
 from sobits_intball2_gnc.guidance.ros.checkpoint_publisher import CheckpointPublisher
 from sobits_intball2_gnc.guidance.ros.ctl_command_action_server import (
     TERMINATE_ABORTED,
@@ -96,6 +100,23 @@ _GUIDANCE_PARAM_DEFAULTS = {
     # inside _run_trajectory's existing `rate`-paced loop, not a separate
     # timer, so it only ever takes effect at construction.
     "guidance.replan_rate_hz": 10.0,
+    # SLERP+trapezoid align ramp (docs/2026-08-27_align_slerp_trapezoid_
+    # next_steps.md): _align_to() feeds the checkpoint a moving intermediate
+    # target along this profile instead of stepping straight to the goal
+    # attitude, removing composite-axis overshoot (docs/
+    # 2026-08-27_composite_axis_overshoot_summary_and_plan.md). Read-only
+    # (see _STATIC_PARAMS below): only read at GuidanceExecutor construction,
+    # and align_angular_accel_deg specifically does not auto-track
+    # control_node gain changes -- re-derive by hand if those gains change.
+    "guidance.align_angular_speed_deg": 15.0,
+    "guidance.align_angular_accel_deg": 2.4,
+    "guidance.align_traj_publish_rate_hz": 20.0,
+    # static mode only: shrinks wrench_envelope_halfspaces (see that
+    # function's docstring and docs/2026-08-28_toppra_static_path_attitude_
+    # overshoot_incident.md "追記（2026-08-28 その5/6）"). Only read once at
+    # wrench_envelope construction below -- static like the fan geometry it's
+    # paired with.
+    "guidance.wrench_envelope_safety_margin": 0.7,
 }
 
 _ATTITUDE_REFERENCE_MODES = frozenset({"fixed", "face_travel", "look_at"})
@@ -135,6 +156,11 @@ class GuidanceNode(Node):
             # construction, to compute _replan_every_n_ticks).
             "guidance.max_angular_rate_deg", "guidance.distance_fallback_m",
             "guidance.replan_rate_hz",
+            # Only read at GuidanceExecutor construction (see the ramp's own
+            # comment above); no Category-A wiring exists for these either.
+            "guidance.align_angular_speed_deg", "guidance.align_angular_accel_deg",
+            "guidance.align_traj_publish_rate_hz",
+            "guidance.wrench_envelope_safety_margin",
         })
         for name, default in _GUIDANCE_PARAM_DEFAULTS.items():
             descriptor = static_descriptor if name in _STATIC_PARAMS else None
@@ -156,13 +182,36 @@ class GuidanceNode(Node):
         # docs/guidance_move_to_debug_2026-08-20.md).
         self.declare_parameter("trajectory_controller.max_force", [0.181, 0.0996, 0.122])
         self.declare_parameter("trajectory_controller.mass", 4.5, static_descriptor)
-        # Per-axis vector (docs/2026-08-27_max_force_anisotropy_from_fan_model.md);
-        # take the worst axis so max_accel stays a safe bound regardless of
-        # travel direction.
+        # Only used by HeuristicSegmentTimeAllocator (the replanning path's
+        # scalar 1-D model) -- the static/TOPP-RA path below uses the real
+        # fan-derived wrench envelope instead (wrench_envelope below), see
+        # docs/2026-08-28_constrained_trajectory_generation_research.md and
+        # docs/2026-08-28_toppra_static_path_attitude_overshoot_incident.md
+        # "追記（2026-08-28 その2）".
         trajectory_max_force = min(
             self.get_parameter("trajectory_controller.max_force").value
         )
         trajectory_mass = float(self.get_parameter("trajectory_controller.mass").value)
+        # Physical constant for the static/TOPP-RA path's wrench-envelope
+        # constraint (mass above, inertia here -- inv_dyn's M matrix).
+        self.declare_parameter("trajectory_controller.inertia", 0.0136, static_descriptor)
+        trajectory_inertia = float(
+            self.get_parameter("trajectory_controller.inertia").value
+        )
+        # Same 8-fan geometry/fj_max control_node's ThrustAllocator uses
+        # (shared /**: params file -- see gnc_params.yaml's thrust_allocator
+        # section), declared here too since this is a separate node/
+        # parameter namespace. wrench_envelope_halfspaces is static given
+        # this geometry, so it's computed once here rather than per
+        # move_to call (ToppraTrajectory just consumes the (F, g) pair).
+        thrust_allocator = ThrustAllocator.from_node(self)
+        wrench_envelope_safety_margin = float(
+            self.get_parameter("guidance.wrench_envelope_safety_margin").value
+        )
+        wrench_envelope = wrench_envelope_halfspaces(
+            thrust_allocator.A, thrust_allocator.fj_max,
+            safety_margin=wrench_envelope_safety_margin,
+        )
         target_frame = str(self.get_parameter("tf_correction.target_frame").value)
 
         self._tf = TfClient(self, reference_frame, target_frame)
@@ -235,10 +284,16 @@ class GuidanceNode(Node):
             },
             speed_path_publisher=self._speed_path_pub,
             max_accel=trajectory_max_force / trajectory_mass,
+            wrench_envelope=wrench_envelope,
+            mass=trajectory_mass,
+            inertia=trajectory_inertia,
             velocity_fn=self._vel_estimator.get,
             max_angular_rate=np.radians(float(g("max_angular_rate_deg"))),
             distance_fallback_m=float(g("distance_fallback_m")),
             replan_rate_hz=float(g("replan_rate_hz")),
+            align_angular_speed_deg=float(g("align_angular_speed_deg")),
+            align_angular_accel_deg=float(g("align_angular_accel_deg")),
+            align_traj_publish_rate_hz=float(g("align_traj_publish_rate_hz")),
         )
 
         self._action_server = CtlCommandActionServer(

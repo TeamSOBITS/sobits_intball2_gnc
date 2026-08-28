@@ -6,6 +6,9 @@ echo "Updating package list..."
 sudo apt-get install -y \
     zenity
 
+# 力/トルク制約付き軌道の時間割当（TOPP-RA）用
+pip3 install toppra
+
 # sudo pip install octomap-python
 
 # octomap Python バインディング用ライブラリパス

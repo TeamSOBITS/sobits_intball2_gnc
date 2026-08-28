@@ -35,7 +35,8 @@ from sobits_intball2_gnc.guidance.segment_time.heuristic_segment_time_allocator 
 from sobits_intball2_gnc.guidance.trajectory_generation import (
     hermite_spline_trajectory_generator as _hermite,
 )
-from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle
+from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle, slerp
+from sobits_intball2_gnc.guidance.utils import angular_trajectory
 from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_trajectory_tracker import (
     ReplanningTrajectoryTracker,
 )
@@ -45,6 +46,10 @@ from sobits_intball2_gnc.guidance.trajectory_tracking.static_trajectory_tracker 
 from sobits_intball2_gnc.guidance.utils.attitude_reference import (
     compute_camera_relative_quat,
     compute_q_des,
+)
+from sobits_intball2_gnc.guidance.utils.toppra_trajectory import (
+    ToppraTrajectory,
+    TrajectoryInfeasibleError,
 )
 from sobits_intball2_gnc.guidance.utils.trajectory import Trajectory
 
@@ -103,7 +108,10 @@ class GuidanceExecutor:
                  align_pos_tolerance_m=0.05, align_pos_settle_time=0.5,
                  align_pos_timeout=10.0, tf_staleness_timeout=1.0,
                  velocity_fn=None, max_angular_rate=None,
-                 distance_fallback_m=0.3, replan_rate_hz=10.0):
+                 distance_fallback_m=0.3, replan_rate_hz=10.0,
+                 align_angular_speed_deg=None, align_angular_accel_deg=None,
+                 align_traj_publish_rate_hz=20.0,
+                 wrench_envelope=None, mass=None, inertia=None):
         self._tf = tf_client
         self._setpoint_pub = setpoint_publisher
         self._checkpoint_pub = checkpoint_publisher
@@ -130,6 +138,21 @@ class GuidanceExecutor:
         # target again once the swing continued past it, see
         # docs/archive/achieved/2026-08-21_pre_align_skipped_low_speed_bug.md).
         self._align_settle_time = float(align_settle_time)
+        # SLERP+trapezoid align ramp (docs/2026-08-27_align_slerp_trapezoid_
+        # next_steps.md): both None (default) keeps _align_to's prior
+        # single-checkpoint-then-poll behavior byte-for-byte -- this is
+        # opt-in so existing tests that don't pass these two params are
+        # unaffected. guidance.py wires real values from config so production
+        # gets the ramp; only a test that explicitly sets both exercises it.
+        self._align_angular_speed_rad = (
+            None if align_angular_speed_deg is None
+            else np.radians(float(align_angular_speed_deg))
+        )
+        self._align_angular_accel_rad = (
+            None if align_angular_accel_deg is None
+            else np.radians(float(align_angular_accel_deg))
+        )
+        self._align_traj_dt = 1.0 / float(align_traj_publish_rate_hz)
         # Position-error counterpart of the attitude align_tolerance_rad/
         # align_settle_time/align_timeout trio above, but kept as separate
         # parameters (not shared) -- position and attitude correction have
@@ -199,6 +222,19 @@ class GuidanceExecutor:
         # docstring.
         self._speed_path_pub = speed_path_publisher
         self._path_preview_points = int(path_preview_points)
+        # Real actuator-derived budget for the static/TOPP-RA path (docs/
+        # 2026-08-28_constrained_trajectory_generation_research.md,
+        # docs/2026-08-28_toppra_static_path_attitude_overshoot_incident.md
+        # "追記（2026-08-28 その2）") -- None (any of the three) disables
+        # TOPP-RA and falls back to the legacy Hermite/
+        # HeuristicSegmentTimeAllocator static path, same convention as
+        # max_accel/velocity_fn gating "replanning" mode above.
+        # wrench_envelope is a static (F, g) half-space pair from
+        # actuation_envelope.wrench_envelope_halfspaces -- passed straight
+        # through to ToppraTrajectory, not touched here.
+        self._wrench_envelope = wrench_envelope
+        self._mass = None if mass is None else float(mass)
+        self._inertia = None if inertia is None else float(inertia)
 
     def set_gains(self, align_tolerance_deg=None, align_timeout=None,
                   align_settle_time=None, align_pos_tolerance_m=None,
@@ -392,19 +428,6 @@ class GuidanceExecutor:
         else:
             waypoints = [p0, via_waypoint, p_target]
             self._warn_if_sharp_turn(p0, via_waypoint, p_target)
-        segment_times = HeuristicSegmentTimeAllocator(
-            target_speed=self._target_speed, max_accel=self._max_accel
-        ).allocate(waypoints)
-        coeffs = _hermite.HermiteSplineTrajectoryGenerator().generate(
-            waypoints, segment_times
-        )
-        traj = Trajectory(
-            waypoints, segment_times, coeffs,
-            attitude_speed_threshold=self._attitude_speed_threshold,
-            forward_axis=forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"],
-            initial_q_des=q0, face_travel=face_travel,
-            max_angular_rate=self._max_angular_rate,
-        )
 
         mode = trajectory_tracking_mode
         if mode not in TRAJECTORY_TRACKING_MODES:
@@ -420,6 +443,57 @@ class GuidanceExecutor:
                 "falling back to 'static'"
             )
             mode = "static"
+
+        # static mode tries the force/torque-aware TOPP-RA path first (docs/
+        # 2026-08-28_constrained_trajectory_generation_research.md); "replanning"
+        # never does (toppra.compute_trajectory's sd_start is a scalar
+        # path-tangent speed, which cannot express v0's perpendicular-to-path
+        # residual that ReplanningTrajectoryTracker's exact bound handles --
+        # see that doc's "trajectory_tracking_mode="replanning"との統合" 節).
+        traj = None
+        toppra_ready = (
+            mode == "static"
+            and self._wrench_envelope is not None
+            and self._mass is not None
+            and self._inertia is not None
+            and self._max_angular_rate is not None
+        )
+        if toppra_ready:
+            resolved_forward_axis = forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"]
+            try:
+                traj = ToppraTrajectory(
+                    waypoints, q0,
+                    max_vel=self._target_speed,
+                    mass=self._mass,
+                    inertia=self._inertia,
+                    wrench_envelope=self._wrench_envelope,
+                    max_angular_rate=self._max_angular_rate,
+                    forward_axis=resolved_forward_axis,
+                    face_travel=face_travel,
+                )
+            except TrajectoryInfeasibleError as exc:
+                self._log.warn(
+                    "[GuidanceExecutor] TOPP-RA time-parameterization "
+                    "infeasible (%s) -- falling back to the Hermite static "
+                    "path" % exc
+                )
+                traj = None
+
+        if traj is None:
+            segment_times = HeuristicSegmentTimeAllocator(
+                target_speed=self._target_speed, max_accel=self._max_accel
+            ).allocate(waypoints)
+            coeffs = _hermite.HermiteSplineTrajectoryGenerator().generate(
+                waypoints, segment_times
+            )
+            traj = Trajectory(
+                waypoints, segment_times, coeffs,
+                attitude_speed_threshold=self._attitude_speed_threshold,
+                forward_axis=forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"],
+                initial_q_des=q0, face_travel=face_travel,
+                max_angular_rate=self._max_angular_rate,
+            )
+
         if mode == "replanning":
             tracker = ReplanningTrajectoryTracker(
                 traj, p_target, pose_fn=self._tf.get_pose,
@@ -516,9 +590,9 @@ class GuidanceExecutor:
         ``trajectory_tracking_mode="replanning"``'s continuously-updated
         trajectory instead of going stale after the first plan.
 
-        Samples a throwaway ``Trajectory`` instance built from ``traj``'s
-        current ``waypoints``/``segment_times``/``coeffs``, not ``traj``
-        itself: ``Trajectory.sample()`` is stateful (face-travel
+        For a legacy ``Trajectory``, samples a throwaway instance built from
+        ``traj``'s current ``waypoints``/``segment_times``/``coeffs``, not
+        ``traj`` itself: ``Trajectory.sample()`` is stateful (face-travel
         rate-limiting via ``_last_sample_t``/``_last_q_des``) and sampling it
         out of order here would corrupt that state before the real,
         monotonically-increasing sampling in ``_run_trajectory``. The
@@ -526,13 +600,21 @@ class GuidanceExecutor:
         wants position/speed), so ``face_travel=False`` skips the attitude
         computation entirely rather than reproducing the goal's actual
         attitude-reference settings here.
+
+        For a ``ToppraTrajectory``, ``sample()`` is a pure lookup into an
+        already-computed time-parameterized trajectory (no per-call mutable
+        state), so it's safe to sample ``traj`` directly here.
         """
-        preview_traj = Trajectory(
-            traj.waypoints, traj.segment_times, traj.coeffs, face_travel=False,
-        )
         n = max(2, self._path_preview_points)
-        samples = [preview_traj.sample(traj.total_duration * i / (n - 1))
-                   for i in range(n)]
+        if isinstance(traj, ToppraTrajectory):
+            duration = traj.global_total_duration
+            samples = [traj.sample(duration * i / (n - 1)) for i in range(n)]
+        else:
+            preview_traj = Trajectory(
+                traj.waypoints, traj.segment_times, traj.coeffs, face_travel=False,
+            )
+            samples = [preview_traj.sample(traj.total_duration * i / (n - 1))
+                       for i in range(n)]
         self._speed_path_pub.publish(
             [(p, np.linalg.norm(v)) for p, v, _a, _q in samples]
         )
@@ -614,7 +696,23 @@ class GuidanceExecutor:
             self._spin(self._dt)
 
     def _align_to(self, hold_pos, hold_quat, is_cancel_requested):
-        """Publish a single static checkpoint and poll TF for convergence."""
+        """Ramp a SLERP+trapezoid checkpoint toward ``hold_quat`` (if the
+        align ramp is configured), then poll TF for convergence.
+
+        docs/2026-08-27_align_slerp_trapezoid_next_steps.md: instead of
+        stepping the checkpoint straight to ``hold_quat``, publish a moving
+        intermediate target along the current-attitude -> hold_quat SLERP
+        arc, paced by a rest-to-rest trapezoidal angular-speed profile, so
+        the attitude controller only ever chases a small instantaneous
+        error instead of a large step input -- this is what removes the
+        composite-axis overshoot (docs/2026-08-27_composite_axis_overshoot_
+        summary_and_plan.md).
+
+        Opt-in: if ``align_angular_speed_deg``/``align_angular_accel_deg``
+        were not configured (both None), ``theta_total`` is forced to 0.0
+        below and this degrades to exactly the prior single-checkpoint
+        behavior.
+        """
         if not self._checkpoint_pub.wait_for_subscriber(
             timeout_sec=5.0, spin_fn=self._spin
         ):
@@ -622,6 +720,49 @@ class GuidanceExecutor:
                 "[GuidanceExecutor] no /gnc/checkpoints subscriber matched "
                 "after 5s -- publishing anyway, alignment may not converge"
             )
+
+        ramp_enabled = (
+            self._align_angular_speed_rad is not None
+            and self._align_angular_accel_rad is not None
+        )
+        theta_total = 0.0
+        q_from = None
+        if ramp_enabled:
+            pose = self._tf.get_pose()
+            if pose is not None:
+                q_from = pose[1]
+                theta_total = _geodesic_angle(q_from, hold_quat)
+            # pose is None (no TF): theta_total stays 0.0, i.e. skip the
+            # ramp and fall straight through to the plain publish below --
+            # execute()'s callers already checked TF freshness earlier in
+            # the goal, so this is just a defensive fallback, not the
+            # expected path.
+
+        duration = (
+            angular_trajectory.trapezoid_duration(
+                theta_total, self._align_angular_speed_rad,
+                self._align_angular_accel_rad,
+            ) if theta_total > 0.0 else 0.0
+        )
+        if duration > 0.0:
+            q_from_arr = np.asarray(q_from, dtype=float)
+            q_to_arr = np.asarray(hold_quat, dtype=float)
+            t0 = self._clock_seconds()
+            while True:
+                if is_cancel_requested():
+                    return STATUS_CANCELED
+                t = self._clock_seconds() - t0
+                if t >= duration:
+                    break
+                u = angular_trajectory.trapezoid_fraction(
+                    t, theta_total, self._align_angular_speed_rad,
+                    self._align_angular_accel_rad, duration,
+                )
+                self._checkpoint_pub.publish(
+                    hold_pos, slerp(q_from_arr, q_to_arr, u)
+                )
+                self._spin(self._align_traj_dt)
+
         self._checkpoint_pub.publish(hold_pos, hold_quat)
 
         deadline = self._clock_seconds() + self._align_timeout
