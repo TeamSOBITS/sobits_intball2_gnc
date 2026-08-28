@@ -1,6 +1,7 @@
 """Unit tests for GuidanceExecutor (ROS-agnostic, no rclpy)."""
 import numpy as np
 
+from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle
 from sobits_intball2_gnc.guidance.utils.attitude_reference import (
     compute_camera_relative_quat,
     compute_q_des,
@@ -561,6 +562,94 @@ def test_align_to_converges_once_settle_time_elapses():
     )
     assert status == STATUS_SUCCESS
     assert not any("did not converge" in w for w in logger.warnings)
+
+
+def test_align_to_ramps_via_slerp_when_configured():
+    """docs/2026-08-27_align_slerp_trapezoid_next_steps.md: with both
+    align_angular_speed_deg/align_angular_accel_deg set, _align_to must
+    publish a sequence of moving SLERP checkpoints (not just the final one),
+    monotonically closing the angle to hold_quat, ending exactly at it."""
+    q_from = [0.0, 0.0, 1.0, 0.0]  # 180 deg off
+    q_target = [0.0, 0.0, 0.0, 1.0]
+    tf = FakeTf([0.0, 0.0, 0.0], q_from)
+    checkpoint_pub = FakeCheckpointPublisher()
+
+    executor = GuidanceExecutor(
+        tf, FakeSetpointPublisher(), checkpoint_pub, *_make_clock(dt_per_spin=1.0),
+        FakeLogger(), target_speed=1.0, align_tolerance_deg=3.0, align_timeout=0.2,
+        align_pos_timeout=0.1,
+        align_angular_speed_deg=15.0, align_angular_accel_deg=2.4,
+        align_traj_publish_rate_hz=20.0,
+    )
+    status = executor.execute(
+        [1.0, 0.0, 0.0], q_target,
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=True,
+    )
+    assert status == STATUS_SUCCESS
+    assert len(checkpoint_pub.published) > 1
+
+    angles_to_target = [
+        geodesic_angle(quat, q_target) for _pos, quat in checkpoint_pub.published
+    ]
+    assert all(b <= a + 1e-9 for a, b in zip(angles_to_target, angles_to_target[1:]))
+    _last_pos, last_quat = checkpoint_pub.published[-1]
+    assert np.allclose(last_quat, q_target, atol=1e-9)
+
+
+def test_align_to_skips_ramp_when_already_at_target():
+    """theta_total==0 (already at hold_quat) must still take the fast,
+    single-publish path even with the ramp configured -- mirrors the
+    pre-ramp behavior for a no-op align."""
+    q_target = [0.0, 0.0, 0.0, 1.0]
+    tf = FakeTf([0.0, 0.0, 0.0], q_target)
+    checkpoint_pub = FakeCheckpointPublisher()
+
+    executor = GuidanceExecutor(
+        tf, FakeSetpointPublisher(), checkpoint_pub, *_make_clock(dt_per_spin=0.1),
+        FakeLogger(), target_speed=1.0, align_tolerance_deg=3.0, align_timeout=0.2,
+        align_pos_timeout=0.1,
+        align_angular_speed_deg=15.0, align_angular_accel_deg=2.4,
+    )
+    status = executor.execute(
+        [1.0, 0.0, 0.0], q_target,
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=True,
+    )
+    # cur_quat already matches arrival_target_quat within tolerance, so
+    # execute() never even calls _align_to here (see the geodesic_angle
+    # pre-check in execute()) -- no checkpoint is published at all.
+    assert status == STATUS_SUCCESS
+    assert checkpoint_pub.published == []
+
+
+def test_align_to_ramp_respects_cancel():
+    """A cancel request mid-ramp must return STATUS_CANCELED immediately,
+    same contract as the rest of this class's cancel-checking loops."""
+    q_from = [0.0, 0.0, 1.0, 0.0]  # 180 deg off -> long ramp duration
+    q_target = [0.0, 0.0, 0.0, 1.0]
+    tf = FakeTf([0.0, 0.0, 0.0], q_from)
+    checkpoint_pub = FakeCheckpointPublisher()
+
+    calls = {"n": 0}
+
+    def is_cancel_requested():
+        calls["n"] += 1
+        return calls["n"] > 2
+
+    executor = GuidanceExecutor(
+        tf, FakeSetpointPublisher(), checkpoint_pub, *_make_clock(dt_per_spin=1.0),
+        FakeLogger(), target_speed=1.0, align_tolerance_deg=3.0, align_timeout=0.2,
+        align_pos_timeout=0.1,
+        align_angular_speed_deg=15.0, align_angular_accel_deg=2.4,
+        align_traj_publish_rate_hz=20.0,
+    )
+    status = executor.execute(
+        [1.0, 0.0, 0.0], q_target,
+        feedback_cb=lambda *a: None, is_cancel_requested=is_cancel_requested,
+        face_travel=False, align_at_arrival=True,
+    )
+    assert status == STATUS_CANCELED
 
 
 def test_execute_align_at_arrival_camera_main_uses_target_orientation_as_is():

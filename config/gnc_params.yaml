@@ -86,12 +86,15 @@
       # Sim A/B-tested and found to make convergence/overshoot WORSE
       # (see that doc) -- kept as a toggle, left off.
       torque_axis_balance: false
-      # Experimental (default off): minimize the worst-case per-axis
-      # (weighted) residual (L-infinity) instead of the sum of squared
-      # residuals (L2) -- another attempt at countering the same
-      # single-axis-dominant allocation, see the doc above. Not yet
-      # validated; toggle live via `ros2 param set` to A/B test.
-      minimax_objective: false
+      # Minimize the worst-case per-axis (weighted) residual (L-infinity)
+      # instead of the sum of squared residuals (L2) -- reduces peak
+      # requested force/torque under saturation (sim A/B: t_des max
+      # 0.30Nm->0.22Nm, f_des max 0.44N->0.38N) though duty-saturation
+      # frequency itself barely moves (48%->46.5%), see
+      # docs/2026-08-28_toppra_static_path_attitude_overshoot_incident.md
+      # "追記（2026-08-28 その6）". Enabled by default; toggle live via
+      # `ros2 param set` if needed.
+      minimax_objective: true
 
     # Guidance node: drives the CtlCommand action server (docs/guidance_node_implementation_plan.md).
     guidance:
@@ -107,6 +110,20 @@
       # Minimum unbroken in-tolerance time before declaring convergence, so an
       # underdamped swing-through isn't mistaken for arrival (docs/archive/achieved/2026-08-21_pre_align_skipped_low_speed_bug.md).
       align_settle_time: 0.5        # [s]
+      # SLERP+trapezoid align ramp (docs/2026-08-27_align_slerp_trapezoid_
+      # next_steps.md): _align_to() feeds the checkpoint a moving
+      # intermediate target along this profile instead of stepping straight
+      # to the goal attitude, removing composite-axis overshoot (docs/
+      # 2026-08-27_composite_axis_overshoot_summary_and_plan.md).
+      align_angular_speed_deg: 15.0   # cruise angular rate, sim-verified (cruise15)
+      align_angular_accel_deg: 2.4    # 5-tau safety margin on kp_att_align=0.2,
+                                       # kd_att_align z-axis=0.264, I=0.0136 --
+                                       # see summary doc's "理論式による加減速
+                                       # 上限の導出". Does NOT auto-track
+                                       # control_node gain changes (deliberate,
+                                       # avoids cross-node coupling) -- re-derive
+                                       # by hand if those gains change.
+      align_traj_publish_rate_hz: 20.0
       # Position-error counterpart of the align_* trio above, checked once the
       # planned duration elapses (docs/align_at_arrival_position_based_plan.md).
       # Kept separate: translation vs. attitude have different loop dynamics.
@@ -141,6 +158,14 @@
       # replanning only: re-plan cadence, matches velocity_estimate_rate
       # (docs/archive/achieved/2026-08-24_replan_rate_design.md).
       replan_rate_hz: 10.0
+      # static mode only (ToppraTrajectory): shrink wrench_envelope_halfspaces'
+      # g vector by this factor (homothety about the origin, so it stays exact)
+      # so the feedforward plan doesn't consume the full achievable-wrench
+      # budget, leaving headroom for feedback correction. Without this, the
+      # plan was found to use ~100% of the real allocator's budget, so any
+      # tracking residual immediately saturates fans (docs/2026-08-28_toppra_
+      # static_path_attitude_overshoot_incident.md "追記（2026-08-28 その5/6）").
+      wrench_envelope_safety_margin: 0.7
 
     control:
       # Period of the periodic "who owns the fans" status log [s]. 0.0 disables.
@@ -248,19 +273,23 @@
       # despin+force-step estimate (4.46/4.61kg, docs/phase0_findings.md),
       # which the physics engine's own value shows was off by ~40%.
       mass: 3.216               # vehicle mass [kg]
+      # Ground-truth isotropic inertia (docs/arch/2026-08-27_sim_ground_truth_params.md,
+      # /ctl_body/Is via ROS1 rosparam) -- not previously declared as a
+      # parameter anywhere (only referenced in comments); added for
+      # guidance's TOPP-RA time-parameterization (torque/inertia ->
+      # angular-acceleration limit), docs/2026-08-28_constrained_trajectory_generation_research.md.
+      inertia: 0.0136           # vehicle inertia, isotropic [kg*m^2]
       # kp_pos/kd_pos: same mass-spring-damper design as tf_correction.kp_pos/kd_pos (zeta=0.9, ts=10s), m=3.216kg. Previously undeclared here -> was silently using trajectory_controller.py's stale hardcoded defaults (0.89/3.6, tuned for the old m=4.5kg).
       kp_pos: [0.635, 0.635, 0.635]   # position error -> force gain [N/m]
       kd_pos: [2.573, 2.573, 2.573]   # velocity error -> force gain [N/(m/s)]
-      # max_force/kp_att/kd_att/max_torque below were tuned through many
-      # sim round trips against increasingly sharp curves (peak 144.7deg
-      # hairpin) -- full history in docs/trajectory_force_duration_investigation.md.
-      # Key findings: (1) the clamp was acting as implicit damping -- raising
-      # it without retuning kp/kd destabilizes tracking rather than helping;
+      # max_force/kp_att/kd_att/max_torque below were originally tuned
+      # through many sim round trips against increasingly sharp curves (peak
+      # 144.7deg hairpin) -- full history in docs/
+      # trajectory_force_duration_investigation.md. Key findings from that
+      # round: (1) the clamp was acting as implicit damping -- raising it
+      # without retuning kp/kd destabilizes tracking rather than helping;
       # (2) the fan hardware's real torque ceiling (0.0030-0.0082 Nm) is the
-      # true bottleneck for large errors, not this software clamp;
-      # (3) kp_att=0.60 is the empirically verified sweet spot for the design
-      # curves tested -- pushing higher didn't consistently help and the team
-      # adopted a 90deg deflection-angle design limit instead of chasing 144.7deg.
+      # true bottleneck for large errors, not this software clamp.
       # Per-axis theoretical max from the fan model (docs/2026-08-27_max_force_anisotropy_from_fan_model.md),
       # replacing the prior uniform 0.1N clamp. Independent of tf_correction.max_corr_force.
       max_force: [0.181, 0.0996, 0.122]   # output force clamp [N] (x,y,z)
@@ -269,15 +298,27 @@
       # static hold target -- fall back to checkpoint hold quickly (~10 missed
       # messages at rate=50Hz).
       timeout: 0.2               # [s]
-      kp_att: [0.60, 0.60, 0.60]   # attitude quaternion error -> torque gain [Nm], empirically tuned (see history above)
-      # kd_att = 2*zeta*sqrt(kp_att*I), zeta=0.6. Recomputed 2026-08-27 with
-      # the sim's ground-truth isotropic inertia 0.0136 kg*m^2 (docs/2026-08-27_sim_ground_truth_params.md
-      # /ctl_body/Is), replacing the prior measured-but-wrong I~=0.047 kg*m^2
-      # (docs/phase0_5_findings.md) that the old 0.20 value assumed.
-      # NOT YET re-verified live -- re-check via move_to round trips (straight
-      # + curved) before treating as final; kp_att itself untouched since it
-      # was chosen empirically, not from this formula.
-      kd_att: [0.108, 0.108, 0.108]   # relative angular-rate error -> torque gain [Nm/(rad/s)] (recomputed 2026-08-27, see note above)
+      # 2026-08-28: lowered from 0.60 to match tf_correction.kp_att_align/
+      # hold's live-verified 0.20 (docs/
+      # 2026-08-28_toppra_static_path_attitude_overshoot_incident.md "追記
+      # （2026-08-28 その3）"). The old 0.60 -- 3x tf_correction's value,
+      # chosen independently/empirically rather than from the zeta formula
+      # below -- combined with a lower kd_att than even tf_correction's hold
+      # gain to demand torque tens of times the physical ceiling
+      # (0.0030-0.0082 Nm) for errors of only a few degrees, which the
+      # actuation-envelope fix (guidance-side) alone doesn't address: a
+      # feasible planned trajectory still needs some feedback authority to
+      # counter real disturbance (e.g. the sim's own per-fan thrust noise,
+      # stddev 0.012N per docs/arch/2026-08-27_sim_ground_truth_params.md --
+      # ~20% of fj_max), and 0.60 asks for far more correction than that
+      # disturbance scale, or the physical torque budget, can support.
+      kp_att: [0.20, 0.20, 0.20]   # attitude quaternion error -> torque gain [Nm]
+      # kd_att = 2*zeta*sqrt(kp_att*I), zeta=0.6 (unchanged design formula,
+      # recomputed 2026-08-28 for the new kp_att=0.20 above -- same ground-
+      # truth isotropic inertia 0.0136 kg*m^2, docs/2026-08-27_sim_ground_truth_params.md
+      # /ctl_body/Is). NOT YET re-verified live -- re-check via move_to
+      # round trips (straight + curved) before treating as final.
+      kd_att: [0.0626, 0.0626, 0.0626]   # relative angular-rate error -> torque gain [Nm/(rad/s)] (recomputed 2026-08-28, see note above)
       att_filter_alpha: 1.0        # EMA blend weight for finite-difference omega_err (1.0 = no filtering)
       max_torque: 0.32             # output torque clamp per axis [Nm]
       # Off by default (matches prior per-axis-independent clamp). See

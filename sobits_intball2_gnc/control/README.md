@@ -2,6 +2,17 @@
 
 目標軌道を追従する force/torque を計算し、8基のファンへ配分するモジュールです。IMU姿勢制御をベースに、必要に応じてTF補正・経路チェックポイント・軌道追従を重ねます。
 
+## 目次
+
+- [構成](#構成)
+- [ホバリング制御（起動方法）](#hover-control)
+- [ファン直接制御](#fan-direct-control)
+- [経路チェックポイントIF](#checkpoint-if)
+- [軌道追従IF](#trajectory-if)
+- [トピック](#topics)
+- [パラメータ](#parameters)
+
+<a id="構成"></a>
 ## 構成
 
 ```
@@ -26,7 +37,9 @@ control/
 
 TF自己位置取得（`TfClient`）は`control/`と`guidance/`で共有するため`common/ros/tf_client.py`にあります。`common/ros/pose_relay_client.py`は同じ`iss_body <- body`フィードバックを、ブリッジ負荷対策として専用の間引きトピック経由で取得する`TfClient`互換の代替実装（`control.py`のみで使用、`docs/recording_cpu_load_control_degradation.md`参照）。
 
+[↑ 目次に戻る](#目次)
 
+<a id="hover-control"></a>
 ## ホバリング制御（起動方法）
 
 ```sh
@@ -43,6 +56,9 @@ ros2 run sobits_intball2_gnc control
 - TFの配信が`timeout`秒止まると自動的に純IMUホバリングへ縮退し、復帰すると再度捕捉します。
 - TF（`iss_body`<-`body`）はシミュレータ限定のオラクルで、実機には存在しません。
 
+[↑ 目次に戻る](#目次)
+
+<a id="fan-direct-control"></a>
 ## ファン直接制御
 
 Navigation OFFの状態で、`/ctl/duty`へ直接publishして8基のファンを個別に駆動できます。
@@ -51,6 +67,9 @@ Navigation OFFの状態で、`/ctl/duty`へ直接publishして8基のファン�
 ros2 run sobits_intball2_gnc fan_duty_publisher --help
 ```
 
+[↑ 目次に戻る](#目次)
+
+<a id="checkpoint-if"></a>
 ## 経路チェックポイントIF
 
 `/gnc/checkpoints`（`geometry_msgs/PoseArray`、frame_idは`iss_body`）に配列をpublishすると、先頭のポーズが保持目標になります。空配列で現在位置を再捕捉します。
@@ -60,6 +79,9 @@ ros2 topic pub --once /gnc/checkpoints geometry_msgs/msg/PoseArray \
   "{header: {frame_id: iss_body}, poses: [{position: {x: 0.5, y: 0.0, z: 0.0}, orientation: {w: 1.0}}]}"
 ```
 
+[↑ 目次に戻る](#目次)
+
+<a id="trajectory-if"></a>
 ## 軌道追従IF
 
 `/gnc/trajectory_setpoint`（`trajectory_msgs/MultiDOFJointTrajectory`）に目標位置・速度・加速度をpublishすると、`TrajectoryController`がフィードフォワード＋フィードバックで追従します。前提は`hover_control.mode: tf_imu`。
@@ -68,7 +90,39 @@ setpointが届いている間はcheckpointホールドより優先され、途�
 
 Guidanceは未実装のため、現状は`test/manual/`のスタンドインスクリプト（`send_trajectory.py`等）で動作確認します（詳細: `test/manual/README.md`）。
 
+[↑ 目次に戻る](#目次)
 
+<a id="topics"></a>
+## トピック
+
+### 入力トピック
+
+| トピック名 | 型 | 説明 |
+|---|---|---|
+| `/imu/imu` | `sensor_msgs/Imu` | IMUの角速度・加速度（純IMUホバリング則の入力） |
+| `/gnc/body_pose_raw` | `geometry_msgs/TransformStamped` | `iss_body <- body`の自己位置（ブリッジ間引き経路、`control.py`専用の`PoseRelayClient`用） |
+| `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | `iss_body <- body`のTF（シミュレータ限定オラクル、`TfClient`経由でTF補正に使用） |
+| `/gnc/checkpoints` | `geometry_msgs/PoseArray` | 経路チェックポイント配列（frame_id: `iss_body`）。先頭ポーズが保持目標 |
+| `/gnc/trajectory_setpoint` | `trajectory_msgs/MultiDOFJointTrajectory` | 軌道追従の目標位置・速度・加速度 |
+
+### 出力トピック
+
+| トピック名 | 型 | 説明 |
+|---|---|---|
+| `/ctl/duty` | `std_msgs/Float64MultiArray` | 8基のファンへのduty配分 |
+| `/ctl/wrench` | `geometry_msgs/WrenchStamped` | 制御則が要求するforce/torque |
+| `/ctl/wrench_total` | `geometry_msgs/WrenchStamped` | 配分前の合成force/torque |
+| `/ctl/wrench_achieved` | `geometry_msgs/WrenchStamped` | duty配分後に実際に実現されるforce/torque |
+
+### サービス
+
+| サービス名 | 型 | 説明 |
+|---|---|---|
+| `/gnc/advance_checkpoint` | `std_srvs/Trigger` | チェックポイント配列を手動で1つ先へ進める |
+
+[↑ 目次に戻る](#目次)
+
+<a id="parameters"></a>
 ## パラメータ
 
 パラメータは全て[config/gnc_params.yaml](../../config/gnc_params.yaml)で管理します。
@@ -87,7 +141,8 @@ Guidanceは未実装のため、現状は`test/manual/`のスタンドインス�
 | `tf_correction.smooth_window` | 平滑化ウィンドウ幅 [サンプル数] | `5` |
 | `tf_correction.smooth_sigma` | 平滑化のガウス重みσ | `2.0` |
 | `tf_correction.checkpoint_topic` | チェックポイント配列のトピック名 | `/gnc/checkpoints` |
-| `trajectory_controller.mass` | 機体質量（フィードフォワード用）[kg] | `4.5` |
+| `trajectory_controller.mass` | 機体質量（フィードフォワード用）[kg] | `3.216` |
+| `trajectory_controller.inertia` | 機体慣性、等方性（フィードフォワード用）[kg*m^2] | `0.0136` |
 | `thrust_allocator.kj` | 推力→duty変換係数 | `4.082482905` |
 | `thrust_allocator.fj_max` | ファン1基あたりの最大推力 [N] | `0.06` |
 | `thrust_allocator.cg` | 重心位置 [m] | `[0.001489, 0.001363, 0.000249]` |
@@ -106,30 +161,44 @@ Guidanceは未実装のため、現状は`test/manual/`のスタンドインス�
 | `hover_control.acc_bias_alpha` | 加速度バイアス推定のEMA係数 | `0.01` |
 | `hover_control.max_force` | IMU則の出力力クランプ [N] | `0.1` |
 | `hover_control.max_torque` | IMU則の出力トルククランプ [Nm] | `0.02` |
-| `tf_correction.kp_pos` | 位置誤差→力ゲイン [N/m] | `[0.89, 0.89, 0.89]` |
-| `tf_correction.kd_pos` | 速度→力ゲイン [N/(m/s)] | `[3.6, 3.6, 3.6]` |
-| `tf_correction.kp_att_align` | 姿勢誤差→トルクゲイン、align中 [Nm] | `[0.01, 0.01, 0.01]` |
-| `tf_correction.kd_att_align` | 相対角速度誤差→トルクゲイン、align中 [Nm/(rad/s)] | `[0.0, 0.0, 0.0]` |
-| `tf_correction.kp_att_hold` | 姿勢誤差→トルクゲイン、hold中 [Nm] | `[0.01, 0.01, 0.01]` |
-| `tf_correction.kd_att_hold` | 相対角速度誤差→トルクゲイン、hold中 [Nm/(rad/s)] | `[0.0, 0.0, 0.0]` |
+| `tf_correction.kp_pos` | 位置誤差→力ゲイン [N/m] | `[0.635, 0.635, 0.635]` |
+| `tf_correction.kd_pos` | 速度→力ゲイン [N/(m/s)] | `[2.573, 2.573, 2.573]` |
+| `tf_correction.kp_att_align` | 姿勢誤差→トルクゲイン、align中 [Nm] | `[0.20, 0.20, 0.20]` |
+| `tf_correction.kd_att_align` | 相対角速度誤差→トルクゲイン、align中 [Nm/(rad/s)] | `[0.2816, 0.2816, 0.2816]` |
+| `tf_correction.kp_att_hold` | 姿勢誤差→トルクゲイン、hold中 [Nm] | `[0.20, 0.20, 0.20]` |
+| `tf_correction.kd_att_hold` | 相対角速度誤差→トルクゲイン、hold中 [Nm/(rad/s)] | `[0.1408, 0.1408, 0.1408]` |
 | `tf_correction.align_tolerance_deg` | align→hold切替の角度閾値 [deg] | `3.0` |
 | `tf_correction.align_settle_time` | 角度閾値内が連続してこの時間続いたらhold gainに切替 [s] | `0.5` |
 | `tf_correction.align_gain_max_duration` | align gainを使う時間の保険上限 [s] | `30.0` |
 | `tf_correction.vel_filter_alpha` | 速度推定のEMA係数 | `0.3` |
-| `tf_correction.att_filter_alpha` | 角速度誤差推定のEMA係数 | `1.0` |
+| `tf_correction.att_filter_alpha` | 角速度誤差推定のEMA係数 | `0.3` |
 | `tf_correction.max_corr_force` | TF補正の出力力クランプ [N] | `0.05` |
-| `tf_correction.max_corr_torque` | TF補正の出力トルククランプ [Nm] | `0.01` |
+| `tf_correction.max_corr_torque` | TF補正の出力トルククランプ [Nm] | `0.3` |
 | `tf_correction.timeout` | TFステール判定の閾値 [s] | `1.0` |
-| `trajectory_controller.kp_pos` | 軌道追従の位置誤差→力ゲイン [N/m] | `[0.89, 0.89, 0.89]` |
-| `trajectory_controller.kd_pos` | 軌道追従の速度誤差→力ゲイン [N/(m/s)] | `[3.6, 3.6, 3.6]` |
-| `trajectory_controller.vel_filter_alpha` | 軌道追従の速度推定EMA係数 | `0.3` |
-| `trajectory_controller.max_force` | 軌道追従の出力力クランプ [N] | `0.1` |
-| `trajectory_controller.kp_att` | 軌道追従の姿勢誤差→トルクゲイン [Nm] | `[0.60, 0.60, 0.60]` |
-| `trajectory_controller.kd_att` | 軌道追従の角速度誤差→トルクゲイン [Nm/(rad/s)] | `[0.20, 0.20, 0.20]` |
+| `tf_correction.torque_direction_preserving` | 大角度補正時、各軸独立クランプの代わりに指令回転軸の方向を維持したままクランプする | `false` |
+| `trajectory_controller.kp_pos` | 軌道追従の位置誤差→力ゲイン [N/m] | `[0.635, 0.635, 0.635]` |
+| `trajectory_controller.kd_pos` | 軌道追従の速度誤差→力ゲイン [N/(m/s)] | `[2.573, 2.573, 2.573]` |
+| `trajectory_controller.max_force` | 軌道追従の出力力クランプ [N]（軸別、ファンモデル理論値） | `[0.181, 0.0996, 0.122]` |
+| `trajectory_controller.kp_att` | 軌道追従の姿勢誤差→トルクゲイン [Nm] | `[0.20, 0.20, 0.20]` |
+| `trajectory_controller.kd_att` | 軌道追従の角速度誤差→トルクゲイン [Nm/(rad/s)] | `[0.0626, 0.0626, 0.0626]` |
 | `trajectory_controller.att_filter_alpha` | 軌道追従の角速度誤差推定EMA係数 | `1.0` |
 | `trajectory_controller.max_torque` | 軌道追従の出力トルククランプ [Nm] | `0.32` |
 | `trajectory_controller.timeout` | setpointステール判定の閾値 [s] | `0.2` |
+| `trajectory_controller.torque_direction_preserving` | 大角度補正時、各軸独立クランプの代わりに指令回転軸の方向を維持したままクランプする | `false` |
 | `thrust_allocator.force_weight_ref` | 配分の力チャンネル重み参照値 [N] | `0.1` |
 | `thrust_allocator.torque_weight_ref` | 配分のトルクチャンネル重み参照値 [Nm] | `0.32` |
+| `thrust_allocator.torque_axis_balance` | 軸ごとの物理トルク上限で重み付け（非推奨、下記参照） | `false` |
+| `thrust_allocator.minimax_objective` | L2最小二乗の代わりにミニマックス目的関数を使用 | `true` |
+
+`thrust_allocator.torque_axis_balance`は**非推奨**: duty飽和緩和を狙って`true`でsim検証したが、
+同一ルート・同一条件（`docs/2026-08-28_toppra_static_path_attitude_overshoot_incident.md`その6）で
+duty≥0.95飽和頻度は`false`と同等（48%→48.3%、改善なし）、`t_des`最大は悪化（0.30Nm→0.35Nm）、
+所要時間も悪化（約51〜54秒→約62秒）した。有効化する前に上記ドキュメントを参照すること。
+
+`thrust_allocator.minimax_objective`は要求ピーク値（`t_des`/`f_des`最大）を下げる効果があり
+（同ドキュメントその6: `t_des`最大0.30Nm→0.22Nm）、`wrench_envelope_safety_margin`（guidance側）
+との併用でduty飽和頻度を最も改善できた（同その7）ためデフォルト`true`に変更済み。
 
 `translation_direction_control.*`（`force_magnitude`/`max_force`/`control_rate`）は`TranslationDirectionController`が宣言・保持するパラメータだが、現状どのノードにも配線されていないため上表からは省略（詳細: `docs/main_plan.md`）。
+
+[↑ 目次に戻る](#目次)
