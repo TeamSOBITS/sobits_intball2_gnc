@@ -31,6 +31,20 @@
 （姿勢オーバーシュート・並進停滞）が`replanning`モードでも起きないか、別途sim検証で確認が必要
 （既存のrate-limit機構があるため挙動が異なる可能性が高いが未検証）。
 
+### [G] MINCO/GCOPTERベースの姿勢/トルク統合軌道生成（速度改善待ち、上記replanning課題の候補解）
+将来の障害物回避は並進経路が急に曲がることを前提にしており（下記[将来]障害物回避タスク）、その
+急旋回に`face_travel`が幾何のみで追従しようとすると`static`モードで一度踏んだ姿勢オーバーシュートを
+`replanning`モードでも踏む懸念がある（`main_plan.md`との照合済み、`docs/
+2026-08-29_minco_attitude_torque_integration_plan.md`「軌道再生性」項目）。この解決候補として、
+位置3軸+回転ベクトル3軸を1本の6自由度MINCO軌道として扱い、実`wrench_envelope_halfspaces`を
+ペナルティとして統合するプロトタイプ（GCOPTER公式C++実装ベース）を試作し、数値的には健全
+（並進のみ試作5とのクロスチェック、feasibility確認済み）だが、**求解時間が並進のみ試作5
+（1.5〜1.9ms）の約450〜560倍（0.83〜0.93秒）**——`static`相当の一発計画には十分実用的だが
+`replanning`の10Hz予算には全く届かないと判明。ボトルネックは実envelopeの9951面評価コストで、
+高速化3案（ベクトル化/2段階足切り/面数削減、後者2つは正しさとのトレードオフあり）を整理済み・
+未着手。詳細: `docs/2026-08-29_minco_attitude_torque_integration_plan.md`、
+`docs/2026-08-29_minco_gcopter_survey.md`。
+
 ### [G] replanningモードでのsegment_time_infeasible時の大きなオーバーシュート
 `trajectory_tracking_mode=replanning`で、残距離方向と実速度の横方向成分（v_perp）が
 大きくずれる状況（例: 距離約4.7mの斜め方向move_to）で`HeuristicSegmentTimeAllocator`の
@@ -64,8 +78,8 @@
 可能性が高い**が、この1ケースのみの確認のため、複数の異なる鋭旋回ケースで再現性を確認してから
 このタスク自体を削除するのが安全。
 
-### [G] 移動中のロール継続追従（着陸後の`align_at_arrival`高速化狙い）
-`attitude_reference_mode`(`face_travel`/`look_at`)はピッチ・ヨー（進行方向を向く方向）を経路に応じて決めるが、その向きを軸にした回転（ロール）は決めない。移動中ロールが放置されると到着時に大きなロール誤差が残り、`align_at_arrival`の補正が遅くなる（角度が大きいほど遅く・精度も悪化する、`docs/2026-08-21_tf_correction_align_slow_investigation.md`のゲイン実測で確認済み）。移動中もロールを目標値へ継続的に追従させておけば到着時の補正が小角度（速く・高精度）になるはず、という設計アイデア。`trajectory_controller`側でロール成分だけ目標追従させる形の実装が必要。
+### [G] 移動前のロール事前回転（到着後の`align_at_arrival`高速化狙い）
+`attitude_reference_mode`(`face_travel`/`look_at`)はピッチ・ヨー（進行方向を向く方向）を経路に応じて決めるが、その向きを軸にした回転（ロール）は決めない。移動中ロールが放置されると到着時に大きなロール誤差が残り、`align_at_arrival`の補正が遅くなる（角度が大きいほど遅く・精度も悪化する、`docs/2026-08-21_tf_correction_align_slow_investigation.md`のゲイン実測で確認済み）。移動中にロールも回転させると貴重な推力が減ってしまう。そのため、移動前に、到着後のロールだけでも合わせておくことで、事後回転の高速化が狙えるはず。優先度中
 
 ### [G] 経路の補間方式（直線移動モード）
 waypoint間を滑らかに補間するか、ただの直線でつなぐか未検討。姿勢モードとは直交する軌道生成側の話。`BaseTrajectoryGenerator`に3つ目の実装を追加するか、既存`HermiteSplineTrajectoryGenerator`のパラメータで代替できないか検討する。
@@ -150,9 +164,6 @@ GNC最小構成と組み合わせた場合の効果は未検証（現在停止�
 
 ### [運用] 緊急停止/中断サービス（/gnc/stop）の要否（優先度低）
 `/gnc/advance_checkpoint`と同じ`std_srvs/Trigger`パターン。Action自体は`cancel_goal`で個別の移動を中断できるため、それと独立した「今すぐ全部止める」手段が本当に必要か未検討。
-
-### [運用] ib2_msgs/FanStatus（duty＋電源状態）の購読（優先度低）
-制御ループには不要、診断用途のみの候補。
 
 ### [Teleop] 手動操縦の最大速度の実測
 手動操縦コマンドで機体が到達しうる最大並進/回転速度を実測する。

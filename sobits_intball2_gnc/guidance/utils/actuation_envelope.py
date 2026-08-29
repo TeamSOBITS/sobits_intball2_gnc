@@ -24,7 +24,7 @@ extreme points, unlike a general polytope, so this enumeration is exact, not
 an approximation. Converting those vertices to a half-space (``F @ w <= g``)
 representation via a convex hull gives the exact set toppra's
 ``constraint.SecondOrderConstraint`` needs (see
-:func:`~sobits_intball2_gnc.guidance.utils.toppra_trajectory` for how it's
+:func:`~sobits_intball2_gnc.guidance.trajectory.toppra_trajectory` for how it's
 wired in) -- verified against an independent per-direction LP check
 (``scipy.optimize.linprog``, maximize the scale of a given wrench direction
 subject to ``0 <= f <= fj_max``) to agree to float precision.

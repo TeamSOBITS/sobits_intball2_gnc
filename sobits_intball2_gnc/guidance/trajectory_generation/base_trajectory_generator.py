@@ -3,7 +3,7 @@
 
 A trajectory generator turns a waypoint list + per-segment durations into the
 polynomial coefficients that
-:class:`sobits_intball2_gnc.guidance.utils.trajectory.Trajectory` samples
+:class:`sobits_intball2_gnc.guidance.trajectory.trajectory.Trajectory` samples
 (``docs/min_snap_interface_contract.md`` 2 節's ``coeffs`` layout). Package-ized
 per ``docs/architecture_guidelines.md`` 2 節: a min-snap solver (Mellinger &
 Kumar 2011, core solve not implemented -- 2026-08-24 decision, see
@@ -26,7 +26,7 @@ class BaseTrajectoryGenerator(Protocol):
         per-axis polynomial coefficients evaluated in local segment time
         ``tau`` (``docs/min_snap_interface_contract.md`` 2 節/3 節) --
         exactly what
-        :class:`~sobits_intball2_gnc.guidance.utils.trajectory.Trajectory`
+        :class:`~sobits_intball2_gnc.guidance.trajectory.trajectory.Trajectory`
         expects as its ``coeffs`` argument.
 
         Args:

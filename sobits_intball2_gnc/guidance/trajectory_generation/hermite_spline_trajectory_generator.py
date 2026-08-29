@@ -8,7 +8,7 @@ across segment boundaries, not the full snap-minimizing smoothness of a real
 min-snap solution -- degree-3 per segment (4 of the 8 coefficient slots used,
 the rest zero) instead of degree-7. This is enough to exercise the rest of
 the Guidance pipeline (:mod:`sobits_intball2_gnc.guidance.segment_time`,
-:class:`~sobits_intball2_gnc.guidance.utils.trajectory.Trajectory`,
+:class:`~sobits_intball2_gnc.guidance.trajectory.trajectory.Trajectory`,
 ``scripts/plot_trajectory.py``) end-to-end today; swap in
 :class:`~sobits_intball2_gnc.guidance.trajectory_generation.min_snap_trajectory_generator.MinSnapTrajectoryGenerator`
 once ``min_snap.py``'s core lands (same
@@ -18,7 +18,7 @@ contract, so no caller changes needed).
 Tangents at interior waypoints use a Catmull-Rom-style estimate (weighted by
 the two adjacent segment durations); start/end tangents are zero by default,
 matching this project's convention that a trajectory begins/ends at rest (see
-:mod:`sobits_intball2_gnc.guidance.utils.trajectory` module docstring on
+:mod:`sobits_intball2_gnc.guidance.trajectory.trajectory` module docstring on
 terminal behavior, and ``trajectory_force_duration_investigation.md`` 6-3
 節's note on why a moving reference should not start at nonzero ``v``
 unannounced). ``generate()``'s optional ``v0`` argument overrides the start

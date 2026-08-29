@@ -17,22 +17,25 @@
 
 ```
 control/
-├── control.py    # 統括ノード（唯一の rclpy ノード）
-├── ros/          # ROS 入出力ラッパ
-│   ├── fan_duty_publisher.py
-│   ├── imu_subscriber.py
-│   ├── pose_array_subscriber.py                  # /gnc/checkpoints 購読
-│   └── multi_dof_joint_trajectory_subscriber.py   # /gnc/trajectory_setpoint 購読
+├── control.py    # 統括ノード（唯一の rclpy ノード）。ros/のI/OラッパとutilsのROS非依存ロジックをDIで束ね、
+│                 # IMU(+TFポーズ) -> HoverController -> ThrustAllocator -> FanDutyPublisher の制御ループを回す
+├── ros/          # ROS 入出力ラッパ（Nodeは継承せず、渡されたnodeにpub/subをぶら下げるだけ）
+│   ├── fan_duty_publisher.py                      # /ctl/duty へ8基分のduty配列をpublish。負推力は出せないため[0,1]にクランプ
+│   ├── imu_subscriber.py                          # /imu/imu（ib2_msgs/IMU）を購読し最新のジャイロ・加速度を保持
+│   ├── pose_array_subscriber.py                   # /gnc/checkpoints（経路チェックポイント配列）購読
+│   ├── multi_dof_joint_trajectory_subscriber.py   # /gnc/trajectory_setpoint（軌道追従の目標点）購読
+│   └── wrench_publisher.py                        # /ctl/wrench・/ctl/wrench_total・/ctl/wrench_achieved へ
+│                                                   # 要求/合成/実現wrenchをpublish（可観測性強化用）
 └── utils/        # ROS非依存のロジック（単体テスト可能）
-    ├── quat_math.py
-    ├── pose_control_law.py                       # (target, current) -> (force, torque)の純粋な誤差則。PoseCorrector等から再利用される
-    ├── hover_law.py
-    ├── pose_corrector.py
-    ├── hover_controller.py       # 全体を束ねるオーケストレーション
-    ├── trajectory_controller.py
-    ├── thrust_allocator.py
-    ├── translation_direction_controller.py
-    └── singleton_lock.py
+    ├── quat_math.py                        # クォータニオン/ベクトルの純粋関数群（回転・誤差角度など）
+    ├── pose_control_law.py                 # (target, current) -> (force, torque)の純粋な誤差則。PoseCorrector等から再利用される
+    ├── hover_law.py                        # IMUのみのホバリング制御則（角速度ダンピング＋加速度外乱抑制）
+    ├── pose_corrector.py                   # TFポーズに基づくホバリング補正（TF取得・平滑化・チェックポイント保持）
+    ├── hover_controller.py                 # 全体を束ねるオーケストレーション（HoverLaw/PoseCorrector/TrajectoryController/ThrustAllocatorを結線）
+    ├── trajectory_controller.py            # Guidanceの移動目標(p_des/v_des/a_des/q_des)へのフィードフォワード＋フィードバック追従
+    ├── thrust_allocator.py                 # body系wrench -> 8基の非負ファンduty配分（拘束付き最小二乗/ミニマックス）
+    ├── translation_direction_controller.py # 並進のみの方向ベクトル指令をwrenchに変換（現状未配線、将来のテレオペ用部品）
+    └── singleton_lock.py                   # flockによるcontrol_nodeの多重起動防止
 ```
 
 TF自己位置取得（`TfClient`）は`control/`と`guidance/`で共有するため`common/ros/tf_client.py`にあります。`common/ros/pose_relay_client.py`は同じ`iss_body <- body`フィードバックを、ブリッジ負荷対策として専用の間引きトピック経由で取得する`TfClient`互換の代替実装（`control.py`のみで使用、`docs/recording_cpu_load_control_degradation.md`参照）。

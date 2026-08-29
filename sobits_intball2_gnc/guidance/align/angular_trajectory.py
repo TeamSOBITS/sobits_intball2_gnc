@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Rest-to-rest trapezoidal (or triangular) angular-velocity profile.
 
-Used by ``GuidanceExecutor._align_to()`` to feed the checkpoint-driven align
+Used by ``AttitudeAligner.align_to()`` to feed the checkpoint-driven align
 loop a smoothly moving intermediate target instead of a single step input,
 removing the composite-axis overshoot documented in
 ``docs/2026-08-27_composite_axis_overshoot_summary_and_plan.md``. Ported

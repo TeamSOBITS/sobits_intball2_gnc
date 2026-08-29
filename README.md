@@ -40,17 +40,17 @@ ROS2 Humble に対応しています．
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
-## GNCの枠組みでの位置づけ
+### GNCの枠組み
 
-| 役割 | 内容 | 詳細 |
-|---|---|---|
-| **G (Guidance)** | 目標軌道 `p_des(t), v_des(t), a_des(t), q_des(t)` を生成 | `min_snap.py`のコアロジックのみ未実装: [sobits_intball2_gnc/guidance/README.md](sobits_intball2_gnc/guidance/README.md) |
-| **N (Navigation)** | 自己位置推定 | [sobits_intball2_gnc/navigation/README.md](sobits_intball2_gnc/navigation/README.md) |
-| **C (Control)** | 目標軌道を追従する force/torque を計算し，8 duty へ配分 | [sobits_intball2_gnc/control/README.md](sobits_intball2_gnc/control/README.md) |
+| 役割 | 内容 |
+|---|---|
+| **[Guidance](sobits_intball2_gnc/guidance/README.md)** | 目標軌道 `p_des(t), v_des(t), a_des(t), q_des(t)` を生成 |
+| **[Navigation](sobits_intball2_gnc/navigation/README.md)** | 自己位置推定，移動先地点配信 | 
+| **[Control](sobits_intball2_gnc/control/README.md)** | 目標軌道を追従する force/torque を計算し，8 duty へ配分 |
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
-## パッケージ構成
+### パッケージ構成
 
 ```
 sobits_intball2_gnc/
@@ -68,10 +68,6 @@ sobits_intball2_gnc/
 └── setup.cfg
 ```
 
-各モジュールの内部構成・使い方は上記のGNC対応表からリンクしているREADMEを参照してください．
-
-> [!NOTE]
-> パラメータは **ROS2 パラメータ**として [config/gnc_params.yaml](config/gnc_params.yaml) で管理します．各パラメータは、それを使うモジュール自身が宣言・取得するため，モジュール単体でも構築・テストできます（将来の dynamic parameter 対応も見据えた構成）．ファン幾何は ROS2 param が「マップの配列」を表現できないため，`fan_positions`／`fan_vectors` のフラットな数値配列で保持します．
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
@@ -119,19 +115,19 @@ sobits_intball2_gnc/
 
 ## 実行方法
 
-制御ノード本体（`hover_control.launch.py`）と，RViz・TF可視化などのデバッグ支援一式（`gnc_bringup.launch.py`）は別のlaunchファイルに分かれています．通常は両方を起動します．
-
-```sh
-ros2 launch sobits_intball2_gnc hover_control.launch.py
-ros2 launch sobits_intball2_gnc gnc_bringup.launch.py
-```
-
-| launchファイル | 役割 |
-|---|---|
-| `hover_control.launch.py` | `control`ノードを`config/gnc_params.yaml`のパラメータで起動．Navigation OFF（自己位置推定はTFツリーから取得）．`params_file:=<path>`で別パラメータファイルを指定可能． |
-| `gnc_bringup.launch.py` | ISS/ib2の`robot_state_publisher`（TFフレーム・メッシュ表示），GNC用RViz設定（`rviz/gnc.rviz`），`location_broadcaster`を起動．`use_rviz:=false`でRViz無効化可能． |
-
-各ノードを個別に`ros2 run`で実行する方法（単体テスト・デバッグ用）は各モジュールのREADME（[control](sobits_intball2_gnc/control/README.md)・[guidance](sobits_intball2_gnc/guidance/README.md)・[navigation](sobits_intball2_gnc/navigation/README.md)）を参照してください．
+- [gnc_bringup.launch.py](launch/gnc_bringup.launch.py)を起動し，移動先地点を配信します．
+    ```
+    ros2 launch sobits_intball2_gnc gnc_bringup.launch.py
+    ```
+- [hover_control.launch.py](launch/hover_control.launch.py)を起動し，現在位置・姿勢の保持を行います．
+    ```
+    ros2 launch sobits_intball2_gnc hover_control.launch.py
+    ```
+- [guidance.py](sobits_intball2_gnc/guidance/guidance.py)を起動し，目標軌道の生成・追従を行います．
+    ```
+    ros2 run sobits_intball2_gnc guidance
+    ```
+    詳細は[guidance/README.md](sobits_intball2_gnc/guidance/README.md)を参照してください．
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 

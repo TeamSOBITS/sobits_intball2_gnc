@@ -31,7 +31,7 @@ from sobits_intball2_gnc.guidance.segment_time.heuristic_segment_time_allocator 
 from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator import (
     HermiteSplineTrajectoryGenerator,
 )
-from sobits_intball2_gnc.guidance.utils.trajectory import Trajectory
+from sobits_intball2_gnc.guidance.trajectory.trajectory import Trajectory
 
 
 def _build_trajectory(waypoints, allocator):

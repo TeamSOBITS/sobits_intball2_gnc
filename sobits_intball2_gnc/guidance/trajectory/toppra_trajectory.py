@@ -39,7 +39,7 @@ design rationale and the open questions this implementation resolves:
   start speed, which cannot express a velocity residual perpendicular to the
   path (the case ``ReplanningTrajectoryTracker``'s exact v0-aware bound
   derivation exists specifically to handle) -- replanning keeps using
-  :class:`~sobits_intball2_gnc.guidance.utils.trajectory.Trajectory` /
+  :class:`~sobits_intball2_gnc.guidance.trajectory.trajectory.Trajectory` /
   ``HeuristicSegmentTimeAllocator`` unchanged.
 - The position path shape (before TOPP-RA re-times it) comes from
   :class:`~sobits_intball2_gnc.guidance.trajectory_generation.
@@ -112,7 +112,7 @@ class ToppraTrajectory:
     """Time-parameterized combined position+attitude trajectory.
 
     Satisfies the same minimal duck-typed interface
-    :class:`~sobits_intball2_gnc.guidance.utils.trajectory.Trajectory` gives
+    :class:`~sobits_intball2_gnc.guidance.trajectory.trajectory.Trajectory` gives
     :class:`~sobits_intball2_gnc.guidance.trajectory_tracking.
     static_trajectory_tracker.StaticTrajectoryTracker` (``sample(t) ->
     (p, v, a, q)`` and a ``global_total_duration`` property) -- ``Trajectory``
