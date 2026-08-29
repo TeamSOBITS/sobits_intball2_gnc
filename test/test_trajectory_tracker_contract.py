@@ -25,7 +25,7 @@ from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_trajectory_trac
 from sobits_intball2_gnc.guidance.trajectory_tracking.static_trajectory_tracker import (
     StaticTrajectoryTracker,
 )
-from sobits_intball2_gnc.guidance.utils.trajectory import Trajectory
+from sobits_intball2_gnc.guidance.trajectory.trajectory import Trajectory
 
 P0 = [0.0, 0.0, 0.0]
 P_TARGET = [2.0, 0.0, 0.0]

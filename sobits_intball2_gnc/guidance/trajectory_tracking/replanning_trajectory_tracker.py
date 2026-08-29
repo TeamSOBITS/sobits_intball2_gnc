@@ -71,7 +71,7 @@ class ReplanningTrajectoryTracker:
 
     Args:
         trajectory: an already-built
-            :class:`~sobits_intball2_gnc.guidance.utils.trajectory.Trajectory`
+            :class:`~sobits_intball2_gnc.guidance.trajectory.trajectory.Trajectory`
             for the initial ``(p0, p_target)`` leg -- mutated in place via
             ``replace_coeffs`` on each re-plan (never replaced with a new
             instance, so its ``_last_q_des``/``_last_sample_t`` survive, per

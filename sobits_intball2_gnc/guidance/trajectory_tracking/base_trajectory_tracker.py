@@ -4,7 +4,7 @@
 A trajectory tracker turns "the current goal's elapsed time" into a sampled
 ``(p, v, a, q_des)`` reference, and owns the decision of *how* that reference
 gets produced tick to tick -- either by sampling a fixed, open-loop
-:class:`~sobits_intball2_gnc.guidance.utils.trajectory.Trajectory`
+:class:`~sobits_intball2_gnc.guidance.trajectory.trajectory.Trajectory`
 (:mod:`static_trajectory_tracker`) or by continuously re-planning it from
 live TF feedback (:mod:`replanning_trajectory_tracker`). Package-ized per
 ``docs/architecture_guidelines.md`` 2 節: two concrete, named implementations

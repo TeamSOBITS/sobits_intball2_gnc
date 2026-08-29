@@ -1,8 +1,8 @@
-"""Unit tests for guidance.utils.angular_trajectory (ROS-agnostic)."""
+"""Unit tests for guidance.align.angular_trajectory (ROS-agnostic)."""
 import numpy as np
 import pytest
 
-from sobits_intball2_gnc.guidance.utils.angular_trajectory import (
+from sobits_intball2_gnc.guidance.align.angular_trajectory import (
     trapezoid_duration,
     trapezoid_fraction,
 )

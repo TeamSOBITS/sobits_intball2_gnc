@@ -8,7 +8,7 @@ of the (not-yet-implemented) min_snap solver.
 import numpy as np
 
 from sobits_intball2_gnc.control.utils.quat_math import quat_rotate
-from sobits_intball2_gnc.guidance.utils.trajectory import Trajectory
+from sobits_intball2_gnc.guidance.trajectory.trajectory import Trajectory
 
 # Two segments, each 2s: (0,0,0) -> (1,0,0) -> (1,1,0), constant velocity.
 WAYPOINTS = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]]

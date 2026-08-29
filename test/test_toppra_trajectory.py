@@ -8,7 +8,7 @@ from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
     wrench_envelope_halfspaces,
 )
 from sobits_intball2_gnc.guidance.utils.attitude_reference import IDENTITY_QUAT
-from sobits_intball2_gnc.guidance.utils.toppra_trajectory import (
+from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import (
     ToppraTrajectory,
     TrajectoryInfeasibleError,
 )
@@ -190,7 +190,7 @@ def test_raises_when_toppra_reports_infeasible(monkeypatch):
     # that trigger it -- TOPP-RA can generally always find *some* feasible
     # (if very slow) time-parameterization for a well-posed path, so genuine
     # infeasibility is not a reliable thing to provoke with plain inputs.
-    import sobits_intball2_gnc.guidance.utils.toppra_trajectory as mod
+    import sobits_intball2_gnc.guidance.trajectory.toppra_trajectory as mod
 
     monkeypatch.setattr(
         mod.algo.TOPPRA, "compute_trajectory", lambda self, *a, **kw: None

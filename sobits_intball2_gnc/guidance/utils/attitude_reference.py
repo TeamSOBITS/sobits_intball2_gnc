@@ -6,7 +6,7 @@ axis (default: body +X) toward the direction of travel, given ``v_des(t)``.
 Below a low-speed threshold the previous ``q_des`` is held unchanged (see
 Aerostack2's ``yaw_threshold``) so attitude doesn't chatter at rest/low speed.
 
-Kept independent from :mod:`sobits_intball2_gnc.guidance.utils.trajectory` so
+Kept independent from :mod:`sobits_intball2_gnc.guidance.trajectory.trajectory` so
 this "face direction of travel" policy can later be swapped for another one
 (face a fixed camera offset, look at a target point, etc. -- see
 ``docs/future_design_notes.md`` 2-2) without touching trajectory sampling.
