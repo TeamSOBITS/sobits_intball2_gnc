@@ -35,13 +35,15 @@ def _flat_trajectory():
 def _make_tracker(pose_fn, tf_fresh_fn=lambda stamp: True,
                    velocity_fn=lambda: _Vel([0.0, 0.0, 0.0]),
                    distance_fallback_m=0.3, replan_every_n_ticks=5,
-                   max_accel=MAX_ACCEL, via_waypoint=None):
+                   max_accel=MAX_ACCEL, via_waypoint=None,
+                   use_minco=False, q0=None):
     return ReplanningTrajectoryTracker(
         _flat_trajectory(), P_TARGET, pose_fn, tf_fresh_fn, velocity_fn,
         target_speed=TARGET_SPEED, max_accel=max_accel,
         distance_fallback_m=distance_fallback_m,
         replan_every_n_ticks=replan_every_n_ticks,
         via_waypoint=via_waypoint,
+        use_minco=use_minco, q0=q0,
     )
 
 
@@ -49,6 +51,42 @@ def test_max_accel_none_is_rejected():
     with pytest.raises(ValueError):
         _make_tracker(pose_fn=lambda: ([0.0, 0.0, 0.0], [0, 0, 0, 1], 1.0),
                       max_accel=None)
+
+
+def test_use_minco_requires_q0():
+    with pytest.raises(ValueError):
+        _make_tracker(pose_fn=lambda: ([0.0, 0.0, 0.0], [0, 0, 0, 1], 1.0),
+                      use_minco=True, q0=None)
+
+
+def test_use_minco_replan_produces_6dof_sample():
+    """use_minco=True版のre-plan経路の疎通確認（minco_native_py未ビルド環境
+    ではskip）。数値の妥当性はtest_minco_native_regression.py側で検証済みな
+    ので、ここではReplanningTrajectoryTracker側の配線（MincoInfeasibleError
+    のフォールバック処理を通らず、last_replan_occurredが立ち、sample()が
+    (p,v,a,q)の4-tupleでunit quaternionを返すこと）だけを確認する。"""
+    pytest.importorskip("minco_native_py")
+
+    pose_calls = {"n": 0}
+
+    def pose_fn():
+        pose_calls["n"] += 1
+        return [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], float(pose_calls["n"])
+
+    tracker = _make_tracker(
+        pose_fn, replan_every_n_ticks=1, distance_fallback_m=0.0,
+        use_minco=True, q0=[0.0, 0.0, 0.0, 1.0],
+    )
+    p, v, a, q = tracker.sample(0.0)
+
+    assert tracker.last_replan_occurred is True
+    assert tracker.last_fallback_reason is None
+    assert p.shape == (3,)
+    assert v.shape == (3,)
+    assert a.shape == (3,)
+    assert q.shape == (4,)
+    assert np.isclose(np.linalg.norm(q), 1.0)
+    assert tracker.total_duration > 0.0
 
 
 def test_replans_only_every_nth_tick():

@@ -92,6 +92,7 @@ def generate_launch_description() -> LaunchDescription:
         executable="location_broadcaster",
         name="location_broadcaster",
         output="screen",
+        parameters=[{"use_sim_time": True}],
     )
 
     return LaunchDescription(

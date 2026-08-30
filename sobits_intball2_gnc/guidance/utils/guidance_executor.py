@@ -46,13 +46,19 @@ from sobits_intball2_gnc.guidance.utils.attitude_reference import (
     compute_camera_relative_quat,
     compute_q_des,
 )
+from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
+    MincoInfeasibleError,
+    MincoTrajectory,
+)
 from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import (
     ToppraTrajectory,
     TrajectoryInfeasibleError,
 )
 from sobits_intball2_gnc.guidance.trajectory.trajectory import Trajectory
 
-TRAJECTORY_TRACKING_MODES = frozenset({"static", "replanning"})
+TRAJECTORY_TRACKING_MODES = frozenset(
+    {"static", "replanning", "replanning_minco", "static_minco"}
+)
 
 STATUS_SUCCESS = "success"
 STATUS_ABORTED = "aborted"
@@ -276,7 +282,8 @@ class GuidanceExecutor:
                 face_travel=True, face_travel_camera="main",
                 align_at_arrival=True, pre_align=True, look_at_target_frame="",
                 align_at_arrival_camera="main", trajectory_tracking_mode="static",
-                via_waypoint=None):
+                via_waypoint=None, minco_via_half_width=0.3,
+                minco_attitude_resample_spacing_m=None):
         """Run one move-to-target goal; returns a ``STATUS_*`` constant.
 
         ``via_waypoint``: an optional single interior relay point (already
@@ -288,6 +295,21 @@ class GuidanceExecutor:
         the 3-waypoint trajectory and ``pre_align``'s initial facing
         direction. ``None`` (default) reproduces the prior 2-waypoint
         behavior exactly.
+
+        ``minco_via_half_width``: ``"static_minco"``/``"replanning_minco"``
+        only -- forwarded to ``MincoTrajectory``'s ``via_half_width`` (see
+        that class's docstring and ``docs/
+        2026-08-30_static_minco_face_travel_gap.md`` 追記3). ``0.0`` pins
+        ``via_waypoint`` exactly (TOPPRA-style hard pass-through); the
+        default ``0.3`` matches the box MINCO originally hardcoded. Ignored
+        by every other mode.
+
+        ``minco_attitude_resample_spacing_m``: ``"static_minco"``/
+        ``"replanning_minco"`` only -- forwarded to ``MincoTrajectory``'s
+        ``attitude_resample_spacing_m`` (docs/
+        2026-08-30_static_minco_face_travel_gap.md 追記4). ``None``
+        (default) reproduces prior behavior (attitude only seeded at the
+        given waypoints). Ignored by every other mode.
 
         ``look_at_target_frame`` is accepted but currently unused -- reserved
         for the future ``look_at`` attitude-reference mode (docs/
@@ -305,12 +327,30 @@ class GuidanceExecutor:
         ``trajectory_tracking_mode``: ``"static"`` (default) samples a single
         open-loop trajectory generated at goal start, unchanged from prior
         behavior. ``"replanning"`` continuously re-plans the translation leg
-        from live TF (``docs/guidance_realtime_replanning_design.md``); it
-        falls back to ``"static"`` with a warning if ``max_accel`` or
-        ``velocity_fn`` was not configured (both required by
-        :class:`~sobits_intball2_gnc.guidance.trajectory_tracking.
-        replanning_trajectory_tracker.ReplanningTrajectoryTracker`), or if
-        given an unrecognized value.
+        from live TF (``docs/guidance_realtime_replanning_design.md``);
+        ``"replanning_minco"`` is the same continuous re-planning loop but
+        backed by :class:`~sobits_intball2_gnc.guidance.trajectory.
+        minco_trajectory.MincoTrajectory` (wrench-envelope-aware 6-DOF
+        MINCO, ``docs/2026-08-30_minco_attitude_torque_status_and_next_steps.md``,
+        experimental / not yet sim-validated against the default path)
+        instead of ``HeuristicSegmentTimeAllocator`` + ``HermiteSpline
+        TrajectoryGenerator``. Both re-planning modes fall back to
+        ``"static"`` with a warning if ``max_accel`` or ``velocity_fn`` was
+        not configured (both required by :class:`~sobits_intball2_gnc.
+        guidance.trajectory_tracking.replanning_trajectory_tracker.
+        ReplanningTrajectoryTracker`), or if given an unrecognized value.
+        ``"replanning_minco"`` additionally falls back to ``"static"`` if
+        the initial ``MincoTrajectory`` itself is infeasible (rather than
+        starting a re-planning loop with no usable initial leg).
+
+        ``"static_minco"`` is like ``"static"`` (single open-loop trajectory,
+        no TF-driven re-planning) but backed by ``MincoTrajectory`` instead
+        of TOPP-RA/Hermite -- sidesteps the re-planning-cadence-vs-blocking-
+        MINCO-solve mismatch that makes ``"replanning_minco"`` not actually
+        progress in practice (``docs/
+        2026-08-30_minco_replanning_blocking_latency_incident.md``). Falls
+        back to the Hermite static path (not TOPP-RA) if the MINCO solve is
+        infeasible.
         """
         pose = self._tf.get_pose()
         if pose is None:
@@ -417,11 +457,13 @@ class GuidanceExecutor:
                 "falling back to 'static'" % trajectory_tracking_mode
             )
             mode = "static"
-        if mode == "replanning" and (self._max_accel is None or self._velocity_fn is None):
+        if mode in ("replanning", "replanning_minco") and (
+            self._max_accel is None or self._velocity_fn is None
+        ):
             self._log.warn(
-                "[GuidanceExecutor] trajectory_tracking_mode='replanning' "
-                "requires max_accel and velocity_fn to be configured -- "
-                "falling back to 'static'"
+                "[GuidanceExecutor] trajectory_tracking_mode=%r requires "
+                "max_accel and velocity_fn to be configured -- falling "
+                "back to 'static'" % mode
             )
             mode = "static"
 
@@ -460,6 +502,66 @@ class GuidanceExecutor:
                 )
                 traj = None
 
+        if mode == "static_minco":
+            # "replanning_minco"と違い再計画は一切しない: MINCOをgoal受付時に
+            # 一度だけ解いて、StaticTrajectoryTracker（下のelse節）でそのまま
+            # 完走させる。plan_mincoのブロッキング解決レイテンシ（実測3〜5秒）は
+            # ここではgoal受付が一度遅れるだけで、"replanning_minco"で踏んだ
+            # 「再計画のたびに軌道が仕切り直しになり実質前進しない」問題
+            # （docs/2026-08-30_minco_replanning_blocking_latency_incident.md）
+            # の対象外。
+            try:
+                traj = MincoTrajectory(
+                    waypoints, q0, v0=np.zeros(3), w0=np.zeros(3),
+                    forward_axis=forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"],
+                    face_travel=face_travel,
+                    via_half_width=minco_via_half_width,
+                    attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
+                )
+                self._log.info(
+                    "[GuidanceExecutor] static MINCO solve took %.2fs "
+                    "(%d waypoints, via_half_width=%.2f, "
+                    "attitude_resample_spacing_m=%s)"
+                    % (traj.solve_wall_seconds, traj.num_waypoints,
+                       minco_via_half_width, minco_attitude_resample_spacing_m)
+                )
+            except MincoInfeasibleError as exc:
+                self._log.warn(
+                    "[GuidanceExecutor] static MINCO trajectory infeasible "
+                    "(%s) -- falling back to the Hermite static path" % exc
+                )
+                traj = None
+
+        if mode == "replanning_minco":
+            # ReplanningTrajectoryTracker(use_minco=True)のsample()は毎回
+            # trajectory.sample(t - t_origin)というローカル時刻契約で呼ぶ
+            # ので、初期legもMincoTrajectory自身にする必要がある（Hermite
+            # Trajectoryとは異なるsample()契約のため、traj=Noneのまま下の
+            # Hermiteフォールバックに流すわけにはいかない -- 失敗時はモード
+            # ごとstaticへ倒す）。
+            try:
+                traj = MincoTrajectory(
+                    waypoints, q0, v0=np.zeros(3), w0=np.zeros(3),
+                    forward_axis=forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"],
+                    face_travel=face_travel,
+                    via_half_width=minco_via_half_width,
+                    attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
+                )
+                self._log.info(
+                    "[GuidanceExecutor] initial MINCO solve took %.2fs "
+                    "(%d waypoints, via_half_width=%.2f, "
+                    "attitude_resample_spacing_m=%s)"
+                    % (traj.solve_wall_seconds, traj.num_waypoints,
+                       minco_via_half_width, minco_attitude_resample_spacing_m)
+                )
+            except MincoInfeasibleError as exc:
+                self._log.warn(
+                    "[GuidanceExecutor] initial MINCO trajectory infeasible "
+                    "(%s) -- falling back to 'static'" % exc
+                )
+                traj = None
+                mode = "static"
+
         if traj is None:
             segment_times = HeuristicSegmentTimeAllocator(
                 target_speed=self._target_speed, max_accel=self._max_accel
@@ -483,6 +585,18 @@ class GuidanceExecutor:
                 distance_fallback_m=self._distance_fallback_m,
                 replan_every_n_ticks=self._replan_every_n_ticks,
                 via_waypoint=via_waypoint,
+            )
+        elif mode == "replanning_minco":
+            tracker = ReplanningTrajectoryTracker(
+                traj, p_target, pose_fn=self._tf.get_pose,
+                tf_fresh_fn=self._tf_pose_fresh, velocity_fn=self._velocity_fn,
+                target_speed=self._target_speed, max_accel=self._max_accel,
+                distance_fallback_m=self._distance_fallback_m,
+                replan_every_n_ticks=self._replan_every_n_ticks,
+                via_waypoint=via_waypoint,
+                use_minco=True, q0=q0,
+                minco_via_half_width=minco_via_half_width,
+                minco_attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
             )
         else:
             tracker = StaticTrajectoryTracker(traj)
@@ -582,12 +696,13 @@ class GuidanceExecutor:
         computation entirely rather than reproducing the goal's actual
         attitude-reference settings here.
 
-        For a ``ToppraTrajectory``, ``sample()`` is a pure lookup into an
-        already-computed time-parameterized trajectory (no per-call mutable
-        state), so it's safe to sample ``traj`` directly here.
+        For a ``ToppraTrajectory`` or ``MincoTrajectory``, ``sample()`` is a
+        pure lookup into an already-computed time-parameterized trajectory
+        (no per-call mutable state), so it's safe to sample ``traj``
+        directly here.
         """
         n = max(2, self._path_preview_points)
-        if isinstance(traj, ToppraTrajectory):
+        if isinstance(traj, (ToppraTrajectory, MincoTrajectory)):
             duration = traj.global_total_duration
             samples = [traj.sample(duration * i / (n - 1)) for i in range(n)]
         else:
