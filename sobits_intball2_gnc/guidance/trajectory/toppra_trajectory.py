@@ -32,8 +32,12 @@ design rationale and the open questions this implementation resolves:
   independent SO(3) path/TOPP-SO3), which is only an exact stand-in for
   angular velocity/acceleration in the small-rotation-between-waypoints
   regime (that doc's "回転ベクトルを独立joint座標として扱うことの妥当性"
-  section) -- acceptable for ``face_travel``'s dense-waypoint use case, not
-  yet validated for a single large (e.g. 90 deg) reorientation.
+  section). Large single-turn reorientations (up to ~144 deg between
+  consecutive waypoints) have since been sim-validated with no overshoot
+  or convergence issue (``docs/main_plan.md`` "90°超waypointでの分離型機動",
+  ``docs/archive/achieved/2026-08-28_toppra_static_path_attitude_overshoot_incident.md``
+  "その11") -- this approximation is not the limiting factor it was
+  originally thought to be.
 - Only used for ``trajectory_tracking_mode="static"``: ``toppra``'s
   ``compute_trajectory(sd_start, ...)`` only accepts a *scalar* path-tangent
   start speed, which cannot express a velocity residual perpendicular to the

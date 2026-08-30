@@ -1,5 +1,6 @@
 """Unit tests for GuidanceExecutor (ROS-agnostic, no rclpy)."""
 import numpy as np
+import pytest
 
 from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle
 from sobits_intball2_gnc.guidance.utils.attitude_reference import (
@@ -807,6 +808,37 @@ def test_execute_replanning_mode_reaches_target():
     assert not any("falling back to 'static'" in w for w in logger.warnings)
     final_p, _v, _a, _q = setpoint_pub.calls[-1]
     assert np.allclose(final_p, [1.0, 0.0, 0.0], atol=0.1)
+
+
+def test_execute_replanning_minco_mode_reaches_target():
+    """Same shape as test_execute_replanning_mode_reaches_target above, but
+    for trajectory_tracking_mode="replanning_minco" (docs/
+    2026-08-30_minco_attitude_torque_status_and_next_steps.md). Skips if
+    minco_native_py isn't built. replan_rate_hz kept low relative to the sim
+    rate (unlike the Heuristic-backed test above) since each re-plan here
+    runs a real L-BFGS solve, not a closed-form heuristic."""
+    pytest.importorskip("minco_native_py")
+
+    setpoint_pub = FakeSetpointPublisher()
+    logger = FakeLogger()
+    tf = MovingTowardTf([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], step=0.05)
+    executor = GuidanceExecutor(
+        tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05),
+        logger, target_speed=1.0, max_accel=0.02,
+        align_pos_tolerance_m=0.05, align_pos_settle_time=0.1, align_pos_timeout=5.0,
+        velocity_fn=lambda: FakeVelocityEstimate([0.0, 0.0, 0.0]),
+        distance_fallback_m=0.3, replan_rate_hz=5.0,
+    )
+    status = executor.execute(
+        [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=False,
+        trajectory_tracking_mode="replanning_minco",
+    )
+    assert status == STATUS_SUCCESS
+    assert not any("falling back to 'static'" in w for w in logger.warnings)
+    final_p, _v, _a, _q = setpoint_pub.calls[-1]
+    assert np.allclose(final_p, [1.0, 0.0, 0.0], atol=0.15)
 
 
 def test_execute_replanning_mode_passes_via_waypoint_to_the_tracker(monkeypatch):

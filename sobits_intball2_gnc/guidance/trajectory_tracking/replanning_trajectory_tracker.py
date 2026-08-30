@@ -58,6 +58,10 @@ from sobits_intball2_gnc.guidance.segment_time.base_segment_time_allocator impor
 from sobits_intball2_gnc.guidance.segment_time.heuristic_segment_time_allocator import (
     HeuristicSegmentTimeAllocator,
 )
+from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
+    MincoInfeasibleError,
+    MincoTrajectory,
+)
 from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator import (
     HermiteSplineTrajectoryGenerator,
 )
@@ -101,23 +105,69 @@ class ReplanningTrajectoryTracker:
         via_waypoint: optional single interior relay point, shape ``(3,)``
             (module docstring). ``None`` (default) reproduces the prior
             2-waypoint-only re-planning exactly.
+        use_minco: when ``True``, each re-plan builds a fresh :class:`~
+            sobits_intball2_gnc.guidance.trajectory.minco_trajectory.
+            MincoTrajectory` (wrench-envelope-aware 6-DOF, ``docs/
+            2026-08-30_minco_attitude_torque_status_and_next_steps.md``)
+            instead of ``HeuristicSegmentTimeAllocator`` +
+            ``HermiteSplineTrajectoryGenerator``. Default ``False``
+            reproduces prior behavior exactly. Experimental (Phase 1, not
+            yet sim-validated against the default path).
+        q0: reference attitude ``[x,y,z,w]`` MINCO's rotation-vector
+            waypoints are expressed relative to. Required when
+            ``use_minco=True``, ignored otherwise.
+        minco_via_half_width: ``use_minco=True`` only -- forwarded to each
+            re-plan's ``MincoTrajectory(..., via_half_width=...)`` (see that
+            class's docstring and ``docs/
+            2026-08-30_static_minco_face_travel_gap.md`` 追記3). Ignored
+            when ``use_minco=False``.
+        minco_attitude_resample_spacing_m: ``use_minco=True`` only --
+            forwarded to each re-plan's ``MincoTrajectory(...,
+            attitude_resample_spacing_m=...)`` (``docs/
+            2026-08-30_static_minco_face_travel_gap.md`` 追記4). ``None``
+            (default) reproduces prior behavior. Ignored when
+            ``use_minco=False``.
 
     Raises:
-        ValueError: if ``max_accel`` is ``None``.
+        ValueError: if ``max_accel`` is ``None``, or if ``use_minco=True``
+            and ``q0`` is ``None``.
     """
 
     def __init__(self, trajectory, p_target, pose_fn, tf_fresh_fn, velocity_fn,
                  target_speed, max_accel,
                  distance_fallback_m=DEFAULT_DISTANCE_FALLBACK_M,
                  replan_every_n_ticks=DEFAULT_REPLAN_EVERY_N_TICKS,
-                 via_waypoint=None):
+                 via_waypoint=None, use_minco=False, q0=None,
+                 minco_via_half_width=0.3,
+                 minco_attitude_resample_spacing_m=None):
         if max_accel is None:
             raise ValueError(
                 "max_accel is required for replanning mode (v0-aware "
                 "segment-time allocation needs an acceleration budget to "
                 "size the re-planned segment's time against)"
             )
+        if use_minco and q0 is None:
+            raise ValueError(
+                "q0 is required when use_minco=True (MincoTrajectory needs "
+                "a reference attitude to express its rotation-vector "
+                "waypoints against)"
+            )
+        self._use_minco = bool(use_minco)
+        self._q0 = None if q0 is None else np.asarray(q0, dtype=float)
+        self._minco_via_half_width = float(minco_via_half_width)
+        self._minco_attitude_resample_spacing_m = (
+            None if minco_attitude_resample_spacing_m is None
+            else float(minco_attitude_resample_spacing_m)
+        )
         self._trajectory = trajectory
+        # MincoTrajectoryはToppraTrajectory同様、毎回新規インスタンスとして
+        # 差し替える設計（Trajectory.replace_coeffsのようなin-place更新は
+        # しない、minco_trajectory.pyのクラスdocstring参照）。sample(t)の
+        # tはtracker全体で単調増加するグローバル時刻なので、直近の差し替え
+        # 時点を_t_originとして憶えておき、MincoTrajectory.sample()には
+        # ローカル時刻(t - _t_origin)を渡す（Trajectory側は_t_originを
+        # 自前で持つのでuse_minco=Falseのときは未使用）。
+        self._t_origin = 0.0
         self._p_target = np.asarray(p_target, dtype=float)
         self._pose_fn = pose_fn
         self._tf_fresh_fn = tf_fresh_fn
@@ -165,18 +215,26 @@ class ReplanningTrajectoryTracker:
             if self._tick_count >= self._replan_every_n_ticks:
                 self._tick_count = 0
                 self._maybe_replan(t)
+        if self._use_minco:
+            return self._trajectory.sample(t - self._t_origin)
         return self._trajectory.sample(t)
 
     @property
     def total_duration(self):
+        if self._use_minco:
+            return self._t_origin + self._trajectory.global_total_duration
         return self._trajectory.global_total_duration
 
     @property
     def trajectory(self):
-        """The underlying, in-place-mutated ``Trajectory`` -- read-only
-        access for a caller that needs the current ``waypoints``/
-        ``segment_times``/``coeffs`` after a re-plan (e.g. to rebuild an
-        RViz preview), without reaching into this class's private state."""
+        """The underlying trajectory object -- read-only access for a caller
+        that needs the current ``waypoints``/``segment_times``/``coeffs``
+        after a re-plan (e.g. to rebuild an RViz preview), without reaching
+        into this class's private state. Updated in place on each re-plan
+        when ``use_minco=False`` (``Trajectory.replace_coeffs``); replaced
+        wholesale with a new instance when ``use_minco=True`` (``minco_
+        trajectory.MincoTrajectory`` has no in-place update, module
+        docstring)."""
         return self._trajectory
 
     def _maybe_replan(self, t_global):
@@ -217,6 +275,12 @@ class ReplanningTrajectoryTracker:
             self._fallen_back = True
             self.last_fallback_reason = "segment_time_infeasible"
             return
+        except MincoInfeasibleError:
+            # use_minco=True版のcondition 3相当: plan_mincoがwrench envelope
+            # 制約を満たす解に収束しなかった -- 同じくフォールバック。
+            self._fallen_back = True
+            self.last_fallback_reason = "minco_infeasible"
+            return
         self.last_replan_occurred = True
 
         if distance < self._distance_fallback_m:
@@ -231,6 +295,20 @@ class ReplanningTrajectoryTracker:
             waypoints = np.array([p_now, self._via_waypoint, self._p_target])
         else:
             waypoints = np.array([p_now, self._p_target])
+
+        if self._use_minco:
+            # 角速度w0の推定は現状未配線（VelocityEstimatorは並進速度のみ、
+            # docs/2026-08-30_minco_attitude_torque_status_and_next_steps.md
+            # の課題外）。Phase 1は零で妥協する。
+            new_trajectory = MincoTrajectory(
+                waypoints, self._q0, v0=v0, w0=np.zeros(3),
+                via_half_width=self._minco_via_half_width,
+                attitude_resample_spacing_m=self._minco_attitude_resample_spacing_m,
+            )
+            self._trajectory = new_trajectory
+            self._t_origin = t_global
+            return
+
         segment_times = HeuristicSegmentTimeAllocator(
             target_speed=self._target_speed, max_accel=self._max_accel,
         ).allocate(waypoints, v0=v0)

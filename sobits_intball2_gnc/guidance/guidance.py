@@ -78,6 +78,23 @@ _GUIDANCE_PARAM_DEFAULTS = {
     # per-goal options here. "" (default) means no via_waypoint -- unchanged
     # prior 2-waypoint behavior.
     "guidance.via_waypoint": "",
+    # "static_minco"/"replanning_minco" only: MincoTrajectory's via-point
+    # free-variable box half-width [m] (docs/
+    # 2026-08-30_static_minco_face_travel_gap.md 追記3 -- was a hardcoded
+    # C++ constant in minco_solver.cpp, now tunable without a rebuild). 0.0
+    # pins via_waypoint exactly (TOPPRA-style hard pass-through); 0.3
+    # matches the original hardcoded value. Same Category B per-goal
+    # latching as via_waypoint above.
+    "guidance.minco_via_half_width": 0.3,
+    # "static_minco"/"replanning_minco" only: MincoTrajectory's
+    # attitude_resample_spacing_m (docs/
+    # 2026-08-30_static_minco_face_travel_gap.md 追記4). 0.0 (default) means
+    # "off" (None -- attitude only seeded at the given waypoints, prior
+    # behavior); a positive value densifies face-travel attitude seeding
+    # every that many meters along each segment without changing the
+    # position path shape. Same Category B per-goal latching as
+    # via_waypoint above.
+    "guidance.minco_attitude_resample_spacing_m": 0.0,
     "guidance.face_travel_camera": "main",
     "guidance.align_at_arrival_camera": "main",
     # Real-time re-planning (docs/guidance_realtime_replanning_design.md):
@@ -121,7 +138,9 @@ _GUIDANCE_PARAM_DEFAULTS = {
 
 _ATTITUDE_REFERENCE_MODES = frozenset({"fixed", "face_travel", "look_at"})
 _CAMERA_NAMES = frozenset({"main", "stereo"})
-_TRAJECTORY_TRACKING_MODES = frozenset({"static", "replanning"})
+_TRAJECTORY_TRACKING_MODES = frozenset(
+    {"static", "replanning", "replanning_minco", "static_minco"}
+)
 
 
 class GuidanceNode(Node):
@@ -444,9 +463,19 @@ class GuidanceNode(Node):
             tr = t.transform.translation
             via_waypoint = [tr.x, tr.y, tr.z]
 
+        minco_attitude_resample_spacing_m = float(
+            self.get_parameter("guidance.minco_attitude_resample_spacing_m").value
+        )
+        if minco_attitude_resample_spacing_m <= 0.0:
+            minco_attitude_resample_spacing_m = None
+
         status = self._executor_logic.execute(
             p_target, q_target, feedback_cb, is_cancel_requested,
             via_waypoint=via_waypoint,
+            minco_via_half_width=float(
+                self.get_parameter("guidance.minco_via_half_width").value
+            ),
+            minco_attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
             face_travel=(mode == "face_travel"),
             face_travel_camera=str(
                 self.get_parameter("guidance.face_travel_camera").value
