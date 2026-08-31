@@ -25,18 +25,28 @@ three conditions holds (conditions 1-2: ``docs/archive/achieved/
    feasible first-segment time against) that this class must not let
    propagate out of ``sample()``.
 
-Optional single interior relay point (``via_waypoint``, ``docs/
-2026-08-25_guidance_waypoint_insertion_curve_verification.md``): while still
-"pending", every re-plan routes through ``[p_now, via_waypoint, p_target]``
-instead of the plain ``[p_now, p_target]``. "Passed" is judged by comparing
-each re-plan's live remaining distance to the target against
-``via_waypoint``'s own (fixed) distance to the target -- once the vehicle is
-closer to the target than the via point ever was, it is treated as having
-gone by, and every subsequent re-plan drops back to the plain 2-point route.
-This is deliberately progress-toward-target-based, not raw distance-to-via:
-a disturbance that pushes the vehicle sideways (this feature's whole
-motivation) must not make it look "stuck approaching the via point" and
-never advance to the final leg.
+Optional ordered interior relay points (``route_waypoints``, ``docs/
+2026-08-25_guidance_waypoint_insertion_curve_verification.md``, generalized
+from a single point to a list 2026-08-31, ``docs/
+2026-08-31_curve_aware_realtime_replanning_design_discussion.md``): every
+re-plan routes through ``[p_now, *route_waypoints[_next_idx:], p_target]``
+instead of the plain ``[p_now, p_target]``. "Passed" is judged, for each
+pending waypoint in order, by comparing the current re-plan's live remaining
+distance to the target against that waypoint's own (fixed) distance to the
+target -- once the vehicle is closer to the target than a pending waypoint
+ever was, that waypoint (and, by the loop below, any earlier pending one) is
+treated as having gone by, and dropped from every subsequent re-plan's route.
+This is deliberately progress-toward-target-based, not raw distance-to-
+waypoint: a disturbance that pushes the vehicle sideways (this feature's
+whole motivation) must not make it look "stuck approaching the waypoint" and
+never advance to the next leg. The check is a ``while`` loop, not a single
+``if``, because one re-plan interval can advance past more than one pending
+waypoint at once (a long ``replan_every_n_ticks`` or closely-spaced
+waypoints) -- this invariant only holds if ``route_waypoints`` is ordered
+with strictly decreasing distance to ``p_target``; a route that temporarily
+increases that distance (e.g. a future obstacle-avoidance detour) would
+defeat this "passed" check and needs its own design (see that doc's 未解決の
+穴2).
 
 That fallback is a one-way latch for the lifetime of one tracker instance
 (one goal) -- it never re-arms re-planning, to avoid a re-plan/static
@@ -102,9 +112,9 @@ class ReplanningTrajectoryTracker:
         replan_every_n_ticks: number of ``sample()`` calls between re-plan
             attempts (default 5, i.e. 10Hz out of a 50Hz ``sample()`` cadence
             -- see module docstring).
-        via_waypoint: optional single interior relay point, shape ``(3,)``
-            (module docstring). ``None`` (default) reproduces the prior
-            2-waypoint-only re-planning exactly.
+        route_waypoints: optional ordered interior relay points, shape
+            ``(N, 3)`` (module docstring). ``None``/``[]`` (default)
+            reproduces the prior 2-waypoint-only re-planning exactly.
         use_minco: when ``True``, each re-plan builds a fresh :class:`~
             sobits_intball2_gnc.guidance.trajectory.minco_trajectory.
             MincoTrajectory` (wrench-envelope-aware 6-DOF, ``docs/archive/
@@ -127,6 +137,11 @@ class ReplanningTrajectoryTracker:
             2026-08-30_static_minco_face_travel_gap.md`` 追記4). ``None``
             (default) reproduces prior behavior. Ignored when
             ``use_minco=False``.
+        minco_wrench_safety_margin: ``use_minco=True`` only -- forwarded to
+            each re-plan's ``MincoTrajectory(..., wrench_safety_margin=...)``
+            (``docs/2026-08-30_static_minco_face_travel_gap.md`` 追記2).
+            ``1.0`` (default) reproduces prior behavior. Ignored when
+            ``use_minco=False``.
 
     Raises:
         ValueError: if ``max_accel`` is ``None``, or if ``use_minco=True``
@@ -137,9 +152,10 @@ class ReplanningTrajectoryTracker:
                  target_speed, max_accel,
                  distance_fallback_m=DEFAULT_DISTANCE_FALLBACK_M,
                  replan_every_n_ticks=DEFAULT_REPLAN_EVERY_N_TICKS,
-                 via_waypoint=None, use_minco=False, q0=None,
+                 route_waypoints=None, use_minco=False, q0=None,
                  minco_via_half_width=0.3,
-                 minco_attitude_resample_spacing_m=None):
+                 minco_attitude_resample_spacing_m=None,
+                 minco_wrench_safety_margin=1.0):
         if max_accel is None:
             raise ValueError(
                 "max_accel is required for replanning mode (v0-aware "
@@ -159,6 +175,7 @@ class ReplanningTrajectoryTracker:
             None if minco_attitude_resample_spacing_m is None
             else float(minco_attitude_resample_spacing_m)
         )
+        self._minco_wrench_safety_margin = float(minco_wrench_safety_margin)
         self._trajectory = trajectory
         # MincoTrajectoryはToppraTrajectory同様、毎回新規インスタンスとして
         # 差し替える設計（Trajectory.replace_coeffsのようなin-place更新は
@@ -177,18 +194,19 @@ class ReplanningTrajectoryTracker:
         self._distance_fallback_m = float(distance_fallback_m)
         self._replan_every_n_ticks = int(replan_every_n_ticks)
         self._tick_count = 0
-        # via_waypoint "passed" latch (module docstring): _via_pending starts
-        # True iff a via_waypoint was given, and is cleared for good the
-        # first time a re-plan's remaining distance-to-target undercuts
-        # _via_target_dist -- never re-armed, same one-way-latch shape as
-        # _fallen_back above.
-        self._via_waypoint = (
-            None if via_waypoint is None else np.asarray(via_waypoint, dtype=float)
+        # route_waypoints "passed" index (module docstring): _next_idx starts
+        # at 0 and only ever advances -- once a pending waypoint's own
+        # (fixed) distance to target is undercut by the live remaining
+        # distance, it (and any earlier still-pending one) is dropped for
+        # good, same one-way-advance shape as _fallen_back's latch above
+        # (never re-armed).
+        self._route_waypoints = (
+            np.zeros((0, 3)) if route_waypoints is None
+            else np.asarray(route_waypoints, dtype=float).reshape(-1, 3)
         )
-        self._via_pending = via_waypoint is not None
-        self._via_target_dist = (
-            None if via_waypoint is None
-            else float(np.linalg.norm(self._via_waypoint - self._p_target))
+        self._next_idx = 0
+        self._route_target_dists = np.linalg.norm(
+            self._route_waypoints - self._p_target, axis=1
         )
         # One-way latch (module docstring): once True, sample() never
         # attempts another re-plan for the rest of this goal.
@@ -252,11 +270,12 @@ class ReplanningTrajectoryTracker:
         p_now = np.asarray(p_now, dtype=float)
         distance = float(np.linalg.norm(self._p_target - p_now))
 
-        if self._via_pending and distance < self._via_target_dist:
-            # Progress-toward-target-based "passed" check (module
-            # docstring): once closer to the target than via_waypoint itself
-            # ever was, treat the via leg as behind us for good.
-            self._via_pending = False
+        # Progress-toward-target-based "passed" check (module docstring):
+        # a while loop, not if, since one re-plan interval can advance past
+        # more than one pending waypoint at once.
+        while (self._next_idx < len(self._route_waypoints)
+               and distance < self._route_target_dists[self._next_idx]):
+            self._next_idx += 1
 
         vel_estimate = self._velocity_fn()
         v0 = (
@@ -291,8 +310,9 @@ class ReplanningTrajectoryTracker:
             self.last_fallback_reason = "distance"
 
     def _replan(self, p_now, v0, t_global):
-        if self._via_pending:
-            waypoints = np.array([p_now, self._via_waypoint, self._p_target])
+        pending = self._route_waypoints[self._next_idx:]
+        if len(pending):
+            waypoints = np.vstack([p_now, pending, self._p_target])
         else:
             waypoints = np.array([p_now, self._p_target])
 
@@ -304,6 +324,7 @@ class ReplanningTrajectoryTracker:
                 waypoints, self._q0, v0=v0, w0=np.zeros(3),
                 via_half_width=self._minco_via_half_width,
                 attitude_resample_spacing_m=self._minco_attitude_resample_spacing_m,
+                wrench_safety_margin=self._minco_wrench_safety_margin,
             )
             self._trajectory = new_trajectory
             self._t_origin = t_global

@@ -23,9 +23,16 @@ struct PlanResult
 // ±この範囲で最適化してよい、0.0なら厳密に固定＝TOPPRA相当の通過点拘束）。
 // ハードコード定数だった値を呼び出し側から都度変えられるようにしたもの
 // （docs/2026-08-30_static_minco_face_travel_gap.md 追記3参照）。
+// wrench_safety_margin: ロード済みのwrench envelope（G_ENV）をこの係数で
+// 縮小してからペナルティ評価する、(0, 1]の値。1.0（既定）は無効化（従来の
+// 挙動と同一）。staticパス（wrench_envelope_halfspaces のsafety_margin、
+// guidance.wrench_envelope_safety_margin）と同じフィードバック余力確保の
+// ためのマージンを、C++再ビルドなしでMINCO側にも適用できるようにしたもの
+// （docs/2026-08-30_static_minco_face_travel_gap.md 追記2）。
 PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       const std::vector<double> &v0,
                       const std::vector<double> &w0,
-                      double via_half_width);
+                      double via_half_width,
+                      double wrench_safety_margin = 1.0);
 
 }  // namespace minco_native

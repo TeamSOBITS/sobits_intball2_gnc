@@ -137,6 +137,7 @@ struct EvalContext
     int numVia;  // via点数 = K-1
     double penaltyWeight;
     double viaHalfWidth;             // 位置via点の自由変数box半幅[m]
+    double wrenchSafetyMargin;       // G_ENVをこの係数で縮小してから評価する、(0,1]
     std::vector<Vector3d> viaGiven;  // 位置via点の与えられた基準値（自由変数の中心）
     Matrix3Xd rotVia;                // 姿勢via点（固定、最適化しない）
 };
@@ -204,7 +205,7 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
             wrench.head<3>() = MASS * accPos;
             wrench.tail<3>() = INERTIA * accRot;
 
-            const VectorXd viol = F_ENV * wrench - G_ENV;
+            const VectorXd viol = F_ENV * wrench - ctx->wrenchSafetyMargin * G_ENV;
             Matrix<double, 6, 1> gradWrench = Matrix<double, 6, 1>::Zero();
             double pena = 0.0;
             for (int k = 0; k < viol.size(); k++)
@@ -257,7 +258,8 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
     return W_TIME * T.sum() + W_ENERGY * (energyPos + energyRot) + penaltyCost;
 }
 
-double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, const VectorXd &T, int K)
+double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, const VectorXd &T, int K,
+                     double wrenchSafetyMargin)
 {
     const MatrixX3d &coeffsPos = posMinco.getCoeffs();
     const MatrixX3d &coeffsRot = rotMinco.getCoeffs();
@@ -277,7 +279,7 @@ double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, co
             Matrix<double, 6, 1> wrench;
             wrench.head<3>() = MASS * accPos;
             wrench.tail<3>() = INERTIA * accRot;
-            const VectorXd viol = F_ENV * wrench - G_ENV;
+            const VectorXd viol = F_ENV * wrench - wrenchSafetyMargin * G_ENV;
             worst = std::max(worst, viol.maxCoeff());
         }
     }
@@ -289,7 +291,8 @@ double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, co
 PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       const std::vector<double> &v0,
                       const std::vector<double> &w0,
-                      double via_half_width)
+                      double via_half_width,
+                      double wrench_safety_margin)
 {
     PlanResult result;
 
@@ -311,6 +314,10 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         if (via_half_width < 0.0)
         {
             throw std::invalid_argument("via_half_width must be >= 0");
+        }
+        if (wrench_safety_margin <= 0.0 || wrench_safety_margin > 1.0)
+        {
+            throw std::invalid_argument("wrench_safety_margin must be in (0, 1]");
         }
 
         ensureWrenchEnvelopeLoaded();
@@ -361,6 +368,7 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         ctx.viaGiven = viaGiven;
         ctx.rotVia = rotVia;
         ctx.viaHalfWidth = via_half_width;
+        ctx.wrenchSafetyMargin = wrench_safety_margin;
         ctx.penaltyWeight = weightSchedule[0];
 
         VectorXd x = VectorXd::Zero(3 * numVia + K);
@@ -398,7 +406,7 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         posMinco.setParameters(qVia, T);
         rotMinco.setParameters(rotVia, T);
 
-        const double maxViol = maxViolation(posMinco, rotMinco, T, K);
+        const double maxViol = maxViolation(posMinco, rotMinco, T, K, wrench_safety_margin);
 
         result.segment_times.resize(K);
         for (int i = 0; i < K; i++)

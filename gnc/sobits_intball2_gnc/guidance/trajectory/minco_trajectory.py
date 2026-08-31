@@ -28,6 +28,7 @@ from sobits_intball2_gnc.control.utils.quat_math import (
     quat_exp,
     quat_log,
     quat_mul,
+    unwrap_rotvec,
 )
 from sobits_intball2_gnc.guidance.utils.attitude_reference import compute_q_des
 from sobits_intball2_gnc.guidance.utils.polynomial import evaluate_vector
@@ -76,6 +77,12 @@ class MincoTrajectory:
             姿勢が進行方向から外れていく問題（``docs/
             2026-08-30_static_minco_face_travel_gap.md``追記4参照）への対処。
             分割点数だけ``K``（区間数）が増えるため、solve時間は増える。
+        wrench_safety_margin: ロード済みのwrench envelopeをこの係数
+            （``(0, 1]``）で縮小してから制約評価する。``1.0``（既定）は
+            無効化（従来の挙動と同一）。``static``（TOPPRA）パスの
+            ``guidance.wrench_envelope_safety_margin``と同じ、フィードバック
+            余力確保のためのマージンをMINCO側にも適用できるようにしたもの
+            （``docs/2026-08-30_static_minco_face_travel_gap.md`` 追記2）。
 
     Raises:
         MincoInfeasibleError: ``plan_minco``が``success=False``を返した場合。
@@ -83,7 +90,8 @@ class MincoTrajectory:
 
     def __init__(self, position_waypoints, q0, v0=None, w0=None,
                  forward_axis=(1.0, 0.0, 0.0), face_travel=True,
-                 via_half_width=0.3, attitude_resample_spacing_m=None):
+                 via_half_width=0.3, attitude_resample_spacing_m=None,
+                 wrench_safety_margin=1.0):
         position_waypoints = np.asarray(position_waypoints, dtype=float)
         if position_waypoints.ndim != 2 or position_waypoints.shape[1] != 3 \
                 or position_waypoints.shape[0] < 2:
@@ -114,7 +122,8 @@ class MincoTrajectory:
         # timing decision, so CLAUDE.mdのreal-time禁止の対象外。
         solve_t0 = time.perf_counter()
         success, error_code, segment_times, coeffs_flat, duration = self._call_minco(
-            waypoints_flat, v0.tolist(), w0.tolist(), via_half_width
+            waypoints_flat, v0.tolist(), w0.tolist(), via_half_width,
+            wrench_safety_margin
         )
         self.solve_wall_seconds = time.perf_counter() - solve_t0
         self.num_waypoints = len(position_waypoints)
@@ -135,11 +144,13 @@ class MincoTrajectory:
         self._duration = float(duration)
 
     @staticmethod
-    def _call_minco(waypoints_flat, v0, w0, via_half_width):
+    def _call_minco(waypoints_flat, v0, w0, via_half_width, wrench_safety_margin):
         """``minco_native_py``への単一の呼び出し口（モジュール docstring参照）。
         Phase 2ではこの関数の中身だけをIPC呼び出しに差し替える。"""
         import minco_native_py  # 遅延import: 拡張未ビルド環境でもこのモジュール自体はimportできるように
-        return minco_native_py.plan_minco(waypoints_flat, v0, w0, via_half_width)
+        return minco_native_py.plan_minco(
+            waypoints_flat, v0, w0, via_half_width, wrench_safety_margin
+        )
 
     @staticmethod
     def _densify(position_waypoints, spacing_m):
@@ -169,6 +180,15 @@ class MincoTrajectory:
         掛けてから``quat_log``する必要がある（``_dense_travel_rotvecs``と同じ）。
         これを忘れると``q0``が単位姿勢から離れているほど姿勢が大きく破綻する
         （``docs/2026-08-30_static_minco_face_travel_gap.md``参照）。
+
+        各サンプルのrotvecは直前サンプルに対してunwrapする
+        (:func:`~sobits_intball2_gnc.control.utils.quat_math.unwrap_rotvec`)。
+        ``quat_log``単体では出力が``[0, pi]``にクランプされるため、``q0``
+        からの累積回転が180度を超えるルート（鋭角ターンが複数連続するなど）
+        では、その境界をまたぐ1サンプルだけ回転軸が反転し、後段のスプライン
+        フィットが破綻する
+        （``docs/2026-08-31_multi_via_waypoints_static_test_near_dock_anomaly.md``、
+        ``ToppraTrajectory._dense_travel_rotvecs``と同じ不具合）。
         """
         n = len(position_waypoints)
         rotvecs = np.zeros((n, 3))
@@ -181,7 +201,8 @@ class MincoTrajectory:
             q_prev = compute_q_des(
                 direction, q_prev, _DEGENERATE_TANGENT_THRESHOLD, forward_axis
             )
-            rotvecs[i] = quat_log(quat_mul(quat_conj(q0), q_prev))
+            raw_rotvec = quat_log(quat_mul(quat_conj(q0), q_prev))
+            rotvecs[i] = unwrap_rotvec(raw_rotvec, rotvecs[i - 1])
         return rotvecs
 
     @property
