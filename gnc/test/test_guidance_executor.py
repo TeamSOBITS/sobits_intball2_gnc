@@ -812,7 +812,7 @@ def test_execute_replanning_mode_reaches_target():
 
 def test_execute_replanning_minco_mode_reaches_target():
     """Same shape as test_execute_replanning_mode_reaches_target above, but
-    for trajectory_tracking_mode="replanning_minco" (docs/
+    for trajectory_tracking_mode="replanning_minco" (docs/archive/achieved/
     2026-08-30_minco_attitude_torque_status_and_next_steps.md). Skips if
     minco_native_py isn't built. replan_rate_hz kept low relative to the sim
     rate (unlike the Heuristic-backed test above) since each re-plan here

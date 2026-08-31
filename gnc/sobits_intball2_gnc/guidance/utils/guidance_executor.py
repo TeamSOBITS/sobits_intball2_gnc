@@ -331,7 +331,7 @@ class GuidanceExecutor:
         ``"replanning_minco"`` is the same continuous re-planning loop but
         backed by :class:`~sobits_intball2_gnc.guidance.trajectory.
         minco_trajectory.MincoTrajectory` (wrench-envelope-aware 6-DOF
-        MINCO, ``docs/2026-08-30_minco_attitude_torque_status_and_next_steps.md``,
+        MINCO, ``docs/archive/achieved/2026-08-30_minco_attitude_torque_status_and_next_steps.md``,
         experimental / not yet sim-validated against the default path)
         instead of ``HeuristicSegmentTimeAllocator`` + ``HermiteSpline
         TrajectoryGenerator``. Both re-planning modes fall back to
@@ -347,7 +347,7 @@ class GuidanceExecutor:
         no TF-driven re-planning) but backed by ``MincoTrajectory`` instead
         of TOPP-RA/Hermite -- sidesteps the re-planning-cadence-vs-blocking-
         MINCO-solve mismatch that makes ``"replanning_minco"`` not actually
-        progress in practice (``docs/
+        progress in practice (``docs/archive/achieved/
         2026-08-30_minco_replanning_blocking_latency_incident.md``). Falls
         back to the Hermite static path (not TOPP-RA) if the MINCO solve is
         infeasible.
@@ -508,7 +508,7 @@ class GuidanceExecutor:
             # 完走させる。plan_mincoのブロッキング解決レイテンシ（実測3〜5秒）は
             # ここではgoal受付が一度遅れるだけで、"replanning_minco"で踏んだ
             # 「再計画のたびに軌道が仕切り直しになり実質前進しない」問題
-            # （docs/2026-08-30_minco_replanning_blocking_latency_incident.md）
+            # （docs/archive/achieved/2026-08-30_minco_replanning_blocking_latency_incident.md）
             # の対象外。
             try:
                 traj = MincoTrajectory(

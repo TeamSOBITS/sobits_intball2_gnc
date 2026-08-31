@@ -31,19 +31,23 @@
 （姿勢オーバーシュート・並進停滞）が`replanning`モードでも起きないか、別途sim検証で確認が必要
 （既存のrate-limit機構があるため挙動が異なる可能性が高いが未検証）。
 
-### [G] MINCO/GCOPTERベースの姿勢/トルク統合軌道生成（速度改善待ち、上記replanning課題の候補解）
+### [G] MINCOベースの姿勢/トルク統合軌道生成、経由点ルートでTOPP-RAに劣ると判明（方針再検討待ち）
 将来の障害物回避は並進経路が急に曲がることを前提にしており（下記[将来]障害物回避タスク）、その
 急旋回に`face_travel`が幾何のみで追従しようとすると`static`モードで一度踏んだ姿勢オーバーシュートを
-`replanning`モードでも踏む懸念がある（`main_plan.md`との照合済み、`docs/
-2026-08-29_minco_attitude_torque_integration_plan.md`「軌道再生性」項目）。この解決候補として、
-位置3軸+回転ベクトル3軸を1本の6自由度MINCO軌道として扱い、実`wrench_envelope_halfspaces`を
-ペナルティとして統合するプロトタイプ（GCOPTER公式C++実装ベース）を試作し、数値的には健全
-（並進のみ試作5とのクロスチェック、feasibility確認済み）だが、**求解時間が並進のみ試作5
-（1.5〜1.9ms）の約450〜560倍（0.83〜0.93秒）**——`static`相当の一発計画には十分実用的だが
-`replanning`の10Hz予算には全く届かないと判明。ボトルネックは実envelopeの9951面評価コストで、
-高速化3案（ベクトル化/2段階足切り/面数削減、後者2つは正しさとのトレードオフあり）を整理済み・
-未着手。詳細: `docs/2026-08-29_minco_attitude_torque_integration_plan.md`、
-`docs/2026-08-29_minco_gcopter_survey.md`。
+`replanning`モードでも踏む懸念がある（`docs/archive/achieved/
+2026-08-29_minco_attitude_torque_integration_plan.md`「軌道再生性」項目）。この解決候補として
+`minco_native_py`（GCOPTER公式C++実装ベース、pybind11）を実装し、`trajectory_tracking_mode=
+static_minco`/`replanning_minco`として`guidance_node`に組み込み済み（Phase 1、docs/archive/achieved/
+2026-08-30_minco_attitude_torque_status_and_next_steps.md）。しかし実sim検証（`docs/
+2026-08-30_static_minco_face_travel_gap.md`）で、直行区間限定なら実用に耐えるものの、
+**経由点を使う経路（`replanning_minco`が本来必要とするケースそのもの）では位置・姿勢・
+アクチュエータ余裕のいずれもTOPP-RAに劣り、経由点をショートカットして壁に接触する事故も
+発生**——`static`モードにある`wrench_envelope_safety_margin`相当の余裕確保がMINCO側に
+無いこと、経由点がbox制約付き自由変数（`VIA_HALF_WIDTH`、実行時パラメータ化済み）で
+厳密な通過点でないことが原因。位置面の是正（`via_half_width=0.0`）・姿勢waypoint密度改善は
+実施済みで直行区間の追従は改善したが、`replanning_minco`が要求する10Hz予算（solve実測
+0.05〜0.83秒、密度を上げるほど超過）には全く届かず、非同期IPC化（Phase 2）が前提。
+「MINCOを本命にするか」自体、TOPP-RAとの優劣がついていない状態のまま未決定。
 
 ### [G] replanningモードでのsegment_time_infeasible時の大きなオーバーシュート
 `trajectory_tracking_mode=replanning`で、残距離方向と実速度の横方向成分（v_perp）が

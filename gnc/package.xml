@@ -19,6 +19,7 @@
   <depend>python3-numpy</depend>
   <depend>python3-scipy</depend>
   <depend>ament_index_python</depend>
+  <depend>minco_native_py</depend>
 
   <exec_depend>ros2launch</exec_depend>
   <exec_depend>intball2_programs</exec_depend>

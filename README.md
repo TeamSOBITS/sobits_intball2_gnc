@@ -44,28 +44,33 @@ ROS2 Humble に対応しています．
 
 | 役割 | 内容 |
 |---|---|
-| **[Guidance](sobits_intball2_gnc/guidance/README.md)** | 目標軌道 `p_des(t), v_des(t), a_des(t), q_des(t)` を生成 |
-| **[Navigation](sobits_intball2_gnc/navigation/README.md)** | 自己位置推定，移動先地点配信 | 
-| **[Control](sobits_intball2_gnc/control/README.md)** | 目標軌道を追従する force/torque を計算し，8 duty へ配分 |
+| **[Guidance](gnc/sobits_intball2_gnc/guidance/README.md)** | 目標軌道 `p_des(t), v_des(t), a_des(t), q_des(t)` を生成 |
+| **[Navigation](gnc/sobits_intball2_gnc/navigation/README.md)** | 自己位置推定，移動先地点配信 | 
+| **[Control](gnc/sobits_intball2_gnc/control/README.md)** | 目標軌道を追従する force/torque を計算し，8 duty へ配分 |
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
 ### パッケージ構成
 
 ```
-sobits_intball2_gnc/
-├── config/
-│   └── gnc_params.yaml              # GNC パラメータ（ROS2 param 形式：ファン配置・推力モデル・制御ゲイン）
-├── maps/
-│   └── iss_location.yaml            # 登録済みロケーション一覧（27地点）
-├── sobits_intball2_gnc/
-│   ├── navigation/                  # Navigation（N）: 詳細は navigation/README.md
-│   ├── control/                     # Control（C）: 詳細は control/README.md
-│   └── guidance/                    # Guidance（G）: min_snap.pyのコアロジックのみ未実装、詳細は guidance/README.md
-├── test/                            # 各ロジックの単体テスト（ROS 不要）
-├── package.xml
-├── setup.py
-└── setup.cfg
+sobits_intball2_gnc/                 # gitリポジトリルート（colconパッケージを2つ内包）
+├── gnc/                             # メインパッケージ（ament_python）
+│   ├── config/
+│   │   └── gnc_params.yaml          # GNC パラメータ（ROS2 param 形式：ファン配置・推力モデル・制御ゲイン）
+│   ├── maps/
+│   │   └── iss_location.yaml        # 登録済みロケーション一覧（27地点）
+│   ├── sobits_intball2_gnc/
+│   │   ├── navigation/              # Navigation（N）: 詳細は navigation/README.md
+│   │   ├── control/                 # Control（C）: 詳細は control/README.md
+│   │   └── guidance/                # Guidance（G）: min_snap.pyのコアロジックのみ未実装、詳細は guidance/README.md
+│   ├── test/                        # 各ロジックの単体テスト（ROS 不要）
+│   ├── package.xml
+│   ├── setup.py
+│   └── setup.cfg
+└── minco_native_py/                 # MINCO姿勢/トルク統合軌道生成のpybind11拡張（ament_cmake）
+    ├── package.xml
+    ├── CMakeLists.txt
+    └── src/
 ```
 
 
@@ -107,7 +112,7 @@ sobits_intball2_gnc/
 5. パッケージをビルドします．
    ```sh
    cd ~/colcon_ws/
-   colcon build --packages-select sobits_intball2_gnc
+   colcon build --packages-select minco_native_py sobits_intball2_gnc
    source ~/colcon_ws/install/setup.bash
    ```
 
@@ -115,19 +120,19 @@ sobits_intball2_gnc/
 
 ## 実行方法
 
-- [gnc_bringup.launch.py](launch/gnc_bringup.launch.py)を起動し，移動先地点を配信します．
+- [gnc_bringup.launch.py](gnc/launch/gnc_bringup.launch.py)を起動し，移動先地点を配信します．
     ```
     ros2 launch sobits_intball2_gnc gnc_bringup.launch.py
     ```
-- [hover_control.launch.py](launch/hover_control.launch.py)を起動し，現在位置・姿勢の保持を行います．
+- [hover_control.launch.py](gnc/launch/hover_control.launch.py)を起動し，現在位置・姿勢の保持を行います．
     ```
     ros2 launch sobits_intball2_gnc hover_control.launch.py
     ```
-- [guidance.py](sobits_intball2_gnc/guidance/guidance.py)を起動し，目標軌道の生成・追従を行います．
+- [guidance.py](gnc/sobits_intball2_gnc/guidance/guidance.py)を起動し，目標軌道の生成・追従を行います．
     ```
     ros2 run sobits_intball2_gnc guidance
     ```
-    詳細は[guidance/README.md](sobits_intball2_gnc/guidance/README.md)を参照してください．
+    詳細は[guidance/README.md](gnc/sobits_intball2_gnc/guidance/README.md)を参照してください．
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 

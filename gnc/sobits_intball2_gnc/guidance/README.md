@@ -16,6 +16,9 @@ waypoint列から、時間の関数としての滑らかな目標軌道（位置
 guidance/
 ├── guidance.py                           # GuidanceNode（唯一のROSノード、1file1node）
 │                                          # /gnc/move_to（ib2_msgs/action/CtlCommand）を提供
+├── align/                                # 事前/事後アラインメント（SLERP+台形角速度ランプ）
+│   ├── angular_trajectory.py                 # 角度台形プロファイル（角速度・角加速度上限からランプ軌道を生成）
+│   └── attitude_aligner.py                   # 現在姿勢->目標姿勢のSLERP+台形ランプ整列を駆動
 ├── global_planner/                       # 大域経路計画（waypoint列の生成）
 │   ├── base_global_planner.py                # 共通インターフェース
 │   ├── astar_planner.py
@@ -35,10 +38,19 @@ guidance/
 │   ├── base_trajectory_generator.py
 │   ├── hermite_spline_trajectory_generator.py  # 劣化版（C1連続のみ保証）、実装済み・実際に使用中
 │   └── min_snap_trajectory_generator.py      # スケルトンのみ、コアロジックは実装しない方針（2026-08-24決定）
+├── trajectory/                           # 生成済み軌道の表現・サンプリング
+│   ├── trajectory.py                         # Trajectory: sample(t) -> (p, v, a, q_des)
+│   ├── minco_trajectory.py                   # MINCO姿勢/トルク統合軌道（minco_native_py拡張のPythonラッパ）
+│   └── toppra_trajectory.py                  # TOPP-RAによる力/トルク制約付き時間割当済み軌道
+├── trajectory_tracking/                  # 生成済み軌道の追従方式（static/replanning切替）
+│   ├── base_trajectory_tracker.py            # 共通インターフェース
+│   ├── static_trajectory_tracker.py          # 開ループ単一軌道を最後まで追従（デフォルト）
+│   └── replanning_trajectory_tracker.py      # 実TFから一定周期で軌道を再計画しながら追従
 └── utils/                                # ROS非依存のロジック
     ├── polynomial.py                         # 多項式（微分）評価
-    ├── trajectory.py                         # Trajectory: sample(t) -> (p, v, a, q_des)
     ├── attitude_reference.py                 # v_des(t) -> q_des(t)（進行方向を向く姿勢参照）
+    ├── actuation_envelope.py                 # 機体の達成可能wrench包絡域（wrench_envelope_halfspaces等）の算出
+    ├── velocity_estimator.py                 # TF位置列からのGuidance側速度推定（EMA平滑化）
     └── guidance_executor.py                  # GuidanceExecutor: 1件のCtlCommand goalを
                                                # pre-align→軌道追従→arrival-alignで駆動（cancel対応）
 ```
@@ -56,7 +68,7 @@ guidance/
 export ROS_DOMAIN_ID=54   # 環境に合わせて設定
 source /root/colcon_ws/install/setup.bash
 ros2 run sobits_intball2_gnc guidance --ros-args --params-file \
-  /root/colcon_ws/src/sobits_intball2_gnc/config/gnc_params.yaml
+  /root/colcon_ws/src/sobits_intball2_gnc/gnc/config/gnc_params.yaml
 ```
 
 パラメータは`config/gnc_params.yaml`の`guidance`セクションと、Control側と共有する`tf_correction.reference_frame`/`target_frame`・`trajectory_controller.max_force`/`mass`（区間時間配分が機体の加速度能力を超えないようにするため、Control側と同じ値を使う）から読む。詳細は次節参照。
@@ -124,7 +136,7 @@ ros2 action send_goal /gnc/move_to ib2_msgs/action/CtlCommand \
 <a id="parameters"></a>
 ## パラメータ
 
-分類の考え方（固定/動的）の詳細は[docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md](../../docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md)を参照。
+分類の考え方（固定/動的）の詳細は[docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md](../../../docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md)を参照。
 
 ### 固定パラメータ（起動時のみ、実行中は変更不可）
 
