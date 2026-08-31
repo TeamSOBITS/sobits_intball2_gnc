@@ -177,8 +177,6 @@ class ToppraTrajectory:
             position_waypoints, segment_times
         )
 
-        cum_times = np.concatenate([[0.0], np.cumsum(segment_times)])
-        ss_list = []
         p_list = []
         v_list = []
         n_segments = len(segment_times)
@@ -188,15 +186,21 @@ class ToppraTrajectory:
                 endpoint=(seg == n_segments - 1),
             )
             for tau in taus:
-                ss_list.append(cum_times[seg] + tau)
                 p_list.append(evaluate_vector(pos_coeffs[seg], tau, order=0))
                 v_list.append(evaluate_vector(pos_coeffs[seg], tau, order=1))
-        ss = np.array(ss_list)
+        p_arr = np.array(p_list)
+        # True cumulative Euclidean arc length of the dense position samples,
+        # not the Hermite tau/waypoint-distance parameter above: that tau
+        # only equals real path distance for a perfectly straight segment,
+        # so reusing it as `ss` makes toppra's `sd`/`sd_start` (rad or m per
+        # unit of `ss`) not equal real m/s (test/experiment_toppra_v0_start_tangent.py).
+        seglens = np.linalg.norm(np.diff(p_arr, axis=0), axis=1)
+        ss = np.concatenate([[0.0], np.cumsum(seglens)])
 
         rotvecs = _dense_travel_rotvecs(
             v_list, self._q0, forward_axis, face_travel
         )
-        combined = np.concatenate([np.array(p_list), rotvecs], axis=1)
+        combined = np.concatenate([p_arr, rotvecs], axis=1)
 
         path = ta.SplineInterpolator(ss, combined)
 

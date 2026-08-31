@@ -1,0 +1,8 @@
+#pragma once
+
+// CMakeのconfigure_fileでinstall先の絶対パスを埋め込む（Phase 1簡略化: パス自体を
+// plan_minco()のI/Fに含めない方針のため、ビルド時に固定する）
+namespace minco_native
+{
+inline constexpr const char *kWrenchEnvelopePath = "@MINCO_WRENCH_ENVELOPE_INSTALL_PATH@";
+}

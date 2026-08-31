@@ -130,7 +130,7 @@ Guidanceは未実装のため、現状は`test/manual/`のスタンドインス�
 
 パラメータは全て[config/gnc_params.yaml](../../config/gnc_params.yaml)で管理します。
 
-分類の考え方（固定/動的）の詳細は[docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md](../../docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md)を参照。
+分類の考え方（固定/動的）の詳細は[docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md](../../../docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md)を参照。
 
 ### 固定パラメータ（起動時のみ、実行中は変更不可）
 

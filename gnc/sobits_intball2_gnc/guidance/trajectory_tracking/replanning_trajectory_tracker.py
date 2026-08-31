@@ -107,8 +107,8 @@ class ReplanningTrajectoryTracker:
             2-waypoint-only re-planning exactly.
         use_minco: when ``True``, each re-plan builds a fresh :class:`~
             sobits_intball2_gnc.guidance.trajectory.minco_trajectory.
-            MincoTrajectory` (wrench-envelope-aware 6-DOF, ``docs/
-            2026-08-30_minco_attitude_torque_status_and_next_steps.md``)
+            MincoTrajectory` (wrench-envelope-aware 6-DOF, ``docs/archive/
+            achieved/2026-08-30_minco_attitude_torque_status_and_next_steps.md``)
             instead of ``HeuristicSegmentTimeAllocator`` +
             ``HermiteSplineTrajectoryGenerator``. Default ``False``
             reproduces prior behavior exactly. Experimental (Phase 1, not
@@ -298,7 +298,7 @@ class ReplanningTrajectoryTracker:
 
         if self._use_minco:
             # 角速度w0の推定は現状未配線（VelocityEstimatorは並進速度のみ、
-            # docs/2026-08-30_minco_attitude_torque_status_and_next_steps.md
+            # docs/archive/achieved/2026-08-30_minco_attitude_torque_status_and_next_steps.md
             # の課題外）。Phase 1は零で妥協する。
             new_trajectory = MincoTrajectory(
                 waypoints, self._q0, v0=v0, w0=np.zeros(3),

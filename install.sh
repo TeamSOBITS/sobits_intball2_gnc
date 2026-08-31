@@ -10,10 +10,10 @@ sudo apt-get install -y \
 # 力/トルク制約付き軌道の時間割当（TOPP-RA）用
 pip3 install toppra
 
-# MINCO姿勢/トルク統合軌道生成（minco_native_pyパッケージ、colconワークスペースの
-# src/直下に独立git repoとして配置）用のgcopterヘッダ取得
+# MINCO姿勢/トルク統合軌道生成（minco_native_pyパッケージ、本リポジトリ直下に
+# gnc/と並ぶ別colconパッケージとして配置）用のgcopterヘッダ取得
 # MITライセンス（Copyright Zhepei Wang, Fei Gao）、colcon buildには含めずここで取得のみ行う
-MINCO_NATIVE_PY_DIR="$(dirname "$0")/../minco_native_py"
+MINCO_NATIVE_PY_DIR="$(dirname "$0")/minco_native_py"
 GCOPTER_DIR="$MINCO_NATIVE_PY_DIR/third_party/gcopter"
 GCOPTER_COMMIT="e0444f6d47b84f972ced91746b05feb36ce1fd4f"
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MINCO-based combined position+attitude trajectory (ROS-agnostic).
 
-Phase 1（``docs/2026-08-30_minco_attitude_torque_status_and_next_steps.md``）
+Phase 1（``docs/archive/achieved/2026-08-30_minco_attitude_torque_status_and_next_steps.md``）
 の呼び出し口。``minco_native_py``（pybind11拡張、``minco_solver.cpp``が
 実際の最適化を行う）の ``plan_minco(waypoints_flat, v0, w0)`` を1箇所だけから
 叩く（Phase 2でIPC呼び出しに差し替える際、この呼び出し部分だけを局所変更

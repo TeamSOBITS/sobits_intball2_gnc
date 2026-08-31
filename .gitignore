@@ -74,3 +74,12 @@ openspec/
 CLAUDE.md
 docs/results/
 docs/archive/
+
+# GCOPTERヘッダ（MITライセンス）。ベンダリングせずinstall.shでclone取得する
+/minco_native_py/third_party/
+
+# gen_*.py生成物・ビルド成果物（regenerable）
+/gnc/test/experiment_minco_native/minco_attitude_native
+
+# CSVは全て除外対象
+*.csv
