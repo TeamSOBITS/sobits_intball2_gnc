@@ -12,9 +12,10 @@ std::tuple<bool, int, std::vector<double>, std::vector<double>, double>
 plan_minco(const std::vector<double>& waypoints_flat,
            const std::vector<double>& v0,
            const std::vector<double>& w0,
-           double via_half_width) {
+           double via_half_width,
+           double wrench_safety_margin) {
   const minco_native::PlanResult result =
-      minco_native::planMinco(waypoints_flat, v0, w0, via_half_width);
+      minco_native::planMinco(waypoints_flat, v0, w0, via_half_width, wrench_safety_margin);
   return std::make_tuple(result.success, result.error_code, result.segment_times,
                           result.coeffs_flat, result.duration);
 }
@@ -24,7 +25,11 @@ PYBIND11_MODULE(minco_native_py, m) {
   m.def("plan_minco", &plan_minco,
         py::arg("waypoints_flat"), py::arg("v0"), py::arg("w0"),
         py::arg("via_half_width") = 0.3,
+        py::arg("wrench_safety_margin") = 1.0,
         "Plan a MINCO trajectory. via_half_width: position via-point free-variable "
-        "box half-width [m] (0.0 pins via points exactly, TOPPRA-style). Returns "
-        "(success, error_code, segment_times, coeffs_flat, duration).");
+        "box half-width [m] (0.0 pins via points exactly, TOPPRA-style). "
+        "wrench_safety_margin: shrinks the loaded wrench envelope by this factor "
+        "in (0, 1] before penalty evaluation (1.0 = disabled, matches prior "
+        "behavior). Returns (success, error_code, segment_times, coeffs_flat, "
+        "duration).");
 }

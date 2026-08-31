@@ -71,20 +71,22 @@ _GUIDANCE_PARAM_DEFAULTS = {
     "guidance.pre_align": True,
     "guidance.align_at_arrival": True,
     "guidance.look_at_target_frame": "",
-    # Optional single interior relay point (docs/
-    # 2026-08-25_guidance_waypoint_insertion_curve_verification.md): a TF
-    # frame name (e.g. a maps/iss_location.yaml entry) resolved via self._tf
-    # at goal receipt in _execute_fn, same Category B latching as the other
-    # per-goal options here. "" (default) means no via_waypoint -- unchanged
-    # prior 2-waypoint behavior.
-    "guidance.via_waypoint": "",
+    # Optional ordered interior relay points (docs/
+    # 2026-08-25_guidance_waypoint_insertion_curve_verification.md,
+    # generalized from a single point to a list 2026-08-31, docs/
+    # 2026-08-31_curve_aware_realtime_replanning_design_discussion.md): TF
+    # frame names (e.g. maps/iss_location.yaml entries), resolved in order
+    # via self._tf at goal receipt in _execute_fn, same Category B latching
+    # as the other per-goal options here. [] (default) means no via
+    # waypoints -- unchanged prior 2-waypoint behavior.
+    "guidance.via_waypoints": [""],
     # "static_minco"/"replanning_minco" only: MincoTrajectory's via-point
     # free-variable box half-width [m] (docs/
     # 2026-08-30_static_minco_face_travel_gap.md 追記3 -- was a hardcoded
     # C++ constant in minco_solver.cpp, now tunable without a rebuild). 0.0
-    # pins via_waypoint exactly (TOPPRA-style hard pass-through); 0.3
+    # pins every via waypoint exactly (TOPPRA-style hard pass-through); 0.3
     # matches the original hardcoded value. Same Category B per-goal
-    # latching as via_waypoint above.
+    # latching as via_waypoints above.
     "guidance.minco_via_half_width": 0.3,
     # "static_minco"/"replanning_minco" only: MincoTrajectory's
     # attitude_resample_spacing_m (docs/
@@ -93,7 +95,7 @@ _GUIDANCE_PARAM_DEFAULTS = {
     # behavior); a positive value densifies face-travel attitude seeding
     # every that many meters along each segment without changing the
     # position path shape. Same Category B per-goal latching as
-    # via_waypoint above.
+    # via_waypoints above.
     "guidance.minco_attitude_resample_spacing_m": 0.0,
     "guidance.face_travel_camera": "main",
     "guidance.align_at_arrival_camera": "main",
@@ -128,11 +130,16 @@ _GUIDANCE_PARAM_DEFAULTS = {
     "guidance.align_angular_speed_deg": 15.0,
     "guidance.align_angular_accel_deg": 2.4,
     "guidance.align_traj_publish_rate_hz": 20.0,
-    # static mode only: shrinks wrench_envelope_halfspaces (see that
-    # function's docstring and docs/2026-08-28_toppra_static_path_attitude_
-    # overshoot_incident.md "追記（2026-08-28 その5/6）"). Only read once at
+    # static mode: shrinks wrench_envelope_halfspaces (see that function's
+    # docstring and docs/2026-08-28_toppra_static_path_attitude_overshoot_
+    # incident.md "追記（2026-08-28 その5/6）"). Only read once at
     # wrench_envelope construction below -- static like the fan geometry it's
-    # paired with.
+    # paired with. static_minco/replanning_minco reuse this same value,
+    # forwarded to MincoTrajectory's wrench_safety_margin each goal (docs/
+    # 2026-08-30_static_minco_face_travel_gap.md 追記2) -- one physical
+    # meaning (feedback headroom against the fan envelope), one parameter,
+    # rather than a second minco-specific margin that could drift from this
+    # one.
     "guidance.wrench_envelope_safety_margin": 0.7,
 }
 
@@ -438,9 +445,12 @@ class GuidanceNode(Node):
             )
             mode = "face_travel"
 
-        via_waypoint_name = str(self.get_parameter("guidance.via_waypoint").value)
-        via_waypoint = None
-        if via_waypoint_name:
+        via_waypoint_names = [
+            name for name in self.get_parameter("guidance.via_waypoints").value
+            if name
+        ]
+        via_waypoints = []
+        for via_waypoint_name in via_waypoint_names:
             # Reuse self._tf's already-populated buffer instead of standing
             # up a fresh TfClient here: its /tf subscription has been
             # accumulating every published transform (not just
@@ -456,12 +466,12 @@ class GuidanceNode(Node):
             )
             if t is None:
                 self.get_logger().error(
-                    "[GuidanceNode] via_waypoint TF frame '%s' not "
+                    "[GuidanceNode] via_waypoints TF frame '%s' not "
                     "available, aborting goal" % via_waypoint_name
                 )
                 return TERMINATE_ABORTED
             tr = t.transform.translation
-            via_waypoint = [tr.x, tr.y, tr.z]
+            via_waypoints.append([tr.x, tr.y, tr.z])
 
         minco_attitude_resample_spacing_m = float(
             self.get_parameter("guidance.minco_attitude_resample_spacing_m").value
@@ -471,11 +481,14 @@ class GuidanceNode(Node):
 
         status = self._executor_logic.execute(
             p_target, q_target, feedback_cb, is_cancel_requested,
-            via_waypoint=via_waypoint,
+            via_waypoints=via_waypoints,
             minco_via_half_width=float(
                 self.get_parameter("guidance.minco_via_half_width").value
             ),
             minco_attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
+            minco_wrench_safety_margin=float(
+                self.get_parameter("guidance.wrench_envelope_safety_margin").value
+            ),
             face_travel=(mode == "face_travel"),
             face_travel_camera=str(
                 self.get_parameter("guidance.face_travel_camera").value
