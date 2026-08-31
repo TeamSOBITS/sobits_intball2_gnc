@@ -1,17 +1,30 @@
 """Unit tests for guidance/utils/toppra_trajectory.py (plain-value, no ROS)."""
 import numpy as np
 import pytest
+import toppra as ta
+import toppra.algorithm as algo
+import toppra.constraint as constraint
 
 from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle, quat_rotate
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
 from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
     wrench_envelope_halfspaces,
 )
-from sobits_intball2_gnc.guidance.utils.attitude_reference import IDENTITY_QUAT
+from sobits_intball2_gnc.guidance.utils.attitude_reference import (
+    IDENTITY_QUAT,
+    compute_q_des,
+)
 from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import (
     ToppraTrajectory,
     TrajectoryInfeasibleError,
+    _SAMPLES_PER_SEGMENT,
+    _WRENCH_DOF,
+    _dense_travel_rotvecs,
 )
+from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator import (
+    HermiteSplineTrajectoryGenerator,
+)
+from sobits_intball2_gnc.guidance.utils.polynomial import evaluate_vector
 
 FORWARD = (1.0, 0.0, 0.0)
 MASS = 3.216
@@ -206,6 +219,46 @@ def test_raises_when_toppra_reports_infeasible(monkeypatch):
         )
 
 
+def test_retime_reproduces_construction_with_sd_start_zero():
+    # retime(sd_start=0.0, sd_end=0.0) must reproduce exactly what __init__
+    # already computed (v0=0 fixed, same fallback __init__ uses) -- this is
+    # the baseline sanity check before trusting retime() with nonzero
+    # sd_start below.
+    waypoints = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]]
+    traj, _q0 = _build(waypoints)
+    original_duration = traj.global_total_duration
+    traj.retime(sd_start=0.0, sd_end=0.0)
+    assert traj.global_total_duration == pytest.approx(original_duration, abs=1e-9)
+
+
+def test_retime_with_nonzero_sd_start_changes_initial_velocity():
+    waypoints = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
+    traj, _q0 = _build(waypoints)
+    sd_start = MAX_VEL * 0.5
+    traj.retime(sd_start=sd_start, sd_end=0.0)
+    _p, v, _a, _q = traj.sample(0.0)
+    assert np.isclose(np.linalg.norm(v), sd_start, atol=1e-6)
+
+
+def test_retime_still_reaches_target_at_rest():
+    waypoints = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
+    traj, _q0 = _build(waypoints)
+    traj.retime(sd_start=MAX_VEL * 0.3, sd_end=0.0)
+    p, v, _a, _q = traj.sample(traj.global_total_duration)
+    assert np.allclose(p, waypoints[-1], atol=1e-2)
+    assert np.allclose(v, [0.0, 0.0, 0.0], atol=1e-2)
+
+
+def test_retime_raises_when_toppra_reports_infeasible(monkeypatch):
+    waypoints = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
+    traj, _q0 = _build(waypoints)
+    monkeypatch.setattr(
+        traj._instance, "compute_trajectory", lambda *a, **kw: None
+    )
+    with pytest.raises(TrajectoryInfeasibleError):
+        traj.retime(sd_start=0.1, sd_end=0.0)
+
+
 def test_three_waypoint_path_reaches_final_target():
     waypoints = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]]
     traj, _q0 = _build(waypoints)
@@ -231,3 +284,135 @@ def test_non_identity_q0_is_respected():
     p, _v, _a, q = traj.sample(0.0)
     assert np.allclose(p, waypoints[0], atol=1e-6)
     assert geodesic_angle(q, q0) < 1e-6
+
+
+def _dense_rotvecs_for(waypoints, q0):
+    waypoints = np.asarray(waypoints, dtype=float)
+    distances = np.linalg.norm(np.diff(waypoints, axis=0), axis=1)
+    segment_times = np.where(distances < 1e-9, 1.0, distances)
+    pos_coeffs = HermiteSplineTrajectoryGenerator().generate(waypoints, segment_times)
+    v_list = []
+    n_segments = len(segment_times)
+    for seg in range(n_segments):
+        taus = np.linspace(
+            0.0, segment_times[seg], _SAMPLES_PER_SEGMENT,
+            endpoint=(seg == n_segments - 1),
+        )
+        for tau in taus:
+            v_list.append(evaluate_vector(pos_coeffs[seg], tau, order=1))
+    return _dense_travel_rotvecs(v_list, q0, FORWARD, True)
+
+
+def test_dense_travel_rotvecs_stays_continuous_past_a_180_degree_crossing():
+    """Regression test for docs/
+    2026-08-31_multi_via_waypoints_static_test_near_dock_anomaly.md: a
+    multi-via-waypoint route (real coordinates from that incident,
+    maps/iss_location.yaml's above_dock_2/nav_entry/near_dock) whose
+    cumulative face-travel rotation relative to q0 passes 180 degrees used
+    to produce exactly one dense sample with a flipped rotvec axis (
+    quat_log's [0, pi]-clamped output snapping back once the true rotation
+    passed the halfway point), corrupting the spline TOPP-RA fits attitude
+    to and causing a real sawtooth attitude-tracking failure in sim."""
+    waypoints = np.array([
+        [10.0607, -3.5544, 4.9114],
+        [11.3, -3.636, 5.5],
+        [11.0, -4.3, 5.0],
+        [10.936, -3.636, 4.121],
+    ])
+    q0 = compute_q_des(waypoints[1] - waypoints[0], None, 1e-9, FORWARD)
+    rotvecs = _dense_rotvecs_for(waypoints, q0)
+    angles = np.linalg.norm(rotvecs, axis=1)
+    assert angles.max() > np.pi  # sanity: this route does cross the 180deg boundary
+
+    for i in range(1, len(rotvecs)):
+        a, b = rotvecs[i - 1], rotvecs[i]
+        na, nb = np.linalg.norm(a), np.linalg.norm(b)
+        if na < 0.1 or nb < 0.1:
+            continue  # near-zero rotation: axis is numerically undefined, not a real discontinuity
+        cos_sim = np.dot(a, b) / (na * nb)
+        assert cos_sim > 0.0, (
+            f"rotvec axis flipped between dense samples {i - 1} and {i} "
+            f"(angles {np.degrees(na):.1f}/{np.degrees(nb):.1f} deg, "
+            f"cos_sim={cos_sim:.3f})"
+        )
+
+
+def _build_path(waypoints, q0):
+    """Same dense-resample + rotvec construction ``ToppraTrajectory.__init__``
+    uses, extracted so the baseline test below can swap only the constraint."""
+    waypoints = np.asarray(waypoints, dtype=float)
+    distances = np.linalg.norm(np.diff(waypoints, axis=0), axis=1)
+    segment_times = np.where(distances < 1e-9, 1.0, distances)
+    pos_coeffs = HermiteSplineTrajectoryGenerator().generate(waypoints, segment_times)
+
+    p_list, v_list = [], []
+    n_segments = len(segment_times)
+    for seg in range(n_segments):
+        taus = np.linspace(
+            0.0, segment_times[seg], _SAMPLES_PER_SEGMENT,
+            endpoint=(seg == n_segments - 1),
+        )
+        for tau in taus:
+            p_list.append(evaluate_vector(pos_coeffs[seg], tau, order=0))
+            v_list.append(evaluate_vector(pos_coeffs[seg], tau, order=1))
+    p_arr = np.array(p_list)
+    seglens = np.linalg.norm(np.diff(p_arr, axis=0), axis=1)
+    ss = np.concatenate([[0.0], np.cumsum(seglens)])
+    rotvecs = _dense_travel_rotvecs(v_list, q0, FORWARD, True)
+    combined = np.concatenate([p_arr, rotvecs], axis=1)
+    return ta.SplineInterpolator(ss, combined)
+
+
+def _compute_trajectory_with_second_order_constraint(waypoints, q0):
+    """Pre-``WrenchEnvelopeConstraint`` baseline: same path, but the wrench
+    constraint built with plain ``toppra.constraint.SecondOrderConstraint``
+    (per-gridpoint ``constraint_F``/``constraint_g`` lambdas, no
+    ``identical=True``) -- the code ``ToppraTrajectory`` used before this
+    change. Used only to verify the new ``WrenchEnvelopeConstraint`` path is
+    behavior-identical, not a speed comparison (see
+    ``test/experiment_toppra_identical_constraint.py`` for that)."""
+    path = _build_path(waypoints, q0)
+    vel_max = np.array([MAX_VEL] * 3 + [float(MAX_ANGULAR_RATE)] * 3)
+    pc_vel = constraint.JointVelocityConstraint(np.vstack([-vel_max, vel_max]).T)
+    inertia_matrix = np.diag([MASS, MASS, MASS, INERTIA, INERTIA, INERTIA])
+    wrench_F, wrench_g = WRENCH_ENVELOPE
+
+    def inv_dyn(_q, _qd, qdd):
+        return inertia_matrix @ qdd
+
+    pc_wrench = constraint.SecondOrderConstraint(
+        inv_dyn, lambda _q: wrench_F, lambda _q: wrench_g, dof=_WRENCH_DOF
+    )
+    instance = algo.TOPPRA([pc_vel, pc_wrench], path, parametrizer="ParametrizeConstAccel")
+    return instance.compute_trajectory()
+
+
+def test_wrench_envelope_constraint_matches_second_order_constraint_baseline():
+    """Regression test for the identical=True speedup (docs/archive/achieved/
+    2026-08-30_toppra_replanning_sd_start_speed_investigation.md 追記2〜3):
+    ToppraTrajectory now builds its wrench constraint with
+    WrenchEnvelopeConstraint instead of plain SecondOrderConstraint. Confirms
+    this is a pure speedup with no behavior change -- same trajectory
+    duration and same sampled states as the old constraint construction,
+    across a straight and a sharp-turn route."""
+    for waypoints in (
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+    ):
+        q0 = IDENTITY_QUAT.copy()
+        traj, _q0 = _build(waypoints, q0=q0)
+        baseline_jnt_traj = _compute_trajectory_with_second_order_constraint(
+            waypoints, q0
+        )
+        assert baseline_jnt_traj is not None
+        assert traj.global_total_duration == pytest.approx(
+            baseline_jnt_traj.duration, abs=1e-9
+        )
+        for t in np.linspace(0.0, traj.global_total_duration, 5):
+            p, v, a, q = traj.sample(t)
+            base_state = baseline_jnt_traj(t)
+            base_vel = baseline_jnt_traj(t, 1)
+            base_acc = baseline_jnt_traj(t, 2)
+            assert np.allclose(p, base_state[:3], atol=1e-9)
+            assert np.allclose(v, base_vel[:3], atol=1e-9)
+            assert np.allclose(a, base_acc[:3], atol=1e-9)

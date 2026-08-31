@@ -4,8 +4,7 @@ torque, in this session, in sim.
 
 Every place in this repo that reasons about "how hard can the vehicle push or
 turn" (``trajectory_controller.max_force/max_torque``,
-``heuristic_segment_time_allocator``'s ``angle_time_gain``, the sharp-turn 90
-deg threshold in ``guidance_executor._warn_if_sharp_turn``) currently uses
+``heuristic_segment_time_allocator``'s ``angle_time_gain``) currently uses
 either a hand-tuned safety clamp (``max_force``/``max_torque`` in
 ``config/gnc_params.yaml``, arrived at via closed-loop gain tuning, not a
 measured actuation ceiling) or a purely geometric NNLS calculation from the
