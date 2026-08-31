@@ -65,6 +65,47 @@ def quat_log(q):
     return (v / sin_half) * angle
 
 
+def unwrap_rotvec(rotvec, prev_rotvec):
+    """Return the representation of ``rotvec`` continuous with ``prev_rotvec``.
+
+    ``quat_log`` always returns a vector of magnitude in ``[0, pi]`` (see its
+    docstring), but ``rotvec + axis*2*pi*k`` (``axis = rotvec/|rotvec|``, any
+    integer ``k``) represents the exact same physical orientation (a full
+    turn about the same axis is the identity). When building a *sequence* of
+    rotvecs from independently-computed ``quat_log`` calls (e.g. one per
+    dense trajectory sample), the accumulated rotation can drift past a
+    multiple of ``pi``/``2*pi`` between samples even though the underlying
+    orientation changes smoothly -- ``quat_log`` then snaps back into
+    ``[0, pi]``, which for a rotation that has passed the halfway point means
+    the *axis itself* flips sign (see
+    ``docs/2026-08-31_multi_via_waypoints_static_test_near_dock_anomaly.md``
+    追記: multi-waypoint route with cumulative rotation >180 degrees relative
+    to q0 produced exactly one dense sample with a flipped rotvec axis, which
+    corrupted the downstream spline fit and caused a real sawtooth attitude
+    tracking failure in sim).
+
+    Picks the ``k`` in a small range that minimizes distance to
+    ``prev_rotvec``, so a caller threading ``prev_rotvec`` forward sample by
+    sample gets a continuous (unwrapped) coordinate suitable for spline
+    fitting, instead of ``quat_log``'s raw clamped-to-``[0, pi]`` value.
+    """
+    rotvec = np.asarray(rotvec, dtype=float)
+    prev_rotvec = np.asarray(prev_rotvec, dtype=float)
+    angle = np.linalg.norm(rotvec)
+    if angle < 1e-9:
+        return rotvec
+    axis = rotvec / angle
+    best = rotvec
+    best_dist = np.linalg.norm(rotvec - prev_rotvec)
+    for k in (-2, -1, 1, 2):
+        candidate = rotvec + axis * (2.0 * np.pi * k)
+        dist = np.linalg.norm(candidate - prev_rotvec)
+        if dist < best_dist:
+            best_dist = dist
+            best = candidate
+    return best
+
+
 def quat_exp(rotvec):
     """Unit quaternion ``[x,y,z,w]`` exponential of rotation vector ``rotvec``.
 

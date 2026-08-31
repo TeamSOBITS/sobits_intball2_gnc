@@ -21,12 +21,16 @@ design rationale and the open questions this implementation resolves:
   （2026-08-28 その2）"): even a planned path's feedforward-only wrench
   (zero tracking error) exceeded the true achievable region at ~92% of
   sampled points despite respecting each axis's own independent max. A
-  ``toppra.constraint.SecondOrderConstraint`` wired to ``inv_dyn(q, qd,
-  qdd) = M @ qdd`` (``M = diag(mass, mass, mass, inertia, inertia,
-  inertia)``) plus the exact half-space representation of that achievable
-  region (:func:`~sobits_intball2_gnc.guidance.utils.actuation_envelope.
+  :class:`~sobits_intball2_gnc.guidance.utils.wrench_envelope_constraint.
+  WrenchEnvelopeConstraint` wired to ``inv_dyn(q, qd, qdd) = M @ qdd``
+  (``M = diag(mass, mass, mass, inertia, inertia, inertia)``) plus the exact
+  half-space representation of that achievable region
+  (:func:`~sobits_intball2_gnc.guidance.utils.actuation_envelope.
   wrench_envelope_halfspaces`) replaces the old
-  ``JointAccelerationConstraint`` box.
+  ``JointAccelerationConstraint`` box. ``WrenchEnvelopeConstraint`` (not
+  plain ``toppra.constraint.SecondOrderConstraint``) because the envelope is
+  constant along the whole path -- see that class's docstring for the ~6x
+  construction-time win this unlocks.
 
 - Attitude is expressed as a rotation vector relative to ``q0`` (not an
   independent SO(3) path/TOPP-SO3), which is only an exact stand-in for
@@ -84,12 +88,16 @@ from sobits_intball2_gnc.control.utils.quat_math import (
     quat_exp,
     quat_log,
     quat_mul,
+    unwrap_rotvec,
 )
 from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator import (
     HermiteSplineTrajectoryGenerator,
 )
 from sobits_intball2_gnc.guidance.utils.attitude_reference import compute_q_des
 from sobits_intball2_gnc.guidance.utils.polynomial import evaluate_vector
+from sobits_intball2_gnc.guidance.utils.wrench_envelope_constraint import (
+    WrenchEnvelopeConstraint,
+)
 
 _WRENCH_DOF = 6
 
@@ -219,8 +227,15 @@ class ToppraTrajectory:
         def inv_dyn(_q, _qd, qdd):
             return inertia_matrix @ qdd
 
-        pc_wrench = constraint.SecondOrderConstraint(
-            inv_dyn, lambda _q: wrench_F, lambda _q: wrench_g, dof=_WRENCH_DOF
+        # WrenchEnvelopeConstraint (identical=True) instead of plain
+        # SecondOrderConstraint: wrench_envelope is constant along the whole
+        # path, and this wires that fact through toppra's existing
+        # identical-F/g fast path (see that module's docstring) -- cuts
+        # construction time ~6x (1.042s -> 0.172s for the real fan geometry's
+        # 9951-facet envelope) with trajectory.duration unchanged (verified
+        # in test/experiment_toppra_identical_constraint.py, diff=0.0).
+        pc_wrench = WrenchEnvelopeConstraint(
+            inv_dyn, wrench_F, wrench_g, dof=_WRENCH_DOF
         )
 
         instance = algo.TOPPRA([pc_vel, pc_wrench], path,
@@ -231,11 +246,42 @@ class ToppraTrajectory:
                 "no feasible time-parameterization for this path under the "
                 "given velocity/acceleration limits"
             )
+        self._instance = instance
         self._jnt_traj = jnt_traj
 
     @property
     def global_total_duration(self):
         return float(self._jnt_traj.duration)
+
+    def retime(self, sd_start, sd_end=0.0):
+        """Re-run time-parameterization for this same fixed path/constraints
+        with a new start/end path-tangent speed, without rebuilding the path
+        or constraints (only ``compute_trajectory`` re-runs) -- see
+        ``docs/2026-08-31_toppra_retiming_implementation_plan.md`` 決めごと1.
+
+        Args:
+            sd_start: path-tangent speed at ``s=0`` (module docstring's
+                caveat about ``sd`` vs. real m/s does not apply here: ``ss``
+                is real Euclidean arc length, so this is directly the
+                vehicle's current speed along the path).
+            sd_end: path-tangent speed at the path's final ``s`` (default
+                ``0.0``, decided-fixed per that doc's 決めごと4).
+
+        Raises:
+            TrajectoryInfeasibleError: same as ``__init__``, if no feasible
+                time-parameterization exists for this path/``sd_start``/
+                ``sd_end``.
+        """
+        jnt_traj = self._instance.compute_trajectory(
+            sd_start=sd_start, sd_end=sd_end
+        )
+        if jnt_traj is None:
+            raise TrajectoryInfeasibleError(
+                "no feasible time-parameterization for this path under the "
+                f"given velocity/acceleration limits (sd_start={sd_start}, "
+                f"sd_end={sd_end})"
+            )
+        self._jnt_traj = jnt_traj
 
     def sample(self, t):
         """Return ``(p, v, a, q)`` at time ``t`` (clamped to the
@@ -264,14 +310,25 @@ def _dense_travel_rotvecs(v_list, q0, forward_axis, face_travel):
     precomputed attitude path), with the free roll DOF carried over
     continuously from the previous sample. When not ``face_travel``, every
     sample stays at ``q0``.
+
+    Each sample's rotvec is unwrapped against the previous sample's
+    (:func:`~sobits_intball2_gnc.control.utils.quat_math.unwrap_rotvec`):
+    ``quat_log`` alone clamps its output to a ``[0, pi]``-magnitude
+    representative, which for a route whose cumulative rotation relative to
+    ``q0`` passes 180 degrees (e.g. several sharp waypoint turns in a row)
+    flips the rotvec's axis on whichever single dense sample crosses that
+    boundary -- corrupting the spline fit built from this array (see
+    ``docs/2026-08-31_multi_via_waypoints_static_test_near_dock_anomaly.md``).
     """
     n = len(v_list)
-    q_prev = np.asarray(q0, dtype=float)
+    q0 = np.asarray(q0, dtype=float)
+    q_prev = q0.copy()
     rotvecs = np.zeros((n, 3))
     for i in range(1, n):
         if face_travel:
             q_prev = compute_q_des(
                 v_list[i], q_prev, _DEGENERATE_TANGENT_THRESHOLD, forward_axis
             )
-        rotvecs[i] = quat_log(quat_mul(quat_conj(np.asarray(q0, dtype=float)), q_prev))
+        raw_rotvec = quat_log(quat_mul(quat_conj(q0), q_prev))
+        rotvecs[i] = unwrap_rotvec(raw_rotvec, rotvecs[i - 1])
     return rotvecs

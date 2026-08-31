@@ -35,14 +35,14 @@ def _flat_trajectory():
 def _make_tracker(pose_fn, tf_fresh_fn=lambda stamp: True,
                    velocity_fn=lambda: _Vel([0.0, 0.0, 0.0]),
                    distance_fallback_m=0.3, replan_every_n_ticks=5,
-                   max_accel=MAX_ACCEL, via_waypoint=None,
+                   max_accel=MAX_ACCEL, route_waypoints=None,
                    use_minco=False, q0=None):
     return ReplanningTrajectoryTracker(
         _flat_trajectory(), P_TARGET, pose_fn, tf_fresh_fn, velocity_fn,
         target_speed=TARGET_SPEED, max_accel=max_accel,
         distance_fallback_m=distance_fallback_m,
         replan_every_n_ticks=replan_every_n_ticks,
-        via_waypoint=via_waypoint,
+        route_waypoints=route_waypoints,
         use_minco=use_minco, q0=q0,
     )
 
@@ -309,7 +309,8 @@ def test_trajectory_property_exposes_post_replan_state():
     assert np.allclose(tracker.trajectory.waypoints[0], [0.0, 0.0, 0.0])
 
 
-# --- via_waypoint (docs/2026-08-25_guidance_waypoint_insertion_curve_verification.md) ---
+# --- route_waypoints (docs/2026-08-25_guidance_waypoint_insertion_curve_verification.md,
+# generalized from a single via point to an ordered list 2026-08-31) ---
 # P_TARGET=[2,0,0], VIA=[1,1,0] -> dist(VIA, P_TARGET) = sqrt(2) ~= 1.4142.
 # "Passed" fires once remaining distance-to-target undercuts that value.
 
@@ -322,7 +323,7 @@ def test_replan_routes_through_via_waypoint_while_pending():
         return [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0
 
     tracker = _make_tracker(
-        pose_fn, distance_fallback_m=0.0, replan_every_n_ticks=1, via_waypoint=VIA,
+        pose_fn, distance_fallback_m=0.0, replan_every_n_ticks=1, route_waypoints=[VIA],
     )
     tracker.sample(0.0)
     assert np.allclose(tracker.trajectory.waypoints, [[0.0, 0.0, 0.0], VIA, P_TARGET])
@@ -334,7 +335,7 @@ def test_replan_drops_via_waypoint_once_passed():
         return [1.9, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0
 
     tracker = _make_tracker(
-        pose_fn, distance_fallback_m=0.0, replan_every_n_ticks=1, via_waypoint=VIA,
+        pose_fn, distance_fallback_m=0.0, replan_every_n_ticks=1, route_waypoints=[VIA],
     )
     tracker.sample(0.0)
     assert np.allclose(tracker.trajectory.waypoints, [[1.9, 0.0, 0.0], P_TARGET])
@@ -355,7 +356,7 @@ def test_via_waypoint_passed_latch_does_not_re_arm_after_a_disturbance():
         return list(next(positions)), [0.0, 0.0, 0.0, 1.0], 1.0
 
     tracker = _make_tracker(
-        pose_fn, distance_fallback_m=0.0, replan_every_n_ticks=1, via_waypoint=VIA,
+        pose_fn, distance_fallback_m=0.0, replan_every_n_ticks=1, route_waypoints=[VIA],
     )
     tracker.sample(0.0)
     assert np.allclose(tracker.trajectory.waypoints, [[1.9, 0.0, 0.0], P_TARGET])
@@ -368,7 +369,72 @@ def test_via_waypoint_none_reproduces_plain_two_point_route():
         return [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0
 
     tracker = _make_tracker(
-        pose_fn, distance_fallback_m=0.0, replan_every_n_ticks=1, via_waypoint=None,
+        pose_fn, distance_fallback_m=0.0, replan_every_n_ticks=1, route_waypoints=None,
     )
     tracker.sample(0.0)
     assert np.allclose(tracker.trajectory.waypoints, [[0.0, 0.0, 0.0], P_TARGET])
+
+
+# --- multi-waypoint route (2026-08-31 generalization) ---
+# P_TARGET=[3,0,0]. WP_A=[1,0,0] (dist to target=2.0), WP_B=[2,0,0]
+# (dist to target=1.0) -- strictly decreasing distance-to-target, as the
+# "passed" check requires (module docstring).
+
+P_TARGET_MULTI = [3.0, 0.0, 0.0]
+WP_A = [1.0, 0.0, 0.0]
+WP_B = [2.0, 0.0, 0.0]
+
+
+def _make_multi_tracker(pose_fn, **kwargs):
+    return ReplanningTrajectoryTracker(
+        Trajectory([P0, P_TARGET_MULTI], [100.0], np.zeros((1, 3, 8))),
+        P_TARGET_MULTI, pose_fn, kwargs.pop("tf_fresh_fn", lambda stamp: True),
+        kwargs.pop("velocity_fn", lambda: _Vel([0.0, 0.0, 0.0])),
+        target_speed=TARGET_SPEED, max_accel=MAX_ACCEL,
+        route_waypoints=[WP_A, WP_B], **kwargs,
+    )
+
+
+def test_replan_routes_through_all_pending_route_waypoints_in_order():
+    def pose_fn():
+        # 3.0m from target, further than both WP_A (2.0m) and WP_B (1.0m)
+        # -> both pending.
+        return [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0
+
+    tracker = _make_multi_tracker(
+        pose_fn, distance_fallback_m=0.0, replan_every_n_ticks=1,
+    )
+    tracker.sample(0.0)
+    assert np.allclose(
+        tracker.trajectory.waypoints, [[0.0, 0.0, 0.0], WP_A, WP_B, P_TARGET_MULTI]
+    )
+
+
+def test_replan_drops_only_the_first_route_waypoint_once_it_alone_is_passed():
+    def pose_fn():
+        # 1.5m from target: closer than WP_A's 2.0m (dropped) but still
+        # further than WP_B's 1.0m (still pending).
+        return [1.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0
+
+    tracker = _make_multi_tracker(
+        pose_fn, distance_fallback_m=0.0, replan_every_n_ticks=1,
+    )
+    tracker.sample(0.0)
+    assert np.allclose(
+        tracker.trajectory.waypoints, [[1.5, 0.0, 0.0], WP_B, P_TARGET_MULTI]
+    )
+
+
+def test_replan_drops_multiple_route_waypoints_passed_in_a_single_tick():
+    def pose_fn():
+        # 0.5m from target: closer than both WP_A (2.0m) and WP_B (1.0m) --
+        # both must be dropped in the same tick (while loop, not if).
+        return [2.5, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], 1.0
+
+    tracker = _make_multi_tracker(
+        pose_fn, distance_fallback_m=0.0, replan_every_n_ticks=1,
+    )
+    tracker.sample(0.0)
+    assert np.allclose(
+        tracker.trajectory.waypoints, [[2.5, 0.0, 0.0], P_TARGET_MULTI]
+    )

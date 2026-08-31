@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Prototype: does wiring the constant wrench-envelope constraint through
-toppra's existing ``identical=True`` fast path (see
-``docs/2026-08-30_toppra_replanning_sd_start_speed_investigation.md``
-"追記2") actually remove the ~0.9s redundant per-gridpoint F/g copy that
-profiling found in ``SecondOrderConstraint.compute_constraint_params``?
+"""Speed benchmark: ``WrenchEnvelopeConstraint``'s ``identical=True`` fast
+path vs. plain ``toppra.constraint.SecondOrderConstraint``, and vs. facet
+count (docs/archive/achieved/
+2026-08-30_toppra_replanning_sd_start_speed_investigation.md "追記2〜3").
 
-This does NOT touch ``toppra_trajectory.py`` (production, ``static`` mode
-depends on it) -- ``WrenchEnvelopeConstraint`` here is a standalone
-``toppra.constraint.LinearConstraint`` subclass, modeled directly on
-``toppra.constraint.joint_torque.JointTorqueConstraint`` (the one built-in
-constraint that already uses this path), swapped from a box ``[I; -I]``
-polytope to our general ``F_ENV @ w <= g_ENV`` half-space polytope.
+``WrenchEnvelopeConstraint`` itself now lives in production
+(``sobits_intball2_gnc.guidance.utils.wrench_envelope_constraint``, wired
+into ``toppra_trajectory.py``) -- this script only re-benchmarks it against
+the old ``SecondOrderConstraint`` construction and against facet-reduced
+envelopes; it no longer needs its own copy of the class.
 
 Usage: python3 test/experiment_toppra_identical_constraint.py
 """
@@ -22,11 +20,6 @@ import toppra as ta
 import toppra.algorithm as algo
 import toppra.constraint as constraint
 from scipy.spatial import ConvexHull
-from toppra.constraint import DiscretizationType
-from toppra.constraint.linear_constraint import (
-    LinearConstraint,
-    canlinear_colloc_to_interpolate,
-)
 
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
 from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import (
@@ -41,6 +34,9 @@ from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
 )
 from sobits_intball2_gnc.guidance.utils.attitude_reference import IDENTITY_QUAT
 from sobits_intball2_gnc.guidance.utils.polynomial import evaluate_vector
+from sobits_intball2_gnc.guidance.utils.wrench_envelope_constraint import (
+    WrenchEnvelopeConstraint,
+)
 
 SAFETY_MARGIN = 0.7
 MASS = 3.216
@@ -53,55 +49,6 @@ N_REPEATS = 5
 _SAMPLES_PER_SEGMENT = 20
 
 WAYPOINTS = [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 2.8, 0.0]]
-
-
-class WrenchEnvelopeConstraint(LinearConstraint):
-    """``F_ENV @ w <= g_ENV`` polytope constraint on ``w = inv_dyn(q, qd,
-    qdd)``, constant along the whole path -- same structure as
-    ``JointTorqueConstraint.compute_constraint_params`` (box-shaped
-    ``F``/``g``), generalized to an arbitrary half-space polytope and wired
-    through ``identical=True`` so ``F``/``g`` are built once instead of
-    copied per gridpoint (the fix this prototype is testing)."""
-
-    def __init__(self, inv_dyn, F_env, g_env, dof,
-                 discretization_scheme=DiscretizationType.Interpolation):
-        super().__init__()
-        self.inv_dyn = inv_dyn
-        self.F_env = np.asarray(F_env, dtype=float)
-        self.g_env = np.asarray(g_env, dtype=float)
-        self.dof = dof
-        self.set_discretization_type(discretization_scheme)
-        self.identical = True
-        self._format_string = "    Kind: Wrench envelope constraint (identical F/g)\n"
-
-    def compute_constraint_params(self, path, gridpoints):
-        if path.dof != self.dof:
-            raise ValueError(
-                "Wrong dimension: constraint dof ({:d}) not equal to path "
-                "dof ({:d})".format(self.dof, path.dof)
-            )
-        v_zero = np.zeros(path.dof)
-        p_vec = path(gridpoints)
-        ps_vec = path(gridpoints, 1)
-        pss_vec = path(gridpoints, 2)
-
-        c_vec = np.array([self.inv_dyn(_p, v_zero, v_zero) for _p in p_vec])
-        a_vec = np.array(
-            [self.inv_dyn(_p, v_zero, _ps) for _p, _ps in zip(p_vec, ps_vec)]
-        ) - c_vec
-        b_vec = np.array([
-            self.inv_dyn(_p, _ps, pss_)
-            for _p, _ps, pss_ in zip(p_vec, ps_vec, pss_vec)
-        ]) - c_vec
-
-        if self.discretization_type == DiscretizationType.Collocation:
-            return a_vec, b_vec, c_vec, self.F_env, self.g_env, None, None
-        if self.discretization_type == DiscretizationType.Interpolation:
-            return canlinear_colloc_to_interpolate(
-                a_vec, b_vec, c_vec, self.F_env, self.g_env, None, None,
-                gridpoints, identical=True,
-            )
-        raise NotImplementedError("Other form of discretization not supported!")
 
 
 def _build_path(position_waypoints, q0):
@@ -213,14 +160,14 @@ def main():
     full_envelope = wrench_envelope_halfspaces(alloc.A, alloc.fj_max, SAFETY_MARGIN)
     n_facets_full = full_envelope[0].shape[0]
 
-    print("=== baseline (current production path: constraint_F/g lambdas, no identical) ===")
+    print("=== old baseline (plain SecondOrderConstraint, no identical -- pre-2026-08-31) ===")
     base_times, base_duration, base_infeasible = _time_construction(
         full_envelope, use_identical=False
     )
     _report("full envelope", n_facets_full, base_times, base_duration, base_infeasible)
     print()
 
-    print("=== prototype (WrenchEnvelopeConstraint, identical=True) ===")
+    print("=== current production path (WrenchEnvelopeConstraint, identical=True) ===")
     id_times, id_duration, id_infeasible = _time_construction(
         full_envelope, use_identical=True
     )
