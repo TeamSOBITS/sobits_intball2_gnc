@@ -74,7 +74,9 @@ openspec/
 CLAUDE.md
 docs/results/
 docs/archive/
-
+docs/**/*.pdf
+docs/**/*.py
+docs/minimum_snap
 # GCOPTERヘッダ（MITライセンス）。ベンダリングせずinstall.shでclone取得する
 /minco_native_py/third_party/
 

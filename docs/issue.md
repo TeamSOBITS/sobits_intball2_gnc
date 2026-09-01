@@ -1,4 +1,4 @@
-# 対象機体（IntBall2）に即した実装計画 — 未達成タスク
+# 未達成タスク
 
 **対象**: `sobits_intball2_gnc`（ISS内自由飛行キューブ型ロボット IntBall2 の GNC 実装、ROS2/Humble）
 
@@ -12,53 +12,15 @@
   - タグはGNCの役割（G/N/C）または領域（運用/Teleop/将来）を示す目印。分類のためではなく一目で系統がわかるようにするための軽い印。
   - 動機は「なぜ今これが必要か」のみ。経緯・調査の数値的根拠・比較実験の詳細はarchiveに委ねる。
   - **例外**: 未達成の判断そのものに直結する数値・閾値（例: トルク予算の値、角度の閾値）は動機に残してよい。それが無いとタスクの意味が読めなくなるため。
-- **テーブル形式は使わない**（スキャン性より、経緯を含む短い文章の方がこのファイルには合う）。
 - 「タスク」と「未決定事項（判断待ちの論点でタスクではないもの）」は別セクションに分ける。混ぜない。
 
 ---
 
 ## 未達成タスク（カテゴリ別・各カテゴリ内は優先度順）
 
-### [G] replanningモードが力/トルク制約を考慮しない設計のまま
-`static`モードは`ToppraTrajectory`＋実`ThrustAllocator`ベースの厳密なウレンチ包絡域制約
-（`guidance/utils/actuation_envelope.py`）に置き換え済み（`docs/archive/achieved/
-2026-08-28_toppra_static_path_attitude_overshoot_incident.md`）だが、`replanning`モードは
-今も`HeuristicSegmentTimeAllocator`の単一スカラー`max_accel`＋`HermiteSplineTrajectoryGenerator`
-（力/トルク非参照、幾何的にのみ軌道を作る）のままで、生成された軌道が各瞬間・各軸で実現可能かを
-検証する層が無い。`replanning`はTOPP-RA化しない設計方針（`sd_start`がスカラー速度のみで
-`v_perp`を扱えないため）のため、この構造的欠陥は別の手当てが必要。上記のsegment_time_infeasible
-バグと同根の可能性がある。また、`static`モードで見つかった大角度旋回時の同種の問題
-（姿勢オーバーシュート・並進停滞）が`replanning`モードでも起きないか、別途sim検証で確認が必要
-（既存のrate-limit機構があるため挙動が異なる可能性が高いが未検証）。
-
-### [G] MINCOベースの姿勢/トルク統合軌道生成、経由点ルートでTOPP-RAに劣ると判明（方針再検討待ち）
-将来の障害物回避は並進経路が急に曲がることを前提にしており（下記[将来]障害物回避タスク）、その
-急旋回に`face_travel`が幾何のみで追従しようとすると`static`モードで一度踏んだ姿勢オーバーシュートを
-`replanning`モードでも踏む懸念がある（`docs/archive/achieved/
-2026-08-29_minco_attitude_torque_integration_plan.md`「軌道再生性」項目）。この解決候補として
-`minco_native_py`（GCOPTER公式C++実装ベース、pybind11）を実装し、`trajectory_tracking_mode=
-static_minco`/`replanning_minco`として`guidance_node`に組み込み済み（Phase 1、docs/archive/achieved/
-2026-08-30_minco_attitude_torque_status_and_next_steps.md）。しかし実sim検証（`docs/
-2026-08-30_static_minco_face_travel_gap.md`）で、直行区間限定なら実用に耐えるものの、
-**経由点を使う経路（`replanning_minco`が本来必要とするケースそのもの）では位置・姿勢・
-アクチュエータ余裕のいずれもTOPP-RAに劣り、経由点をショートカットして壁に接触する事故も
-発生**——`static`モードにある`wrench_envelope_safety_margin`相当の余裕確保がMINCO側に
-無いこと、経由点がbox制約付き自由変数（`VIA_HALF_WIDTH`、実行時パラメータ化済み）で
-厳密な通過点でないことが原因。位置面の是正（`via_half_width=0.0`）・姿勢waypoint密度改善は
-実施済みで直行区間の追従は改善したが、`replanning_minco`が要求する10Hz予算（solve実測
-0.05〜0.83秒、密度を上げるほど超過）には全く届かず、非同期IPC化（Phase 2）が前提。
-「MINCOを本命にするか」自体、TOPP-RAとの優劣がついていない状態のまま未決定。
-
-### [G] replanningモードでのsegment_time_infeasible時の大きなオーバーシュート
-`trajectory_tracking_mode=replanning`で、残距離方向と実速度の横方向成分（v_perp）が
-大きくずれる状況（例: 距離約4.7mの斜め方向move_to）で`HeuristicSegmentTimeAllocator`の
-`t_min_perp > t_max`が成立し`segment_time_infeasible`で再計画が完全停止、その後は
-`GuidanceExecutor`の`max_accel`のみに頼る弱い収束になり、目標を約1m追い越してから
-事後のcheckpoint holdで収束する、という挙動を実sim検証で確認（2026-08-27、
-`docs/archive/achieved/2026-08-27_max_force_anisotropy_from_fan_model.md`検証結果参照）。
-`docs/2026-08-25_v0_aware_time_allocation_lateral_velocity_fix.md`が同じ失敗モードを
-既に予言・記録していたが、本番規模のシナリオで実際に発生を確認したのは今回が初めて。
-再計画停止後のフォールバック挙動（オーバーシュートを許容せず縮退する等）の見直しが必要。
+### [G] K分離(2自由度版)、短距離レグでのduration悪化が未改良
+MINCOの姿勢waypoint密度↑時のduration悪化は圧縮できた（+133%→+21%等）が、短距離レグでは悪化が
+残ったまま（`docs/archive/2026-09-01_replan_speedup_options_overview.md`）。要改良。
 
 ### [G] attitude_reference_mode=look_at 本体実装
 対象TFフレーム名を`guidance.look_at_target_frame`（`ros2 param`）で受ける設計までは確定済みだが、`_run_trajectory`ループ内で毎tick TFルックアップして姿勢を再計算する本体が未着手。現在選択すると`face_travel`にフォールバックし警告ログのみ出す。TFロスト時のフォールバック方針（直前の`q_des`保持 or goal中断）も未決定。
@@ -69,29 +31,11 @@ static_minco`/`replanning_minco`として`guidance_node`に組み込み済み（
 ### [G] min snap以外の軌道生成代替手法（具体名未定）
 具体名はまだ出ていない。
 
-### [G] 90°超waypointでの分離型機動（優先度低、TOPP-RA導入後は不要の可能性が高い）
-旧`compute_q_des`連続追従・経路全体で単一の`T`固定・`kp_att=0.60`という設計を前提に、偏角90°超は
-ゲインチューニングでは解決不可と判定していた（`docs/archive/achieved/
-2026-08-19_trajectory_force_duration_investigation.md`6-15〜6-18節、144.7°hairpinで`T`を100秒に
-伸ばし`kp_att`を倍にしても131°ピークの遅れが解消しなかった）。その後導入したTOPP-RA（`static`
-モード）で実在waypointによる143.99°の鋭旋回（`above_dock`→`inspection_entry_3`経由→
-`capture_point_1`）を再検証したところ、action SUCCESS・duty≥0.95飽和25.7%（`near_dock`系ルートの
-33.4%より低い）・飛行中の姿勢誤差最大18.1°・最終到達精度も問題なしという結果が得られ、旧分析が
-懸念した破綻は再現しなかった（`docs/archive/achieved/
-2026-08-28_toppra_static_path_attitude_overshoot_incident.md`その11）。分離型機動は**不要になった
-可能性が高い**が、この1ケースのみの確認のため、複数の異なる鋭旋回ケースで再現性を確認してから
-このタスク自体を削除するのが安全。
-
 ### [G] 移動前のロール事前回転（到着後の`align_at_arrival`高速化狙い）
 `attitude_reference_mode`(`face_travel`/`look_at`)はピッチ・ヨー（進行方向を向く方向）を経路に応じて決めるが、その向きを軸にした回転（ロール）は決めない。移動中ロールが放置されると到着時に大きなロール誤差が残り、`align_at_arrival`の補正が遅くなる（角度が大きいほど遅く・精度も悪化する、`docs/2026-08-21_tf_correction_align_slow_investigation.md`のゲイン実測で確認済み）。移動中にロールも回転させると貴重な推力が減ってしまう。そのため、移動前に、到着後のロールだけでも合わせておくことで、事後回転の高速化が狙えるはず。優先度中
 
 ### [G] 経路の補間方式（直線移動モード）
 waypoint間を滑らかに補間するか、ただの直線でつなぐか未検討。姿勢モードとは直交する軌道生成側の話。`BaseTrajectoryGenerator`に3つ目の実装を追加するか、既存`HermiteSplineTrajectoryGenerator`のパラメータで代替できないか検討する。
-
-### [G] test_toppra_trajectory.py に大角度旋回の回帰テストが無い
-`static`モードで実際に発生した大角度旋回（waypoint間で90°近い方向転換）による姿勢オーバー
-シュート・並進停滞事案（`docs/archive/achieved/2026-08-28_toppra_static_path_attitude_overshoot_incident.md`）は修正済みだが、この規模の旋回を再現する回帰テストケースが
-`test_toppra_trajectory.py`に無い。同種の再発を検知できるよう追加が必要。
 
 ### [G] wrench_envelope_safety_marginのさらなる調整余地
 `guidance.wrench_envelope_safety_margin=0.7`＋`thrust_allocator.minimax_objective=true`で
