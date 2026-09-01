@@ -202,6 +202,6 @@ duty≥0.95飽和頻度は`false`と同等（48%→48.3%、改善なし）、`t_
 （同ドキュメントその6: `t_des`最大0.30Nm→0.22Nm）、`wrench_envelope_safety_margin`（guidance側）
 との併用でduty飽和頻度を最も改善できた（同その7）ためデフォルト`true`に変更済み。
 
-`translation_direction_control.*`（`force_magnitude`/`max_force`/`control_rate`）は`TranslationDirectionController`が宣言・保持するパラメータだが、現状どのノードにも配線されていないため上表からは省略（詳細: `docs/main_plan.md`）。
+`translation_direction_control.*`（`force_magnitude`/`max_force`/`control_rate`）は`TranslationDirectionController`が宣言・保持するパラメータだが、現状どのノードにも配線されていないため上表からは省略。
 
 [↑ 目次に戻る](#目次)
