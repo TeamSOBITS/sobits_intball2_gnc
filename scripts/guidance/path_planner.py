@@ -55,6 +55,9 @@ class PathPlanner:
         self._push_step = push_step if push_step is not None else rospy.get_param('/gnc/push_step', GNC_DEFAULTS['push_step'])
         self._use_potential = rospy.get_param('/gnc/use_potential_astar', False)
         self._use_dual_edt = rospy.get_param('/gnc/use_dual_edt', False)
+        # ObstacleManager._bake と同じ値を参照する（壁付近点フィルタの閾値）。
+        # _apply_fallback_points 側でも同じフィルタを掛けるために必要。
+        self._wall_filter_dist = rospy.get_param('/gnc/wall_filter_dist', GNC_DEFAULTS['wall_filter_dist'])
         self._recheck_enabled = rospy.get_param('/gnc/dynamic_clearance_recheck_enabled', GNC_DEFAULTS['dynamic_clearance_recheck_enabled'])
         self._recheck_min_distance = rospy.get_param('/gnc/dynamic_clearance_min_distance', GNC_DEFAULTS['dynamic_clearance_min_distance'])
         self._recheck_max_retries = rospy.get_param('/gnc/dynamic_clearance_recheck_max_retries', GNC_DEFAULTS['dynamic_clearance_recheck_max_retries'])
@@ -122,7 +125,6 @@ class PathPlanner:
         bbox_max += np.array([self._bbox_extra_max_x, self._bbox_extra_max_y, self._bbox_extra_max_z], dtype=float)
 
         cc = None
-        cc_is_new = False
         # キャッシュの再利用判定
         if (reuse_cc and self._cached_cc is not None
                 and np.all(bbox_min >= self._cached_cc._bbox_min - self._BBOX_BUFFER)
@@ -138,7 +140,13 @@ class PathPlanner:
                 unknown_as_free=True
             )
             self._cached_cc = cc
-            cc_is_new = True
+            # 静的 EDT を CC 構築直後に計算する。動的レイヤーへの焼き込み
+            # （_apply_fallback_points / ObstacleManager.capture_once）は
+            # `_edt_static is not None` を壁付近点フィルタの有効条件にしているため、
+            # ここで計算しておかないと新規 CC への最初の書き込みでフィルタが
+            # 素通りする。
+            if self._use_potential and self._use_dual_edt:
+                cc.compute_edt_static()
             if fallback_points is not None:
                 self._apply_fallback_points(cc, fallback_points)
 
@@ -176,7 +184,9 @@ class PathPlanner:
 
         if self._use_potential:
             if self._use_dual_edt:
-                if cc_is_new or cc._edt_static is None:
+                # 新規 CC では上の構築直後ブロックで計算済み。ここは再利用 CC が
+                # 何らかの理由で _edt_static を持たない場合の保険。
+                if cc._edt_static is None:
                     cc.compute_edt_static()
                 cc.compute_edt_dynamic()
             else:
@@ -301,16 +311,31 @@ class PathPlanner:
         )
         return None
 
-    @staticmethod
-    def _apply_fallback_points(cc, points):
-        """点群 (N,3) ndarray を CC の動的レイヤーに書き込む（フィルタ済み前提）."""
+    def _apply_fallback_points(self, cc, points):
+        """点群 (N,3) ndarray を CC の動的レイヤーに書き込む.
+
+        渡される点群は `transformed[::sampling_step]` の**未フィルタ**の点群
+        （旧 docstring の「フィルタ済み前提」は誤りだった）。ここで
+        `ObstacleManager._bake` と同一のフィルタを掛ける。
+
+        `_edt_static` が None のとき（単一 EDT モード）はフィルタを掛けない。
+        `_bake` と挙動を揃えるための意図的な分岐。
+        """
+        edt_static = getattr(cc, '_edt_static', None)
+        wall_dist = self._wall_filter_dist
         n_written = 0
+        n_filtered = 0
         for pt in points:
             idx = cc.pos_to_idx(pt)
-            if idx is not None:
-                cc.set_dynamic_occupied(*idx)
-                n_written += 1
-        rospy.loginfo("PathPlanner: applied %d/%d fallback points to new CC", n_written, len(points))
+            if idx is None:
+                continue
+            if edt_static is not None and wall_dist > 0 and edt_static[idx] < wall_dist:
+                n_filtered += 1
+                continue
+            cc.set_dynamic_occupied(*idx)
+            n_written += 1
+        rospy.loginfo("PathPlanner: applied %d/%d fallback points to new CC (wall-filtered %d)",
+                      n_written, len(points), n_filtered)
 
     def _is_recheck_applicable(self):
         """動的クリアランス再検証が有効に機能する構成かを返す."""
