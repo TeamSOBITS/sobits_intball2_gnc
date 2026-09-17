@@ -75,6 +75,12 @@ class PathPlanner:
                 continue
             self._filters.append(fn)
         self._shortcut_margin = rospy.get_param('/gnc/shortcut_margin', 0.0)
+        # ショートカットの静的／動的分離マージン。両方正のときだけ分離モードになる
+        # （smoother.shortcut 側で _edt_static の有無も条件に入る）。
+        self._shortcut_margin_static = rospy.get_param(
+            '/gnc/shortcut_margin_static', GNC_DEFAULTS['shortcut_margin_static'])
+        self._shortcut_margin_dynamic = rospy.get_param(
+            '/gnc/shortcut_margin_dynamic', GNC_DEFAULTS['shortcut_margin_dynamic'])
 
         self._cached_cc = None
         rospy.loginfo("PathPlanner params: robot_radius=%.2f, min_clearance=%.2f, bbox_pad=%.2f, "
@@ -86,6 +92,10 @@ class PathPlanner:
                   self._bbox_extra_min_z, self._bbox_extra_max_z,
                       self._grid_resolution, self._push_step,
                       [f.__name__ for f in self._filters], self._shortcut_margin)
+        rospy.loginfo(
+            "PathPlanner shortcut margin: uniform=%.3f, static=%.3f, dynamic=%.3f "
+            "(split requires static>0 and dynamic>0)",
+            self._shortcut_margin, self._shortcut_margin_static, self._shortcut_margin_dynamic)
         rospy.loginfo(
             "PathPlanner recheck params: enabled=%s, min_distance=%.3f, max_retries=%d",
             self._recheck_enabled,
@@ -144,7 +154,11 @@ class PathPlanner:
             # （_apply_fallback_points / ObstacleManager.capture_once）は
             # `_edt_static is not None` を壁付近点フィルタの有効条件にしているため、
             # ここで計算しておかないと新規 CC への最初の書き込みでフィルタが
-            # 素通りする。
+            # 素通りする（docs/bug_audit.md B-01）。
+            #
+            # `self._use_dual_edt` ガードは必須。単一 EDT モードでは _edt_static を
+            # 永久に None のままにしておく必要がある（フィルタが効き始めると
+            # S-feasible / S-safe の既存 run と条件が変わる）。
             if self._use_potential and self._use_dual_edt:
                 cc.compute_edt_static()
             if fallback_points is not None:
@@ -185,7 +199,9 @@ class PathPlanner:
         if self._use_potential:
             if self._use_dual_edt:
                 # 新規 CC では上の構築直後ブロックで計算済み。ここは再利用 CC が
-                # 何らかの理由で _edt_static を持たない場合の保険。
+                # 何らかの理由で _edt_static を持たない場合の保険。二重計算を避ける
+                # ため `cc_is_new` は条件から外してある（静的グリッドは不変なので
+                # 再計算しても値は同じ、計画1回あたりの EDT 回数を変えないため）。
                 if cc._edt_static is None:
                     cc.compute_edt_static()
                 cc.compute_edt_dynamic()
@@ -314,12 +330,12 @@ class PathPlanner:
     def _apply_fallback_points(self, cc, points):
         """点群 (N,3) ndarray を CC の動的レイヤーに書き込む.
 
-        渡される点群は `transformed[::sampling_step]` の**未フィルタ**の点群
-        （旧 docstring の「フィルタ済み前提」は誤りだった）。ここで
-        `ObstacleManager._bake` と同一のフィルタを掛ける。
+        渡される `ObstacleManager.last_captured_points` は `transformed[::sampling_step]`
+        ＝**未フィルタ**の点群（docs/bug_audit.md B-02。旧 docstring の「フィルタ済み前提」は
+        誤りだった）。ここで `ObstacleManager._bake` と同一のフィルタを掛ける。
 
         `_edt_static` が None のとき（単一 EDT モード）はフィルタを掛けない。
-        `_bake` と挙動を揃えるための意図的な分岐。
+        `_bake` と挙動を揃えるための意図的な分岐であり、変えてはならない。
         """
         edt_static = getattr(cc, '_edt_static', None)
         wall_dist = self._wall_filter_dist
@@ -385,6 +401,8 @@ class PathPlanner:
             filters=self._filters,
             push_step=self._push_step,
             shortcut_margin=self._shortcut_margin,
+            shortcut_margin_static=self._shortcut_margin_static,
+            shortcut_margin_dynamic=self._shortcut_margin_dynamic,
         )
 
     @staticmethod

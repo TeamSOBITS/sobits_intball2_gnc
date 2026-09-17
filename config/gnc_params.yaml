@@ -19,6 +19,12 @@ gnc:
   # CollisionChecker の dynamic_safety_margin に対応
   # この値がそのまま膨張量になる（robot_radius は加算しない）
   # 0.0 → 膨張なし、0.05 → 0.05m 膨張
+  #
+  # 【既知の問題・未修正】静的側は margin=robot_radius+safety_margin=0.10 相当
+  # （static_clearance 0.05 < robot_radius のため safety_margin は 0 にクリップされ実質 robot_radius のみ）
+  # に対し、動的側は robot_radius が加算されないため実質 0.05 のみで非対称。
+  # 0.10（robot_radius同値）へ引き上げる修正案があるが、別途対応予定のため
+  # ここでは変更しない。
   dynamic_clearance: 0.05
 
   # =========================================================
@@ -95,7 +101,20 @@ gnc:
   path_filters: ["shortcut"]
 
   # shortcut の EDT マージン閾値 [m]（0.0 でマージン判定無効、ギリギリの経路を出力）
+  # 合成 EDT（静的+未観測と動的の min）を一律この値で判定する。
+  # 下の shortcut_margin_static / _dynamic が両方正で use_dual_edt=true のときは
+  # 分離判定が使われ、この値は未使用になる。
   shortcut_margin: 0.30
+
+  # shortcut のマージンを静的（壁）／動的（点群）で分離する閾値 [m]
+  # 両方が正、かつ use_dual_edt=true（静的 EDT が計算される）のときだけ分離モードになる。
+  # 0.0 にすると分離無効で shortcut_margin による従来の一律判定に戻る。
+  # 判定は AND 条件（片方でも割れば棄却）。実効値は _EDT_TOLERANCE(0.98) を掛けた値。
+  #
+  # static は A* コスト式の safety_threshold(0.15) と一致させている。
+  # dynamic は A* の dynamic_threshold(0.40) と一致させている。
+  shortcut_margin_static: 0.15
+  shortcut_margin_dynamic: 0.40
 
   # push_from_walls の1ステップ押し出し量 [m]
   push_step: 0.10

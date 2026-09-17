@@ -8,7 +8,8 @@ from tf.transformations import quaternion_from_euler
 _EDT_TOLERANCE = 0.98  # 離散化誤差バッファ (2%)
 
 
-def shortcut(path, collision_checker, shortcut_margin=None, **kwargs):
+def shortcut(path, collision_checker, shortcut_margin=None,
+             shortcut_margin_static=None, shortcut_margin_dynamic=None, **kwargs):
     if len(path) <= 2:
         return list(path)
 
@@ -18,8 +19,31 @@ def shortcut(path, collision_checker, shortcut_margin=None, **kwargs):
 
     # セグメントマージン判定: shortcut_margin > 0 なら EDT を事前計算
     cc_margin = shortcut_margin if shortcut_margin is not None else 0.0
-    if cc_margin > 0:
-        collision_checker.compute_edt()
+    m_static = shortcut_margin_static if shortcut_margin_static is not None else 0.0
+    m_dynamic = shortcut_margin_dynamic if shortcut_margin_dynamic is not None else 0.0
+
+    # 分離モード: 静的・動的の両マージンが正で、かつ CC が静的 EDT を保持している
+    # ときだけ有効。単一 EDT 設定（use_dual_edt=false）では _edt_static が永久に
+    # None なので、従来の合成 EDT 一律判定へ自動的にフォールバックする。
+    split = (m_static > 0 and m_dynamic > 0
+             and getattr(collision_checker, '_edt_static', None) is not None)
+
+    if split:
+        # 静的 EDT は PathPlanner が CC 構築直後に計算済み、動的 EDT も plan 内で
+        # A* の前に毎回計算される。よって compute_edt() は呼ばない。
+        if getattr(collision_checker, '_edt_dynamic', None) is None:
+            rospy.logwarn(
+                "Shortcut: split mode but dynamic EDT is None (no dynamic cells). "
+                "Dynamic margin check is inactive; judging with static margin only.")
+        rospy.loginfo(
+            "Shortcut: split margin mode (static=%.3f->%.3f, dynamic=%.3f->%.3f)",
+            m_static, m_static * _EDT_TOLERANCE,
+            m_dynamic, m_dynamic * _EDT_TOLERANCE)
+    else:
+        rospy.loginfo("Shortcut: uniform margin mode (margin=%.3f->%.3f)",
+                      cc_margin, cc_margin * _EDT_TOLERANCE)
+        if cc_margin > 0:
+            collision_checker.compute_edt()
 
     result = [np.asarray(path[0], dtype=float)]
     i = 0
@@ -31,20 +55,34 @@ def shortcut(path, collision_checker, shortcut_margin=None, **kwargs):
             label = "WP%d->%d" % (i, j) if tried < 3 else ""
             tried += 1
             if safe_check_line(path[i], path[j], collision_checker, step_size,
-                               margin=cc_margin, debug_label=label):
+                               margin=cc_margin,
+                               margin_static=m_static if split else 0.0,
+                               margin_dynamic=m_dynamic if split else 0.0,
+                               debug_label=label):
                 farthest = j
                 break
         rospy.loginfo("Shortcut step: WP%d -> WP%d (tried %d candidates)", i, farthest, tried)
         result.append(np.asarray(path[farthest], dtype=float))
         i = farthest
 
-    rospy.loginfo("Shortcut: %d -> %d waypoints (margin=%.3f)", len(path), len(result), cc_margin)
+    if split:
+        rospy.loginfo("Shortcut: %d -> %d waypoints (margin_static=%.3f margin_dynamic=%.3f)",
+                      len(path), len(result), m_static, m_dynamic)
+    else:
+        rospy.loginfo("Shortcut: %d -> %d waypoints (margin=%.3f)",
+                      len(path), len(result), cc_margin)
     return result
 
-def safe_check_line(p1, p2, cc, step_size, margin=0.0, debug_label=""):
+def safe_check_line(p1, p2, cc, step_size, margin=0.0,
+                    margin_static=0.0, margin_dynamic=0.0, debug_label=""):
     """標準の check_line よりも高密度にチェックするヘルパー.
 
     margin > 0 の場合、占有判定に加え EDT 距離が margin 以上であることも検証する。
+
+    margin_static と margin_dynamic がともに正なら分離モードになり、合成 EDT では
+    なく静的 EDT（壁のみ）と動的 EDT（点群のみ）をそれぞれの閾値で判定する
+    （AND 条件。片方でも割れば棄却）。動的 EDT が未計算のときは
+    get_distance_edt_dynamic() が inf を返すため動的側は常に通過する。
     """
     p1 = np.asarray(p1)
     p2 = np.asarray(p2)
@@ -52,9 +90,15 @@ def safe_check_line(p1, p2, cc, step_size, margin=0.0, debug_label=""):
     if dist < 1e-9:
         return cc.check_point(p1)
 
+    split = margin_static > 0 and margin_dynamic > 0
+    eff_static = margin_static * _EDT_TOLERANCE
+    eff_dynamic = margin_dynamic * _EDT_TOLERANCE
     effective_margin = margin * _EDT_TOLERANCE
+
     n_steps = int(math.ceil(dist / step_size))
     min_edt = float('inf')
+    min_static = float('inf')
+    min_dynamic = float('inf')
     for k in range(n_steps + 1):
         pt = p1 + (p2 - p1) * (float(k) / n_steps)
         if not cc.check_point(pt):
@@ -62,7 +106,30 @@ def safe_check_line(p1, p2, cc, step_size, margin=0.0, debug_label=""):
                 rospy.loginfo("  %s REJECT(occupied) at step %d/%d pt=[%.2f,%.2f,%.2f]",
                               debug_label, k, n_steps, pt[0], pt[1], pt[2])
             return False
-        if effective_margin > 0:
+        if split:
+            d_s = cc.get_distance_edt_static(pt)
+            d_d = cc.get_distance_edt_dynamic(pt)
+            if d_s < min_static:
+                min_static = d_s
+            if d_d < min_dynamic:
+                min_dynamic = d_d
+            if d_s < eff_static:
+                if debug_label:
+                    rospy.loginfo("  %s REJECT(margin-static) at step %d/%d "
+                                  "pt=[%.2f,%.2f,%.2f] edt_s=%.3f < %.3f "
+                                  "(edt_d=%.3f thresh_d=%.3f)",
+                                  debug_label, k, n_steps, pt[0], pt[1], pt[2],
+                                  d_s, eff_static, d_d, eff_dynamic)
+                return False
+            if d_d < eff_dynamic:
+                if debug_label:
+                    rospy.loginfo("  %s REJECT(margin-dynamic) at step %d/%d "
+                                  "pt=[%.2f,%.2f,%.2f] edt_d=%.3f < %.3f "
+                                  "(edt_s=%.3f thresh_s=%.3f)",
+                                  debug_label, k, n_steps, pt[0], pt[1], pt[2],
+                                  d_d, eff_dynamic, d_s, eff_static)
+                return False
+        elif effective_margin > 0:
             d = cc.get_distance_edt(pt)
             if d < min_edt:
                 min_edt = d
@@ -74,8 +141,13 @@ def safe_check_line(p1, p2, cc, step_size, margin=0.0, debug_label=""):
                                   d, effective_margin)
                 return False
     if debug_label:
-        rospy.loginfo("  %s OK min_edt=%.3f (thresh=%.3f)",
-                      debug_label, min_edt, effective_margin)
+        if split:
+            rospy.loginfo("  %s OK min_edt_s=%.3f min_edt_d=%.3f "
+                          "(thresh_s=%.3f thresh_d=%.3f)",
+                          debug_label, min_static, min_dynamic, eff_static, eff_dynamic)
+        else:
+            rospy.loginfo("  %s OK min_edt=%.3f (thresh=%.3f)",
+                          debug_label, min_edt, effective_margin)
     return True
 
 

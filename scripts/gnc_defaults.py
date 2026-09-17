@@ -46,6 +46,12 @@ GNC_DEFAULTS = {
     # パス後処理（Smoother）
     'path_filters': ['push_from_walls', 'shortcut'],
     'shortcut_margin': 0.0,
+    # ショートカットのマージン判定を静的（壁）／動的（点群）で分離する閾値。
+    # 両方が正、かつ CollisionChecker が静的 EDT を保持している（= dual EDT）
+    # ときだけ分離モードになる。デフォルト 0.0 は分離無効で、
+    # shortcut_margin による従来の合成 EDT 一律判定が使われる。
+    'shortcut_margin_static': 0.0,
+    'shortcut_margin_dynamic': 0.0,
     'push_step': 0.05,
     'push_max_iter': 10,
 
