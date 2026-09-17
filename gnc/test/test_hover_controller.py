@@ -388,6 +388,9 @@ class _FakeAllocator:
         self.last_torque = list(torque)
         return [0.5] * 8
 
+    def achieved_wrench(self, duties):
+        return tuple(self.last_force), tuple(self.last_torque)
+
 
 class _FakeTf:
     """Stands in for TfClient (common/ros): returns whatever pose the test sets."""
