@@ -129,6 +129,60 @@ inline bool smoothedL1(const double &x, const double &mu, double &f, double &df)
     }
 }
 
+// rDdot(回転ベクトルrの2階微分)を角加速度omega_dotとして直接使うのは r->0 の極限
+// でのみ正しい近似(単軸回転では角度に関わらず厳密に成立するが、複合軸+大角度で
+// 数十%オーダーにずれる、docs/archive/achieved/2026-09-17_accrot_jacobian_bug_offline_verification.md
+// で検証済み)。正しい関係は omega = Jr(r)@rDot, omega_dot = Jr(r)@rDdot +
+// (d/dt Jr(r))@rDot (Zefran, Kumar & Croke 1995; Watterson, Smith & Kumar
+// IROS 2016のJrはSO(3)の右ヤコビアン)。
+inline Matrix3d skewMat(const Vector3d &v)
+{
+    Matrix3d K;
+    K << 0, -v(2), v(1), v(2), 0, -v(0), -v(1), v(0), 0;
+    return K;
+}
+
+inline Matrix3d rightJacobian(const Vector3d &r)
+{
+    const double theta = r.norm();
+    if (theta < 1e-8)
+    {
+        return Matrix3d::Identity();
+    }
+    const Matrix3d K = skewMat(r);
+    const double a = (1 - std::cos(theta)) / (theta * theta);
+    const double b = (theta - std::sin(theta)) / (theta * theta * theta);
+    return Matrix3d::Identity() - a * K + b * (K * K);
+}
+
+// omega_dot(r, rDot, rDdot)を、ジャークに依存しない局所展開
+// g(u) = Jr(r + u*rDot) @ (rDot + u*rDdot), g'(0) = omega_dot
+// の中心差分で評価する(Jrはrのみに依存するので g'(0) = dJr/dr[rDot]@rDot +
+// Jr(r)@rDdot = omega_dotの厳密な式に一致、jerkの項は現れないので局所展開は
+// h->0で厳密)。
+inline Vector3d omegaDotOf(const Vector3d &r, const Vector3d &rDot, const Vector3d &rDdot,
+                            double h = 1e-6)
+{
+    const Vector3d gp = rightJacobian(r + h * rDot) * (rDot + h * rDdot);
+    const Vector3d gm = rightJacobian(r - h * rDot) * (rDot - h * rDdot);
+    return (gp - gm) / (2 * h);
+}
+
+// dOmegaDot/dr, dOmegaDot/drDot, dOmegaDot/drDdot (各3x3)。omegaDotOf自体の
+// 中心差分で求める(閉形式のJr時間微分を導出する代わり、実装コストを抑える)。
+inline void omegaDotJacobians(const Vector3d &r, const Vector3d &rDot, const Vector3d &rDdot,
+                               Matrix3d &dR, Matrix3d &dRDot, Matrix3d &dRDdot, double eps = 1e-6)
+{
+    for (int k = 0; k < 3; k++)
+    {
+        Vector3d e = Vector3d::Zero();
+        e(k) = eps;
+        dR.col(k) = (omegaDotOf(r + e, rDot, rDdot) - omegaDotOf(r - e, rDot, rDdot)) / (2 * eps);
+        dRDot.col(k) = (omegaDotOf(r, rDot + e, rDdot) - omegaDotOf(r, rDot - e, rDdot)) / (2 * eps);
+        dRDdot.col(k) = (omegaDotOf(r, rDot, rDdot + e) - omegaDotOf(r, rDot, rDdot - e)) / (2 * eps);
+    }
+}
+
 struct EvalContext
 {
     minco::MINCO_S3NU *posMinco;
@@ -192,18 +246,23 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
         for (int j = 0; j <= INTEGRAL_RES; j++)
         {
             const double s1 = j * step, s2 = s1 * s1, s3 = s2 * s1;
-            Matrix<double, 6, 1> beta2, beta3;
+            Matrix<double, 6, 1> beta0, beta1, beta2, beta3;
+            beta0 << 1.0, s1, s2, s3, s2 * s2, s2 * s3;
+            beta1 << 0.0, 1.0, 2.0 * s1, 3.0 * s2, 4.0 * s3, 5.0 * s2 * s2;
             beta2 << 0.0, 0.0, 2.0, 6.0 * s1, 12.0 * s2, 20.0 * s3;
             beta3 << 0.0, 0.0, 0.0, 6.0, 24.0 * s1, 60.0 * s2;
 
             const Vector3d accPos = cPos.transpose() * beta2;
             const Vector3d jerPos = cPos.transpose() * beta3;
-            const Vector3d accRot = cRot.transpose() * beta2;
+            const Vector3d r = cRot.transpose() * beta0;
+            const Vector3d rDot = cRot.transpose() * beta1;
+            const Vector3d rDdot = cRot.transpose() * beta2;
             const Vector3d jerRot = cRot.transpose() * beta3;
+            const Vector3d omegaDot = omegaDotOf(r, rDot, rDdot);
 
             Matrix<double, 6, 1> wrench;
             wrench.head<3>() = MASS * accPos;
-            wrench.tail<3>() = INERTIA * accRot;
+            wrench.tail<3>() = INERTIA * omegaDot;
 
             const VectorXd viol = F_ENV * wrench - ctx->wrenchSafetyMargin * G_ENV;
             Matrix<double, 6, 1> gradWrench = Matrix<double, 6, 1>::Zero();
@@ -219,13 +278,22 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
             }
 
             const Vector3d gradAccPos = MASS * gradWrench.head<3>();
-            const Vector3d gradAccRot = INERTIA * gradWrench.tail<3>();
+            const Vector3d gradWrenchRot = gradWrench.tail<3>();
+            Matrix3d dOmegaDot_dR, dOmegaDot_dRDot, dOmegaDot_dRDdot;
+            omegaDotJacobians(r, rDot, rDdot, dOmegaDot_dR, dOmegaDot_dRDot, dOmegaDot_dRDdot);
+            const Vector3d gradR = INERTIA * (dOmegaDot_dR.transpose() * gradWrenchRot);
+            const Vector3d gradRDot = INERTIA * (dOmegaDot_dRDot.transpose() * gradWrenchRot);
+            const Vector3d gradRDdot = INERTIA * (dOmegaDot_dRDdot.transpose() * gradWrenchRot);
 
             const double node = (j == 0 || j == INTEGRAL_RES) ? 0.5 : 1.0;
             const double alpha = j * integralFrac;
             gdC_penalty_pos.block<6, 3>(i * 6, 0) += (beta2 * gradAccPos.transpose()) * node * step;
-            gdC_penalty_rot.block<6, 3>(i * 6, 0) += (beta2 * gradAccRot.transpose()) * node * step;
-            gdT_penalty(i) += (gradAccPos.dot(jerPos) + gradAccRot.dot(jerRot)) * alpha * node * step
+            gdC_penalty_rot.block<6, 3>(i * 6, 0) +=
+                (beta0 * gradR.transpose() + beta1 * gradRDot.transpose() + beta2 * gradRDdot.transpose())
+                * node * step;
+            gdT_penalty(i) += (gradAccPos.dot(jerPos) * alpha
+                               + alpha * (gradR.dot(rDot) + gradRDot.dot(rDdot) + gradRDdot.dot(jerRot)))
+                                  * node * step
                               + node * integralFrac * pena;
             penaltyCost += node * step * pena;
         }
@@ -272,13 +340,17 @@ double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, co
         {
             const double s1 = T(i) * j / static_cast<double>(INTEGRAL_RES);
             const double s2 = s1 * s1, s3 = s2 * s1;
-            Matrix<double, 6, 1> beta2;
+            Matrix<double, 6, 1> beta0, beta1, beta2;
+            beta0 << 1.0, s1, s2, s3, s2 * s2, s2 * s3;
+            beta1 << 0.0, 1.0, 2.0 * s1, 3.0 * s2, 4.0 * s3, 5.0 * s2 * s2;
             beta2 << 0.0, 0.0, 2.0, 6.0 * s1, 12.0 * s2, 20.0 * s3;
             const Vector3d accPos = cPos.transpose() * beta2;
-            const Vector3d accRot = cRot.transpose() * beta2;
+            const Vector3d r = cRot.transpose() * beta0;
+            const Vector3d rDot = cRot.transpose() * beta1;
+            const Vector3d rDdot = cRot.transpose() * beta2;
             Matrix<double, 6, 1> wrench;
             wrench.head<3>() = MASS * accPos;
-            wrench.tail<3>() = INERTIA * accRot;
+            wrench.tail<3>() = INERTIA * omegaDotOf(r, rDot, rDdot);
             const VectorXd viol = F_ENV * wrench - wrenchSafetyMargin * G_ENV;
             worst = std::max(worst, viol.maxCoeff());
         }
