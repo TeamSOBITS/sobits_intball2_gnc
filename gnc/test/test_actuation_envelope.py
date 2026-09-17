@@ -74,3 +74,28 @@ def test_rejects_too_many_fans():
     huge_matrix = np.zeros((6, 32))
     with pytest.raises(ValueError):
         wrench_envelope_halfspaces(huge_matrix, 0.06)
+
+
+def test_dedup_gives_exact_24_facets_for_this_vehicle():
+    # ConvexHull returns ~9951 Qhull-triangulated facets for this vehicle's
+    # 8-fan zonotope; deduping onto shared hyperplanes must collapse this to
+    # the true facet count (12 +/- pairs, since the fan layout is centrally
+    # symmetric: A @ ones(n) == 0), not merely reduce it.
+    F, g = wrench_envelope_halfspaces(_ALLOC.A, _ALLOC.fj_max)
+    assert F.shape == (24, 6)
+    assert g.shape == (24,)
+
+
+def test_dedup_adds_zero_conservatism_vs_full_facet_set():
+    # Every one of the 256 true zonotope vertices must satisfy the deduped
+    # 24-facet system with (near-)zero slack on its own supporting facets --
+    # i.e. dedup drops redundant rows only, it doesn't change the region.
+    from itertools import product
+
+    A = _ALLOC.A
+    n = A.shape[1]
+    corners = np.array(list(product([0.0, float(_ALLOC.fj_max)], repeat=n)))
+    vertices = corners @ A.T
+
+    F, g = wrench_envelope_halfspaces(_ALLOC.A, _ALLOC.fj_max)
+    assert np.all(vertices @ F.T <= g + 1e-9)

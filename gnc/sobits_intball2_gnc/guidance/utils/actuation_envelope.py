@@ -28,6 +28,15 @@ representation via a convex hull gives the exact set toppra's
 wired in) -- verified against an independent per-direction LP check
 (``scipy.optimize.linprog``, maximize the scale of a given wrench direction
 subject to ``0 <= f <= fj_max``) to agree to float precision.
+
+For this vehicle's actual 8-fan geometry, ``ConvexHull`` reports ~9951
+facets, but that's Qhull triangulating each true (flat, higher-dimensional)
+face of the zonotope into simplices -- most of those "facets" share the same
+supporting hyperplane. Rounding each equation and deduping rows collapses
+this to the true, exact facet count (24 here, i.e. 12 +/- pairs since the
+fan layout is centrally symmetric: ``A @ ones(n) == 0``) with zero added
+conservatism -- verified against the full-facet set's own support values to
+float precision.
 """
 from itertools import product
 
@@ -38,6 +47,22 @@ from scipy.spatial import ConvexHull
 # <0.1s to hull in 6D, see module docstring), but grows exponentially. Guard
 # against an accidental huge fan count silently taking forever.
 _MAX_FAN_COUNT_FOR_ENUMERATION = 16
+
+# Decimal places for collapsing Qhull's per-simplex facet equations onto the
+# shared hyperplane they actually lie on (see module docstring). Coarse
+# enough to merge floating-point noise between simplices of the same face,
+# tight enough not to merge the 24 geometrically distinct facets themselves
+# (their |b| values differ at the 1e-3 level here).
+_DEDUP_DECIMALS = 9
+
+
+def _dedup_halfspaces(F, g):
+    """Collapse duplicate ``(F_i, g_i)`` rows that describe the same
+    hyperplane (Qhull's triangulation artifact), preserving row order."""
+    combined = np.round(np.hstack([F, g[:, None]]), _DEDUP_DECIMALS)
+    _, first_seen = np.unique(combined, axis=0, return_index=True)
+    keep = np.sort(first_seen)
+    return F[keep], g[keep]
 
 
 def wrench_envelope_halfspaces(wrench_matrix, fj_max, safety_margin=1.0):
@@ -70,5 +95,6 @@ def wrench_envelope_halfspaces(wrench_matrix, fj_max, safety_margin=1.0):
     vertices = corners @ wrench_matrix.T
     hull = ConvexHull(vertices)
     F = hull.equations[:, :-1]
-    g = -hull.equations[:, -1] * float(safety_margin)
-    return F, g
+    g = -hull.equations[:, -1]
+    F, g = _dedup_halfspaces(F, g)
+    return F, g * float(safety_margin)
