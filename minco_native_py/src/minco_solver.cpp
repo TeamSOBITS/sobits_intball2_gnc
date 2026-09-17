@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <omp.h>
 #include <stdexcept>
 
 using namespace Eigen;
@@ -27,7 +28,17 @@ namespace
 const double MASS = 3.216;
 const double INERTIA = 0.0136;  // isotropic, trajectory_controller.inertia
 
-const int INTEGRAL_RES = 30;
+const int INTEGRAL_RES = 20;
+// maxViolation()専用の判定分解能。INTEGRAL_RESを最適化用に下げても、最終合否判定
+// (result.error_code)は下げない -- ベンチ(bench_integral_res_vs_k.cppの
+// runIntegralResReductionStudy)がdenseRes=300の別グリッドで再チェックして
+//初めて「20まではほぼノーコスト」と確認した経緯があり、本番のmaxViolation自体を
+// 同じ甘い分解能で判定すると未検証になる
+// (docs/2026-09-01_replan_speedup_implementation_direction.md懸念1)。
+const int VIOLATION_CHECK_RES = 300;
+// K区間ペナルティループのOpenMPスレッド数。ベンチ(bench_penalty_loop_parallel.cpp)
+// で4〜8スレッドが実用的な落とし所と確認済み(8で6.3倍、8→16は頭打ち)。
+const int PENALTY_LOOP_THREADS = 8;
 const double W_ENERGY = 1e-3;
 const double W_TIME = 1.0;
 const double SMOOTH_FACTOR = 1e-2;
@@ -238,6 +249,11 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
     const MatrixX3d &coeffsRot = ctx->rotMinco->getCoeffs();
     const double integralFrac = 1.0 / INTEGRAL_RES;
 
+    // K区間ループ: 区間iはgdC_penalty_{pos,rot}.block(i*6,0)とgdT_penalty(i)にしか
+    // 書き込まないため区間間で書き込み先が重ならない。penaltyCostのみ複数スレッドが
+    // 加算するのでreductionが必要(bench_penalty_loop_parallel.cppで全スレッド数で
+    // cost/duration誤差ゼロ(bit-identical)と確認済み)。
+#pragma omp parallel for num_threads(PENALTY_LOOP_THREADS) reduction(+ : penaltyCost) schedule(static)
     for (int i = 0; i < K; i++)
     {
         const Matrix<double, 6, 3> &cPos = coeffsPos.block<6, 3>(i * 6, 0);
@@ -336,9 +352,9 @@ double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, co
     {
         const Matrix<double, 6, 3> &cPos = coeffsPos.block<6, 3>(i * 6, 0);
         const Matrix<double, 6, 3> &cRot = coeffsRot.block<6, 3>(i * 6, 0);
-        for (int j = 0; j <= INTEGRAL_RES; j++)
+        for (int j = 0; j <= VIOLATION_CHECK_RES; j++)
         {
-            const double s1 = T(i) * j / static_cast<double>(INTEGRAL_RES);
+            const double s1 = T(i) * j / static_cast<double>(VIOLATION_CHECK_RES);
             const double s2 = s1 * s1, s3 = s2 * s1;
             Matrix<double, 6, 1> beta0, beta1, beta2;
             beta0 << 1.0, s1, s2, s3, s2 * s2, s2 * s3;
