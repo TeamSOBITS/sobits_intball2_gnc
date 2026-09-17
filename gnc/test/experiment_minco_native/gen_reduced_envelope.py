@@ -20,7 +20,17 @@ and sometimes large (+20-50% total segment time on an unlucky seed); m=48
 onward is the practical sweet spot (<3% conservatism across all seeds
 tried, ~5-10x solve-time speedup, ~5x facet reduction).
 
-Usage: python3 gen_reduced_envelope.py <m> [seed] [output.csv]
+margin defaults to 1.0 (no shrink baked into the geometry): the production
+solver (minco_solver.cpp) applies its own runtime `wrench_safety_margin`
+(via ROS param guidance.wrench_envelope_safety_margin) by scaling G at solve
+time, and farthest_point_sample's vertex selection is invariant to a uniform
+scale of the input points (it only compares relative pairwise distances), so
+generating at margin=1.0 and applying the runtime margin afterwards
+reproduces the same facet geometry as baking a margin in here -- without
+double-applying it if both are ever set independently
+(docs/2026-09-01_replan_speedup_implementation_direction.md懸念2参照).
+
+Usage: python3 gen_reduced_envelope.py <m> [seed] [output.csv] [margin]
 """
 import sys
 from itertools import product
@@ -31,7 +41,7 @@ from scipy.spatial import ConvexHull
 sys.path.insert(0, "/root/colcon_ws/src/sobits_intball2_gnc")
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
 
-SAFETY_MARGIN = 0.7
+DEFAULT_MARGIN = 1.0
 
 
 def true_vertices(A, fj_max, margin):
@@ -63,16 +73,18 @@ def main():
     m = int(sys.argv[1]) if len(sys.argv) > 1 else 48
     seed = int(sys.argv[2]) if len(sys.argv) > 2 else 0
     out = sys.argv[3] if len(sys.argv) > 3 else f"wrench_envelope_reduced_m{m}.csv"
+    margin = float(sys.argv[4]) if len(sys.argv) > 4 else DEFAULT_MARGIN
 
     a = ThrustAllocator()
-    verts = true_vertices(a.A, a.fj_max, SAFETY_MARGIN)
+    verts = true_vertices(a.A, a.fj_max, margin)
     idx = farthest_point_sample(verts, m, seed)
     sub = verts[np.unique(idx)]
     hull = ConvexHull(sub)
     F = hull.equations[:, :-1]
     g = -hull.equations[:, -1]
     write_envelope(out, F, g)
-    print(f"m={m} seed={seed}: kept {sub.shape[0]} vertices, {F.shape[0]} facets -> {out}")
+    print(f"m={m} seed={seed} margin={margin}: kept {sub.shape[0]} vertices, "
+          f"{F.shape[0]} facets -> {out}")
 
 
 if __name__ == "__main__":
