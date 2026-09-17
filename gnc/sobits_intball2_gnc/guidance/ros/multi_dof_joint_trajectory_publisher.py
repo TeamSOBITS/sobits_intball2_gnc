@@ -9,7 +9,7 @@ see ``docs/archive/achieved/phase3a_interface_contract.md``).
 This is the producer side of that contract. Phase 3a itself was verified with
 a stand-in script publishing directly (``test/manual/``); this wrapper is the
 reusable form a Guidance node samples its trajectory into, once one exists
-(``docs/main_plan.md`` Phase 2, ``docs/future_design_notes.md`` 3-1).
+(Phase 2, ``docs/future_design_notes.md`` 3-1).
 
 Continuous republishing (at the control rate, one message per
 ``ControlNode`` tick) is the caller's responsibility -- this wrapper only

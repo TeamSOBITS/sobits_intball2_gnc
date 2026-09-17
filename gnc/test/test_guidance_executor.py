@@ -69,7 +69,7 @@ class DisturbedApproachTf:
     convergence, this lets a test verify that
     ``trajectory_tracking_mode="replanning"`` actually recovers from a
     mid-flight disturbance rather than just tracking an undisturbed path
-    (docs/main_plan.md's outstanding "擬似衝突からの復帰再現" verification
+    (an outstanding "擬似衝突からの復帰再現" verification
     item, see docs/archive/achieved/
     2026-08-25_guidance_realtime_replanning_sim_verification.md 7 節)."""
 
@@ -137,8 +137,8 @@ class FakeSpeedPathPublisher:
     """Records each ``publish()`` call's sample count, for asserting how
     many times (and roughly when) GuidanceExecutor re-publishes the RViz
     speed-path preview -- once at goal start, and again on every re-plan in
-    ``trajectory_tracking_mode="replanning"`` (docs/main_plan.md [G]
-    "再計画軌道のRVizプレビュー更新")."""
+    ``trajectory_tracking_mode="replanning"`` ([G]
+    "再計画軌道のRVizプレビュー更新" task)."""
 
     def __init__(self):
         self.calls = []
@@ -893,7 +893,7 @@ def test_execute_replanning_mode_passes_via_waypoints_to_the_tracker(monkeypatch
 
 
 def test_execute_replanning_mode_recovers_from_mid_flight_disturbance():
-    """docs/main_plan.md's outstanding verification item: a pseudo-collision
+    """Outstanding verification item: a pseudo-collision
     that knocks the vehicle off its planned path mid-flight must still let
     trajectory_tracking_mode="replanning" reach the goal, since every
     re-plan re-targets from the *current* TF pose rather than the originally
@@ -928,8 +928,8 @@ def test_execute_replanning_mode_recovers_from_mid_flight_disturbance():
 def test_execute_replanning_mode_republishes_speed_path_preview_on_replan():
     """The speed-path preview must be re-published beyond the initial
     goal-start call once trajectory_tracking_mode="replanning" actually
-    re-plans, so RViz doesn't show a stale first-plan path (docs/
-    main_plan.md [G] "再計画軌道のRVizプレビュー更新")."""
+    re-plans, so RViz doesn't show a stale first-plan path
+    ([G] "再計画軌道のRVizプレビュー更新" task)."""
     setpoint_pub = FakeSetpointPublisher()
     logger = FakeLogger()
     speed_path_pub = FakeSpeedPathPublisher()

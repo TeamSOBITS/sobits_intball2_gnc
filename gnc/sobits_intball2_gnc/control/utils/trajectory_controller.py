@@ -66,7 +66,7 @@ DEFAULT_TRAJECTORY = {
     # Attitude gains, seeded from tf_correction.kp_att/kd_att (Phase 3b): the
     # checkpoint-hold gains are the only ones this vehicle has been tuned
     # against so far. Re-tuning against moving-setpoint tracking error is
-    # deferred (docs/main_plan.md Phase 3b "追加の宿題").
+    # deferred (Phase 3b "追加の宿題").
     "kp_att": [0.01, 0.01, 0.01],
     "kd_att": [0.0, 0.0, 0.0],
     "att_filter_alpha": 1.0,
@@ -140,8 +140,8 @@ class TrajectoryController:
         self._last_att_t = None
         self._omega_filtered = np.zeros(3)
 
-        # Last-tick observability state (docs/main_plan.md "[C] Controller
-        # 内部値の可観測性強化"): the pre-clamp requested force/torque (what
+        # Last-tick observability state ("[C] Controller
+        # 内部値の可観測性強化" task): the pre-clamp requested force/torque (what
         # this controller *wanted*, before compute()/compute_attitude()'s
         # final clamp) and the raw P/D inputs, so a caller can tell "clamped"
         # apart from "the law itself asked for something small" and inspect
@@ -296,8 +296,8 @@ class TrajectoryController:
 
         # Requested torque BEFORE the clamp (max_torque=inf), so a caller can
         # tell "the P+D law wanted more than the clamp allows" apart from
-        # "the law itself asked for something small" (docs/main_plan.md "[C]
-        # Controller内部値の可観測性強化").
+        # "the law itself asked for something small" ("[C]
+        # Controller内部値の可観測性強化" task).
         self._last_torque_raw = attitude_error_to_torque(
             self.kp_att, self.kd_att, q_des, quat_now, self._omega_filtered,
             np.inf,

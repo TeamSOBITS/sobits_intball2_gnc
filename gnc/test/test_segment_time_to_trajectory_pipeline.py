@@ -1,7 +1,7 @@
 """Integration test: HeuristicSegmentTimeAllocator -> HermiteSplineTrajectoryGenerator
 -> Trajectory -> TrajectoryController.compute_attitude.
 
-Demonstrates the intended production call order (docs/main_plan.md Phase 2,
+Demonstrates the intended production call order (Phase 2,
 docs/min_snap_interface_contract.md 6 節):
 
     segment_times = allocator.allocate(waypoints)
@@ -15,7 +15,7 @@ guidance/trajectory_generation/) instead of a hand-rolled coefficient stub --
 swap in MinSnapTrajectoryGenerator once min_snap.py's core lands; no other
 line in this file should need to change.
 
-The ``q_des`` tests below close the Phase 3b gap noted in docs/main_plan.md:
+The ``q_des`` tests below close the Phase 3b gap:
 Hermite's ``generate()`` only produces position coefficients (by design --
 attitude is Trajectory's job via attitude_reference.compute_q_des), and until
 now nothing exercised that hand-off, nor fed the result into

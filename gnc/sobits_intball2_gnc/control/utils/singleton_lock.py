@@ -3,7 +3,7 @@
 
 Uses ``flock`` on a fixed lock file: it is kernel-held and process-scoped, so
 it is released automatically on process exit (normal or crash) with no stale
-lock file to clean up (docs/main_plan.md, control_node multi-launch incident).
+lock file to clean up (past control_node multi-launch incident).
 Not effective across separate machines/containers -- this project runs a
 single control_node per container, so that is out of scope.
 """

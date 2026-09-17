@@ -48,7 +48,7 @@ from sobits_intball2_gnc.control.utils.singleton_lock import (
 )
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
 
-# Phase 1 (docs/main_plan.md): manually step the hold target to the next
+# Phase 1: manually step the hold target to the next
 # checkpoint. A service (not a topic) so the caller gets an explicit
 # success/failure back -- False means the array was already on its last
 # checkpoint (or none was ever received), so the caller can tell "no-op"
@@ -164,8 +164,8 @@ class ControlNode(Node):
         )
 
         # Requested (pre-clamp/pre-allocation) wrench, for diagnosing
-        # saturation independent of the realized /ctl/duty (docs/main_plan.md
-        # "[C] Controller内部値の可観測性強化"). Meaningful in any mode
+        # saturation independent of the realized /ctl/duty
+        # ("[C] Controller内部値の可観測性強化" task). Meaningful in any mode
         # (mirrors last_force_corr/last_torque_corr in imu-only mode, where
         # both are always zero).
         self._wrench_pub = WrenchPublisher(self)
@@ -186,7 +186,7 @@ class ControlNode(Node):
             ),
         )
 
-        # Manual checkpoint advance (Phase 1, docs/main_plan.md): no prior
+        # Manual checkpoint advance (Phase 1): no prior
         # ROS interface called ControlNode.advance_checkpoint() at all.
         self._advance_srv = self.create_service(
             Trigger, ADVANCE_CHECKPOINT_SERVICE, self._on_advance_checkpoint
@@ -336,8 +336,7 @@ class ControlNode(Node):
             )
 
         # Phase 0 diagnosis: force/torque split by source, pre-combination, to
-        # see whether the TF correction and the IMU law cancel each other out
-        # (see docs/main_plan.md Phase 0).
+        # see whether the TF correction and the IMU law cancel each other out.
         f_imu = ", ".join("%.4f" % v for v in self._hover.last_force_imu)
         f_corr = ", ".join("%.4f" % v for v in self._hover.last_force_corr)
         t_imu = ", ".join("%.4f" % v for v in self._hover.last_torque_imu)
@@ -420,8 +419,8 @@ def main(args=None) -> None:
 
     # Refuse to start a second control_node in this container: a leftover
     # process silently fighting the new one over /ctl/duty caused a real
-    # incident (docs/main_plan.md, docs/trajectory_force_duration_investigation.md
-    # 6-1). Held for the whole process lifetime; released automatically on exit.
+    # incident (docs/trajectory_force_duration_investigation.md 6-1).
+    # Held for the whole process lifetime; released automatically on exit.
     try:
         lock_file = acquire_singleton_lock()  # noqa: F841
     except SingletonLockError as exc:

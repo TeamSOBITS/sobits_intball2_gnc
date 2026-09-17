@@ -183,8 +183,8 @@ def test_replan_updates_underlying_trajectory_global_total_duration():
 
 
 def test_last_replan_occurred_true_only_on_a_replanning_tick():
-    """A caller re-publishing an RViz preview on re-plan (docs/main_plan.md
-    [G] "再計画軌道のRVizプレビュー更新") needs to distinguish a tick that
+    """A caller re-publishing an RViz preview on re-plan
+    ([G] "再計画軌道のRVizプレビュー更新" task) needs to distinguish a tick that
     actually re-planned from one that didn't -- ``last_replan_occurred``
     must be True only on the former, and reset back to False by the very
     next sample() call even if that next call doesn't re-plan either."""
@@ -219,7 +219,7 @@ def test_replan_tracks_large_disturbance_before_latching():
     the very next re-plan tick just like ordinary drift would be -- p_now
     comes straight from pose_fn each time, so an instantaneous jump is
     indistinguishable to this class from smooth motion between two ticks
-    (docs/main_plan.md's outstanding "擬似衝突からの復帰再現" item)."""
+    (an outstanding "擬似衝突からの復帰再現" verification item)."""
     positions = iter([
         [1.0, 0.0, 0.0],   # tick 1: normal approach, 1.0m from P_TARGET=[2,0,0]
         [-3.0, 0.0, 0.0],  # tick 2: "collision" knock, 5.0m from target
@@ -246,7 +246,7 @@ def test_latched_fallback_does_not_recover_from_post_latch_disturbance():
     the rest of this goal. A collision that happens AFTER that point (e.g.
     bumped away right as it was arriving) is therefore invisible to this
     tracker and never triggers a corrective re-plan -- this is exactly the
-    gap docs/main_plan.md flags as unverified: in the post-latch window,
+    gap flagged as unverified: in the post-latch window,
     ReplanningTrajectoryTracker alone provides no protection against a
     pseudo-collision."""
     calls = {"n": 0}

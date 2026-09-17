@@ -47,9 +47,9 @@ from sobits_intball2_gnc.guidance.utils.velocity_estimator import VelocityEstima
 ACTION_NAME = "/gnc/move_to"
 TRAJECTORY_SPEED_PATH_TOPIC = "/gnc/trajectory_path_speed"
 TF_STARTUP_TIMEOUT = 5.0
-# Separate lock file from control_node's (docs/main_plan.md, "guidance_node
-# multi-launch" incident: a leftover process survived kill as a child and
-# answered /gnc/move_to alongside the new one, corrupting goal feedback).
+# Separate lock file from control_node's: a leftover process once survived
+# kill as a child and answered /gnc/move_to alongside the new one,
+# corrupting goal feedback.
 GUIDANCE_LOCK_PATH = "/tmp/intball2_guidance_node.lock"
 
 _GUIDANCE_PARAM_DEFAULTS = {

@@ -118,13 +118,13 @@ class HoverController:
         self._checkpoint_version_at_traj_start = None
         # Last-tick (force, torque) split by source, pre-combination -- for
         # Phase 0 diagnosis of whether the TF correction and the IMU law
-        # cancel each other out. See docs/main_plan.md Phase 0.
+        # cancel each other out.
         self._last_force_imu = [0.0, 0.0, 0.0]
         self._last_torque_imu = [0.0, 0.0, 0.0]
         self._last_force_corr = [0.0, 0.0, 0.0]
         self._last_torque_corr = [0.0, 0.0, 0.0]
-        # Requested (pre-clamp) force/torque, for /ctl/wrench (docs/
-        # main_plan.md "[C] Controller内部値の可観測性強化"): mirrors
+        # Requested (pre-clamp) force/torque, for /ctl/wrench
+        # ("[C] Controller内部値の可観測性強化" task): mirrors
         # last_force_corr/last_torque_corr while trajectory following is
         # active (sourced from TrajectoryController's own pre-clamp state),
         # and falls back to the already-clamped corrector value otherwise

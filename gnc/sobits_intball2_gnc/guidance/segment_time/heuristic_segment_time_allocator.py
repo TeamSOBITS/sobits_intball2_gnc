@@ -6,8 +6,7 @@ threshold (see :mod:`base_segment_time_allocator`). Allocates ``distance /
 target_speed`` per segment, then adds extra time around interior waypoints in
 proportion to the deviation angle between the incoming and outgoing segment
 directions (split evenly between the two adjacent segments) -- a sharper turn
-gets more time. This directly targets the mechanism documented in
-``docs/main_plan.md`` Phase 3b and
+gets more time. This directly targets the mechanism documented in Phase 3b and
 ``docs/archive/achieved/trajectory_force_duration_investigation.md``: required
 peak angular acceleration (and thus torque) scales as ``1/T**2``, so a sharp
 corner that would otherwise saturate the attitude torque budget can instead be
