@@ -7,8 +7,8 @@ Scenario: solve once (cold start) for the full P0->P1 rest-to-rest leg, same
 as experiment_fan_thrust_box_nlp.py. Then simulate a mid-flight disturbance
 -- at some node along that solution, perturb the velocity sideways (a
 lateral/v_perp error, the same failure mode that stalls the current
-HeuristicSegmentTimeAllocator, see main_plan.md "[G] replanningモードでの
-segment_time_infeasible時の大きなオーバーシュート") and re-solve a fresh
+HeuristicSegmentTimeAllocator, see "[G] replanningモードでの
+segment_time_infeasible時の大きなオーバーシュート" task) and re-solve a fresh
 min-time problem from that perturbed state to P1. Compare cold-start vs.
 warm-start (previous solution's tail, reused as the initial guess) solve
 time for this re-plan.

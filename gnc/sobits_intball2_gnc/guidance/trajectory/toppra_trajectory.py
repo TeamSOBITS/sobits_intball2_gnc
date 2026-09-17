@@ -38,7 +38,7 @@ design rationale and the open questions this implementation resolves:
   regime (that doc's "回転ベクトルを独立joint座標として扱うことの妥当性"
   section). Large single-turn reorientations (up to ~144 deg between
   consecutive waypoints) have since been sim-validated with no overshoot
-  or convergence issue (``docs/main_plan.md`` "90°超waypointでの分離型機動",
+  or convergence issue ("90°超waypointでの分離型機動" task,
   ``docs/archive/achieved/2026-08-28_toppra_static_path_attitude_overshoot_incident.md``
   "その11") -- this approximation is not the limiting factor it was
   originally thought to be.

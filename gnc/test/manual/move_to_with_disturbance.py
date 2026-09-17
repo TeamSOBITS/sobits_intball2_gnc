@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """move_to a named location while injecting one real physical disturbance
-mid-flight, to verify docs/main_plan.md's outstanding "擬似衝突からの復帰"
+mid-flight, to verify an outstanding "擬似衝突からの復帰"
 item: does trajectory_tracking_mode="replanning" actually recover from a
 disturbance, not just from an undisturbed/monotonic approach (the only kind
 exercised by test_execute_replanning_mode_reaches_target's fake TF)?

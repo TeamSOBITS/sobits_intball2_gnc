@@ -6,7 +6,7 @@ Holds the per-segment polynomial coefficients produced by a
 implementation (see ``docs/minimum_snap/min_snap_interface_contract.md`` for
 the exact data layout, originally written for min-snap but shared by every
 generator) and exposes ``sample(t) -> (p, v, a, q_des)`` for a control-layer
-consumer (Phase 3a/3b in ``docs/main_plan.md``). ``q_des`` is computed
+consumer (Phase 3a/3b). ``q_des`` is computed
 internally via :mod:`sobits_intball2_gnc.guidance.utils.attitude_reference`.
 
 ``sample(t)`` converts the global time ``t`` into a segment index and a

@@ -2,8 +2,7 @@
 """Minimum-snap trajectory generator (ROS-agnostic, pure) -- skeleton, not implemented.
 
 Theory: Mellinger & Kumar (2011), "Minimum snap trajectory generation and
-control for quadrotors". See docs/main_plan.md Phase 2 for design notes and
-reference links.
+control for quadrotors" (Phase 2 design notes).
 
 **2026-08-24 decision**: the core KKT solve (Mellinger & Kumar 2011's
 minimum-snap QP) will not be implemented for now. This file is kept as a

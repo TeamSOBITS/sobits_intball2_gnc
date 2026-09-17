@@ -168,8 +168,8 @@ class GuidanceExecutor:
         # thread than this class's own execute()/`_run_trajectory` loop --
         # never call it from inside a tight/latency-sensitive path without
         # accounting for that. Accepted here but not yet consumed: this is
-        # only the DI plumbing for the next task in docs/main_plan.md
-        # (passing v_now into HeuristicSegmentTimeAllocator).
+        # only the DI plumbing for the next task (passing v_now into
+        # HeuristicSegmentTimeAllocator).
         self._velocity_fn = velocity_fn
         self._dt = 1.0 / float(rate)
         # q_des rate limit (docs/archive/achieved/
@@ -724,7 +724,7 @@ class GuidanceExecutor:
         # in-tolerance sample isn't enough evidence of settling).
         in_pos_tolerance_since = None
         # Whether this tracker's fallback latch has already been logged
-        # (docs/main_plan.md "[C] Controller内部値の可観測性強化"):
+        # ("[C] Controller内部値の可観測性強化" task):
         # last_fallback_reason stays populated after the tick it trips on
         # (module docstring), so without this guard the same event would
         # otherwise appear to still be "happening" every remaining tick.

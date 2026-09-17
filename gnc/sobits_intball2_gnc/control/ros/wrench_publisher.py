@@ -5,8 +5,8 @@ ROS I/O wrapper (does not subclass Node): attaches a ``/ctl/wrench`` publisher
 to the node passed in and turns a body-frame (force, torque) pair into a
 ``geometry_msgs/WrenchStamped``. This publishes the *requested* wrench (the
 pre-allocation, pre-clamp value ``HoverController.last_force_raw``/
-``last_torque_raw`` -- see docs/main_plan.md "[C] Controller内部値の可観測性
-強化"), not the realized one: the realized per-fan output is already
+``last_torque_raw`` -- see the "[C] Controller内部値の可観測性
+強化" task), not the realized one: the realized per-fan output is already
 observable via ``/ctl/duty``, but nothing published the requested wrench
 itself before this, which delayed root-causing a replanning attitude
 degradation (docs/archive/achieved/

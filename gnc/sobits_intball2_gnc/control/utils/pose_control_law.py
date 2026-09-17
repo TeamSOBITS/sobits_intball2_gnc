@@ -3,7 +3,7 @@
 
 Extracted out of :class:`PoseCorrector` so the same error-to-wrench math can
 be reused by a future moving-target controller (e.g. Phase 3a/3b's
-trajectory controller, see ``docs/main_plan.md``) without duplicating it.
+trajectory controller) without duplicating it.
 This module only computes wrenches from poses/velocities already expressed
 in a common reference frame -- it knows nothing about TF, liveness, or how a
 target is chosen (that responsibility stays with the caller, e.g.

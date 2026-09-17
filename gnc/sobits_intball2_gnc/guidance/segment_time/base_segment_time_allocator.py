@@ -6,9 +6,9 @@ array (``segment_times``) that a trajectory generator's ``generate(waypoints,
 segment_times)`` expects (see
 :mod:`sobits_intball2_gnc.guidance.trajectory_generation.base_trajectory_generator`).
 Kept as a separate stage from coefficient generation itself so the allocation
-policy can be swapped independently (``docs/main_plan.md`` Phase 3b's
-torque-budget problem is expected to be addressed here, by giving sharp turns
-more time, rather than by re-deriving control gains).
+policy can be swapped independently (Phase 3b's torque-budget problem is
+expected to be addressed here, by giving sharp turns more time, rather than
+by re-deriving control gains).
 
 Package-ized per ``docs/architecture_guidelines.md`` 2 節: a distance/curvature
 heuristic and Mellinger & Kumar (2011) V-C's gradient-descent "optimal segment

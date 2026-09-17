@@ -32,8 +32,8 @@ FORWARD = (1.0, 0.0, 0.0)
 REPLAN_BUDGET_S = 0.1
 N_REPEATS = 5
 
-# Sharp 3-waypoint turn, same shape as main_plan.md's validated 143.99deg
-# hairpin case (docs/main_plan.md "90°超waypointでの分離型機動").
+# Sharp 3-waypoint turn, same shape as the validated 143.99deg
+# hairpin case ("90°超waypointでの分離型機動" task).
 WAYPOINTS = [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 2.8, 0.0]]
 
 

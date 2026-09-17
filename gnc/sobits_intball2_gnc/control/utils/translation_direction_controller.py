@@ -8,7 +8,7 @@ wrench (no torque) and (when driven) allocates it to the 8 fans via an injected
 Named ``TranslationDirectionController`` (not ``DirectionController``) because
 this is deliberately narrow: only translation, no attitude/rotation command,
 no speed scaling, no deadman/safety handling. A future teleoperation
-orchestrator (docs/main_plan.md's teleope section) would need those on top of
+orchestrator would need those on top of
 this; this class is only the "direction vector -> clamped force" building
 block, one of two for the future free-path flight program (the other being
 the IMU hover controller). The numeric core ``direction_to_force`` is a pure
