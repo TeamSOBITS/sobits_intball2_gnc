@@ -42,6 +42,9 @@ from sobits_intball2_gnc.guidance.align.attitude_aligner import AttitudeAligner
 from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_trajectory_tracker import (
     ReplanningTrajectoryTracker,
 )
+from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v2_tracker import (
+    ReplanningMincoV2Tracker,
+)
 from sobits_intball2_gnc.guidance.trajectory_tracking.static_trajectory_tracker import (
     StaticTrajectoryTracker,
 )
@@ -60,7 +63,8 @@ from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import (
 from sobits_intball2_gnc.guidance.trajectory.trajectory import Trajectory
 
 TRAJECTORY_TRACKING_MODES = frozenset(
-    {"static", "replanning", "replanning_minco", "static_minco"}
+    {"static", "replanning", "replanning_minco", "static_minco",
+     "replanning_minco_v2"}
 )
 
 STATUS_SUCCESS = "success"
@@ -363,6 +367,19 @@ class GuidanceExecutor:
         2026-08-30_minco_replanning_blocking_latency_incident.md``). Falls
         back to the Hermite static path (not TOPP-RA) if the MINCO solve is
         infeasible.
+
+        ``"replanning_minco_v2"`` is a separate, newer design (``docs/
+        2026-09-01_replanning_minco_v4_production_port_plan.md`` Phase 4):
+        a global/local 2-layer tracker (:class:`~sobits_intball2_gnc.
+        guidance.trajectory_tracking.replanning_minco_v2_tracker.
+        ReplanningMincoV2Tracker`) with its own model-based (MODEL_KF)
+        velocity/angular-velocity estimator, replacing ``velocity_fn``
+        entirely for this mode (only ``max_accel`` is required, not
+        ``velocity_fn``). **Experimental -- offline-verified only, not yet
+        sim-validated** (unlike ``"replanning_minco"``, which at least has
+        prior sim runs even though they surfaced problems). Falls back to
+        ``"static"`` if ``max_accel`` was not configured or the initial
+        global solve is infeasible, same shape as ``"replanning_minco"``.
         """
         pose = self._tf.get_pose()
         if pose is None:
@@ -475,6 +492,56 @@ class GuidanceExecutor:
                 "back to 'static'" % mode
             )
             mode = "static"
+        if mode == "replanning_minco_v2" and self._max_accel is None:
+            # velocity_fn is NOT required here -- ReplanningMincoV2Tracker
+            # has its own MODEL_KF estimator (module docstring).
+            self._log.warn(
+                "[GuidanceExecutor] trajectory_tracking_mode='replanning_minco_v2' "
+                "requires max_accel to be configured -- falling back to 'static'"
+            )
+            mode = "static"
+
+        traj = None
+        v2_tracker = None
+        if mode == "replanning_minco_v2":
+            # Builds its own trajectory internally (module docstring) --
+            # does not go through the shared `traj`-building machinery
+            # below at all. `traj` is still set to its initial global
+            # MincoTrajectory afterwards so `if traj is None:` (Hermite
+            # fallback) and `_publish_speed_path_preview` (isinstance
+            # check) both work unchanged.
+            #
+            # This must run BEFORE toppra_ready is evaluated below: on
+            # infeasibility it downgrades `mode` to "static", and
+            # toppra_ready's `mode == "static"` check needs to see that
+            # downgraded value -- otherwise a v2 fallback silently skips
+            # TOPP-RA and lands on the envelope-unaware legacy Hermite path
+            # (docs/2026-09-18_replanning_minco_v2_zeno_route_rediagnosis_toppra_ready_bug.md).
+            try:
+                v2_tracker = ReplanningMincoV2Tracker(
+                    p0, p_target, pose_fn=self._tf.get_pose,
+                    tf_fresh_fn=self._tf_pose_fresh, q0=q0,
+                    target_speed=self._target_speed, max_accel=self._max_accel,
+                    route_waypoints=via_waypoints,
+                    distance_fallback_m=self._distance_fallback_m,
+                    via_half_width=minco_via_half_width,
+                    wrench_safety_margin=minco_wrench_safety_margin,
+                    attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
+                )
+                traj = v2_tracker.trajectory
+                self._log.info(
+                    "[GuidanceExecutor] initial replanning_minco_v2 global "
+                    "solve took %.2fs (%d waypoints)"
+                    % (traj.solve_wall_seconds, traj.num_waypoints)
+                )
+            except MincoInfeasibleError as exc:
+                self._log.warn(
+                    "[GuidanceExecutor] initial replanning_minco_v2 global "
+                    "trajectory infeasible (%s) -- falling back to 'static'" % exc
+                )
+                v2_tracker = None
+                traj = None
+                mode = "static"
 
         # static mode tries the force/torque-aware TOPP-RA path first (docs/
         # 2026-08-28_constrained_trajectory_generation_research.md); "replanning"
@@ -482,7 +549,6 @@ class GuidanceExecutor:
         # path-tangent speed, which cannot express v0's perpendicular-to-path
         # residual that ReplanningTrajectoryTracker's exact bound handles --
         # see that doc's "trajectory_tracking_mode="replanning"との統合" 節).
-        traj = None
         toppra_ready = (
             mode == "static"
             and self._wrench_envelope is not None
@@ -619,6 +685,8 @@ class GuidanceExecutor:
                 minco_attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
                 minco_wrench_safety_margin=minco_wrench_safety_margin,
             )
+        elif mode == "replanning_minco_v2":
+            tracker = v2_tracker  # already constructed above
         else:
             tracker = StaticTrajectoryTracker(traj)
 
@@ -739,7 +807,9 @@ class GuidanceExecutor:
             if getattr(tracker, "last_replan_occurred", False):
                 self._log.info(
                     "[GuidanceExecutor] replanning: re-planned trajectory at "
-                    "t=%.2fs" % sample_t
+                    "t=%.2fs (solve=%.3fs)"
+                    % (sample_t, getattr(tracker, "last_replan_solve_seconds", None)
+                       or float("nan"))
                 )
                 if self._speed_path_pub is not None:
                     self._publish_speed_path_preview(tracker.trajectory)
