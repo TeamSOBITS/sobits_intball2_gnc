@@ -115,7 +115,6 @@ class GuidanceExecutor:
                  align_pos_tolerance_m=0.05, align_pos_settle_time=0.5,
                  align_pos_timeout=10.0, tf_staleness_timeout=1.0,
                  velocity_fn=None, max_angular_rate=None,
-                 distance_fallback_m=0.3, replan_rate_hz=10.0,
                  align_angular_speed_deg=None, align_angular_accel_deg=None,
                  align_traj_publish_rate_hz=20.0,
                  wrench_envelope=None, mass=None, inertia=None):
@@ -183,16 +182,6 @@ class GuidanceExecutor:
         self._max_angular_rate = (
             None if max_angular_rate is None else float(max_angular_rate)
         )
-        # Re-planning fallback threshold/cadence (docs/archive/achieved/
-        # 2026-08-24_replanning_distance_fallback_decision.md,
-        # 2026-08-24_replan_rate_design.md) -- only consumed when
-        # execute()'s trajectory_tracking_mode == "replanning".
-        self._distance_fallback_m = float(distance_fallback_m)
-        # Re-plan every Nth _run_trajectory tick (currently `rate`, e.g.
-        # 50Hz) rather than a separate rclpy timer/thread -- counter-based,
-        # per the replan-rate decision doc's rationale (no new cross-thread
-        # state beyond what VelocityEstimator already introduces).
-        self._replan_every_n_ticks = max(1, round(float(rate) / float(replan_rate_hz)))
         self._camera_forward_axis = dict(
             camera_forward_axis or DEFAULT_CAMERA_FORWARD_AXIS
         )

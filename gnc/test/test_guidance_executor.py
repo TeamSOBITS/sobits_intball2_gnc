@@ -756,7 +756,7 @@ def test_execute_replanning_minco_v3_mode_reaches_target():
         tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05),
         logger, target_speed=1.0, max_accel=0.02,
         align_pos_tolerance_m=0.05, align_pos_settle_time=1.5, align_pos_timeout=8.0,
-        velocity_fn=None, distance_fallback_m=0.3, replan_rate_hz=5.0,
+        velocity_fn=None,
     )
     status = executor.execute(
         [2.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
@@ -786,7 +786,7 @@ def test_execute_replanning_minco_v3_mode_terminates_with_steady_state_offset():
         tf, setpoint_pub, FakeCheckpointPublisher(), clock_seconds_fn, spin_fn,
         logger, target_speed=1.0, max_accel=0.02,
         align_pos_tolerance_m=0.05, align_pos_settle_time=1.5, align_pos_timeout=8.0,
-        velocity_fn=None, distance_fallback_m=0.3, replan_rate_hz=5.0,
+        velocity_fn=None,
         local_speed_path_publisher=local_speed_path_pub,
     )
     status = executor.execute(
