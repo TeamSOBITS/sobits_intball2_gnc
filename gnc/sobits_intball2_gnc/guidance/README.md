@@ -5,9 +5,11 @@ waypoint列から、時間の関数としての滑らかな目標軌道（位置
 ## 目次
 
 - [構成](#構成)
-- [`guidance.py`（GuidanceNode）の使い方](#guidance-node-usage)
+- [move_toの使い方](#guidance-node-usage)
+- [よく使う設定](#common-settings)
+- [実行の流れ](#execution-flow)
 - [トピック・アクション・サービス](#topics-actions-services)
-- [パラメータ](#parameters)
+- [パラメータ一覧（参照用）](#parameters)
 
 <a id="構成"></a>
 ## 構成
@@ -61,33 +63,37 @@ guidance/
 [↑ 目次に戻る](#目次)
 
 <a id="guidance-node-usage"></a>
-## `guidance.py`（GuidanceNode）の使い方
+## move_toの使い方
 
-`/gnc/move_to`（`ib2_msgs/action/CtlCommand`）を提供する唯一のROSノードです。Control側（`control_node`）が別途起動済みで、`/tf`（`iss_body <- body`）が生きていることが前提です。
+`/gnc/move_to`（`ib2_msgs/action/CtlCommand`）で、機体を目標の位置・姿勢へ動かします。
 
-### 起動
+### 1. 起動
+
+3つを別々に起動します。起動前に`ros2 node list`で、既に動いているノードがないか確認してください（多重起動すると機体が暴れます）。
 
 ```sh
 export ROS_DOMAIN_ID=54   # 環境に合わせて設定
 source /root/colcon_ws/install/setup.bash
-ros2 run sobits_intball2_gnc guidance --ros-args --params-file \
-  /root/colcon_ws/src/sobits_intball2_gnc/gnc/config/gnc_params.yaml
+PARAMS=/root/colcon_ws/src/sobits_intball2_gnc/gnc/config/gnc_params.yaml
+
+ros2 launch sobits_intball2_gnc gnc_bringup.launch.py        # TF・機体モデル・RViz・名前付き地点のTF配信
+ros2 launch sobits_intball2_gnc hover_control.launch.py      # control_node（gnc_params.yamlを読む）
+ros2 run sobits_intball2_gnc guidance --ros-args --params-file $PARAMS -p use_sim_time:=true
 ```
 
-パラメータは`config/gnc_params.yaml`の`guidance`セクションと、Control側と共有する`tf_correction.reference_frame`/`target_frame`・`trajectory_controller.max_force`/`mass`（区間時間配分が機体の加速度能力を超えないようにするため、Control側と同じ値を使う）から読む。詳細は次節参照。
+`guidance`は上の2つのlaunchのどちらにも含まれません。`--params-file`を付けずに起動すると、コード内の既定値で動きます（`trajectory_controller.mass`が4.5になるなど、`gnc_params.yaml`と違う値になる）。
 
+### 2. goalを送る
 
-### goalを送る（`move_to_client` CLI、手動検証用）
-
-`navigation/`パッケージがTF配信する名前付き地点（`maps/iss_location.yaml`、例: `near_dock`・`above_dock_2`・`nav_entry`）を指定するだけで、その位置・姿勢をgoalとして送信できる:
+名前付き地点（`maps/iss_location.yaml`のTFフレーム名、例: `nav_entry`・`inspection_entry_1`・`above_dock_2`）を指定します。
 
 ```sh
-ros2 run sobits_intball2_gnc move_to_client near_dock
+ros2 run sobits_intball2_gnc move_to_client nav_entry
 ```
 
-内部で`iss_body <- near_dock`をTFで解決し、`/gnc/move_to`へgoal送信して完了までfeedback（`time_to_go`・`pose_to_go`）をログ表示する。**注意**: `pose_to_go`は計画軌道（open-loop）の残差であり実TF追従の証明にはならない。実際に到達したかは`ros2 run tf2_ros tf2_echo iss_body body`で直接確認すること（詳細: `docs/archive/achieved/2026-08-20_main_plan_completed_phases.md`のGuidanceノード統合の項）。
+その地点の位置・姿勢をTFで解決してgoalを送り、完了まで`time_to_go`・`pose_to_go`を表示します。`pose_to_go`は計画上の残りで、実際に着いたかどうかは分かりません（次の「3. 結果を確かめる」で確認します）。
 
-### goalを送る（標準の`ros2 action` CLI、任意の座標へ）
+任意の座標へ送る場合は標準の`ros2 action`を使います:
 
 ```sh
 ros2 action send_goal /gnc/move_to ib2_msgs/action/CtlCommand \
@@ -97,15 +103,57 @@ ros2 action send_goal /gnc/move_to ib2_msgs/action/CtlCommand \
     type: {type: 40}}" --feedback
 ```
 
-`--feedback`を付けたまま`Ctrl-C`（`SIGINT`）を送ると、標準のaction cancelリクエストが送信され、`GuidanceExecutor`が該当ループの次tickで中断する。中断後、Control側は`trajectory_controller.timeout`（既定0.2秒）後にその場（当時の平滑化された現在位置）でのcheckpoint holdへ自動フォールバックする（ファンは止まらない）。中断直後に新しいgoalを送っても正常に受理される。
+`--feedback`付きで`Ctrl-C`するとgoalがキャンセルされます。Control側は`trajectory_controller.timeout`（既定0.2秒）後にその場で静止保持に切り替わります（ファンは止まりません）。
 
-### 実行の流れ（`GuidanceExecutor.execute()`）
+### 3. 結果を確かめる
 
-1. 現在姿勢と経路初期進行方向のズレが大きい場合、事前整列（`/gnc/checkpoints`で静止保持、最大`align_timeout`秒）
-2. `HeuristicSegmentTimeAllocator`→`HermiteSplineTrajectoryGenerator`→`Trajectory`で生成した軌道を`/gnc/trajectory_setpoint`へ追従再生。計画所要時間が経過しても、実TF位置の誤差が`align_pos_tolerance_m`以下に`align_pos_settle_time`秒連続して収まるまで（最大`align_pos_timeout`秒）は次段へ進まない（`docs/archive/achieved/2026-08-24_align_at_arrival_position_based.md`）
-3. 到着後、目標姿勢とのズレが大きければ整列（同じく`/gnc/checkpoints`、最大`align_timeout`秒）
+```sh
+python3 gnc/test/manual/get_pose.py                          # 今の位置・姿勢（iss_body <- body）
+python3 gnc/test/manual/move_to_full_analysis.py nav_entry   # goalを送り、追従誤差・duty飽和・wrenchをまとめて表示
+```
 
-現状`face_travel=True`・`face_travel_camera="main"`・`align_at_arrival=True`固定（`CtlCommand.action`にオプションを渡すフィールドが無いため、インターフェース拡張待ち）。
+`move_to_full_analysis.py`は`move_to_client`の代わりにgoalを送り、走行中の記録からレポートとCSVを出します（詳細: `gnc/test/manual/README.md`）。
+
+[↑ 目次に戻る](#目次)
+
+<a id="common-settings"></a>
+## よく使う設定
+
+どれも`ros2 param set /guidance_node <名前> <値>`で変更でき、次に送るgoalから効きます（走行中のgoalには効きません）。
+
+| やりたいこと | パラメータ | 値 |
+|---|---|---|
+| 追従の方式を選ぶ | `guidance.trajectory_tracking_mode` | `static`（既定、一度だけ計画した軌道を追従）/ `static_minco` / `replanning_minco_v3`（1秒ごとに再計画） |
+| 経由点を通る | `guidance.via_waypoints` | 地点名の配列、例: `"['nav_entry']"`。**使い終わったら`"['']"`に戻す**（残すと以降の全goalが経由する） |
+| 進行方向を向いて移動する | `guidance.attitude_reference_mode` | `face_travel`（既定）/ `fixed` |
+| 同上（`replanning_minco_v3`のとき） | `guidance.minco_v3_face_travel`、`guidance.minco_planning_horizon_m` | `true`と`4.0`を両方設定する（既定は`false`で姿勢固定。先読みが2mのままだと角を曲がりきれない） |
+| 出発前・到着時の姿勢合わせ | `guidance.pre_align`、`guidance.align_at_arrival` | `true`（既定）/ `false` |
+
+例: `replanning_minco_v3`で進行方向を向き、`nav_entry`を経由して`inspection_entry_1`へ行く
+
+```sh
+ros2 param set /guidance_node guidance.trajectory_tracking_mode replanning_minco_v3
+ros2 param set /guidance_node guidance.minco_v3_face_travel true
+ros2 param set /guidance_node guidance.minco_planning_horizon_m 4.0
+ros2 param set /guidance_node guidance.via_waypoints "['nav_entry']"
+ros2 run sobits_intball2_gnc move_to_client inspection_entry_1
+ros2 param set /guidance_node guidance.via_waypoints "['']"
+```
+
+[↑ 目次に戻る](#目次)
+
+<a id="execution-flow"></a>
+## 実行の流れ（`GuidanceExecutor.execute()`）
+
+1. **出発前の姿勢合わせ**（`pre_align`、`attitude_reference_mode=face_travel`のとき）: 最初の進行方向へ向きを合わせる。`/gnc/checkpoints`で静止保持、最大`align_timeout`秒
+2. **軌道の追従**: `/gnc/trajectory_setpoint`へ参照を出す。方式は`trajectory_tracking_mode`で決まる
+   - `static`: 力・トルクの制約付きで一度だけ計画した軌道（TOPP-RA、使えない場合はHermiteスプライン）
+   - `static_minco`: MINCOで一度だけ計画した軌道
+   - `replanning_minco_v3`: ゴールまでのglobal軌道を一度だけ作り、そこから先読み距離先までのlocal軌道を1秒ごとに作り直す（EGO-Planner v2と同じ構成）
+   - 計画時間が過ぎても、位置誤差が`align_pos_tolerance_m`以下に`align_pos_settle_time`秒続くまで待つ（最大`align_pos_timeout`秒）
+3. **到着時の姿勢合わせ**（`align_at_arrival`）: 目標姿勢へ合わせる。`/gnc/checkpoints`で静止保持、最大`align_timeout`秒
+
+`CtlCommand.action`にはオプションを渡すフィールドが無いため、goalごとの設定はすべてROSパラメータで渡す。
 
 [↑ 目次に戻る](#目次)
 
@@ -124,7 +172,8 @@ ros2 action send_goal /gnc/move_to ib2_msgs/action/CtlCommand \
 |---|---|---|
 | `/gnc/trajectory_setpoint` | `trajectory_msgs/MultiDOFJointTrajectory` | 軌道追従の目標位置・速度・加速度（Control側が購読） |
 | `/gnc/checkpoints` | `geometry_msgs/PoseArray` | 事前整列・到着時整列での静止保持目標（Control側が購読） |
-| `/gnc/trajectory_path_speed` | `visualization_msgs/Marker` | 速度で色分けしたLINE_STRIPのRViz可視化（表示のみ、制御には無関係） |
+| `/gnc/trajectory_path_speed` | `visualization_msgs/Marker` | 速度で色分けした軌道のRViz表示（表示のみ、制御には無関係） |
+| `/gnc/trajectory_path_speed_local` | `visualization_msgs/Marker` | `replanning_minco_v3`のlocal軌道のRViz表示（表示のみ） |
 
 ### アクション
 
@@ -132,59 +181,89 @@ ros2 action send_goal /gnc/move_to ib2_msgs/action/CtlCommand \
 |---|---|---|
 | `/gnc/move_to` | `ib2_msgs/action/CtlCommand` | 目標姿勢へのgoal駆動move-to（`GuidanceExecutor`が実行） |
 
-`path_publisher`（`/gnc/trajectory_path`、`nav_msgs/Path`）は`console_scripts`登録済みの単体デバッグ用ラッパのみで、`guidance_node`本体からは配線されていない（実際に使われているのは`speed_path_publisher`）。
+`path_publisher`（`/gnc/trajectory_path`、`nav_msgs/Path`）は`console_scripts`登録済みの単体デバッグ用ラッパのみで、`guidance_node`本体からは配線されていない。
 
 [↑ 目次に戻る](#目次)
 
 <a id="parameters"></a>
-## パラメータ
+## パラメータ一覧（参照用）
 
-分類の考え方（固定/動的）の詳細は[docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md](../../../docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md)を参照。
+普段は[よく使う設定](#common-settings)だけで足ります。分類の考え方（固定/動的）の詳細は[docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md](../../../docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md)を参照。
 
-### 固定パラメータ（起動時のみ、実行中は変更不可）
+### goalごとの設定（`ros2 param set`で変更、次のgoalから有効）
 
 | パラメータ名 | 役割 | デフォルト値 |
 |---|---|---|
-| `guidance.target_speed` | 巡航速度（区間時間配分用）[m/s] | `0.5` |
-| `guidance.attitude_speed_threshold` | 進行方向姿勢参照を更新する速度の下限 [m/s] | `0.02` |
-| `guidance.rate` | `/gnc/trajectory_setpoint`発行レート [Hz] | `50.0` |
+| `guidance.trajectory_tracking_mode` | 軌道追従方式（`static` / `static_minco` / `replanning_minco_v3`、[実行の流れ](#execution-flow)参照） | `static` |
+| `guidance.via_waypoints` | 経由点のTFフレーム名の配列（順に経由）。`['']`で経由なし | `['']` |
+| `guidance.attitude_reference_mode` | 移動中の姿勢参照（`fixed`/`face_travel`/`look_at`）。`look_at`は未実装で`face_travel`にフォールバック（警告ログ） | `face_travel` |
+| `guidance.face_travel_camera` | `face_travel`で進行方向に向けるカメラ軸（`main`/`stereo`） | `main` |
+| `guidance.look_at_target_frame` | `look_at`（未実装）で見る対象のTFフレーム名 | `""` |
+| `guidance.pre_align` | 出発前の姿勢合わせを行うか（`face_travel`のときのみ効く） | `true` |
+| `guidance.align_at_arrival` | 到着後に姿勢合わせを行うか | `true` |
+| `guidance.align_at_arrival_camera` | 到着後どのカメラ軸を基準に合わせるか。`main`はgoalの姿勢そのまま、他のカメラは「goalの姿勢でメインカメラが見ていた方向」をそのカメラで向く（`compute_camera_relative_quat`） | `main` |
+
+### MINCO（`static_minco`・`replanning_minco_v3`）
+
+| パラメータ名 | 役割 | デフォルト値 |
+|---|---|---|
+| `guidance.minco_via_half_width` | 経由点・分割点を±この幅[m]の箱の中で動かせる。`0.0`で厳密に通過 | `0.0` |
+| `guidance.minco_attitude_resample_spacing_m` | 経路をこの間隔[m]で分割して姿勢の経由点を置く。`0.0`で分割しない | `0.3` |
+| `guidance.minco_freetime` | `replanning_minco_v3`のglobalを、区間時間も最適化する方式（`plan_minco`）で解く。`false`は`target_speed`・加速度上限から区間時間を決める方式 | `false` |
+| `guidance.minco_local_replan_period` | `replanning_minco_v3`のlocal再計画周期[s] | `1.0` |
+| `guidance.minco_planning_horizon_m` | `replanning_minco_v3`のlocalの先読み距離[m]（global上で直線距離がこの値以上になる最初の点を目標にする） | `2.0` |
+| `guidance.minco_v3_face_travel` | `replanning_minco_v3`で進行方向を向く（`attitude_reference_mode=face_travel`も必要）。localを2回solveし、wrenchを機体座標で評価する。先読みは`4.0`程度にする | `false` |
+| `guidance.minco_local_max_vel` | `minco_v3_face_travel`のときのlocalの速度上限[m/s] | `0.2` |
+
+### 姿勢合わせ・到着判定
+
+| パラメータ名 | 役割 | デフォルト値 |
+|---|---|---|
+| `guidance.align_tolerance_deg` | 姿勢合わせの収束判定角度[deg] | `3.0` |
+| `guidance.align_settle_time` | 角度が閾値内に連続してこの時間続いたら収束とみなす[s] | `0.5` |
+| `guidance.align_timeout` | 姿勢合わせの打ち切り時間[s] | `60.0` |
+| `guidance.align_pos_tolerance_m` | 軌道追従の到着判定の位置誤差許容値[m] | `0.05` |
+| `guidance.align_pos_settle_time` | 位置誤差が許容値内に連続して留まるべき時間[s] | `0.5` |
+| `guidance.align_pos_timeout` | 位置収束待ちの打ち切り時間[s]（超えると警告ログを出して進む） | `10.0` |
+
+### その他（実行中に変更可能）
+
+| パラメータ名 | 役割 | デフォルト値 |
+|---|---|---|
+| `guidance.tf_staleness_timeout` | TFのstampがこの時間[s]止まったらTF断とみなす（simクロック基準） | `1.0` |
+| `guidance.velocity_estimate_alpha` | Guidance側TF速度推定のEMA係数（1.0で無フィルタ） | `0.3` |
+
+### 起動時のみ（実行中に変えても反映されない）
+
+| パラメータ名 | 役割 | デフォルト値 |
+|---|---|---|
+| `guidance.target_speed` | 巡航速度[m/s]（区間時間配分、`replanning_minco_v3`のglobal） | `0.5` |
+| `guidance.attitude_speed_threshold` | 進行方向の姿勢参照を更新する速度の下限[m/s] | `0.02` |
+| `guidance.rate` | `/gnc/trajectory_setpoint`発行レート[Hz] | `50.0` |
+| `guidance.velocity_estimate_rate` | Guidance側TF速度推定の更新レート[Hz] | `10.0` |
+| `guidance.max_angular_rate_deg` | `q_des`のレート制限[deg/s]（未チューニング） | `90.0` |
+| `guidance.align_angular_speed_deg` | 姿勢合わせランプの巡航角速度[deg/s] | `15.0` |
+| `guidance.align_angular_accel_deg` | 姿勢合わせランプの角加速度[deg/s^2]（control_nodeのゲインを変えたら手で再計算） | `2.4` |
+| `guidance.align_traj_publish_rate_hz` | 姿勢合わせランプの中間目標のpublishレート[Hz] | `20.0` |
+| `guidance.wrench_envelope_safety_margin` | 達成可能なwrenchの範囲をこの係数で縮め、フィードバックの余力を残す（全モード共通） | `0.7` |
 | `guidance.camera_forward_axis.main` | メインカメラの前方軸（機体座標系） | `[1.0, 0.0, 0.0]` |
 | `guidance.camera_forward_axis.stereo` | ステレオカメラの前方軸（機体座標系） | `[0.0, 1.0, 0.0]` |
-| `tf_correction.reference_frame` | 自己位置の親フレーム（Control側と共有） | `iss_body` |
-| `tf_correction.target_frame` | 機体フレーム（Control側と共有） | `body` |
-| `trajectory_controller.max_force` | 区間時間配分の加速度上限算出に使う力 [N]（Control側と共有、軸別ベクトル。加速度上限は最も厳しい軸=min値を採用） | `[0.181, 0.0996, 0.122]` |
-| `trajectory_controller.mass` | 区間時間配分の加速度上限算出に使う質量 [kg]（Control側と共有） | `3.216` |
-| `guidance.wrench_envelope_safety_margin` | `static`モード（TOPP-RA）の達成可能ウレンチ包絡域（`wrench_envelope_halfspaces`）を原点中心にこの係数で縮小し、フィードバック補正の余力を計画段階から確保する（`docs/2026-08-28_toppra_static_path_attitude_overshoot_incident.md`その5/6） | `0.7` |
-| `guidance.align_traj_publish_rate_hz` | SLERP+台形整列ランプの中間目標publishレート [Hz] | `20.0` |
-| `guidance.velocity_estimate_rate` | Guidance側TF速度推定器の更新レート [Hz]（`TrajectoryController`自身の推定器とは独立） | `10.0` |
 
-### 動的パラメータ（`ros2 param set`で実行中に変更可能）
+### Control側と共有（起動時のみ、`gnc_params.yaml`の各セクションと同じ値を使う）
 
-| パラメータ名 | 役割 | デフォルト値 |
+| パラメータ名 | 役割 | デフォルト値（コード / `gnc_params.yaml`） |
 |---|---|---|
-| `guidance.align_tolerance_deg` | 事前/事後アラインメントの収束判定角度 [deg] | `3.0` |
-| `guidance.align_timeout` | 事前/事後アラインメントの安全カットオフ [s] | `60.0` |
-| `guidance.align_pos_tolerance_m` | 軌道追従（`_run_trajectory`）の到着判定に使う位置誤差許容値 [m]。計画所要時間経過後、この誤差以下に収まるまで待つ（`align_tolerance_deg`の位置版、独立パラメータ） | `0.05` |
-| `guidance.align_pos_settle_time` | 上記の許容値内に連続して留まるべき最小時間 [s]（オーバーシュート通過の誤検知防止、`align_settle_time`と同じ目的） | `0.5` |
-| `guidance.align_pos_timeout` | 位置収束待ちの安全カットオフ [s]。超えると警告ログを出して進行（`align_timeout`より短い——並進残差を詰めるだけの待ちのため） | `10.0` |
-| `guidance.attitude_reference_mode` | 移動中の姿勢参照モード（`fixed`/`face_travel`/`look_at`、goal受理時にラッチ）。`look_at`は未実装で`face_travel`にフォールバック（警告ログ） | `face_travel` |
-| `guidance.pre_align` | 出発前の事前整列を行うか（goal受理時にラッチ、`attitude_reference_mode=face_travel`のときのみ効く） | `true` |
-| `guidance.align_at_arrival` | 到着後、再整列するか（目標は`align_at_arrival_camera`で決まる。goal受理時にラッチ） | `true` |
-| `guidance.face_travel_camera` | `attitude_reference_mode=face_travel`のとき進行方向に向けるカメラ軸（`main`/`stereo`、goal受理時にラッチ） | `main` |
-| `guidance.look_at_target_frame` | `attitude_reference_mode=look_at`（未実装）で見る対象のTFフレーム名（goal受理時にラッチ） | `""` |
-| `guidance.align_at_arrival_camera` | 到着後どのカメラ軸を基準に整列するか。`main`はgoalの`q_target`そのまま、他のカメラ（例: `stereo`）は「`q_target`のときメインカメラが見ていたはずの方向」をそのカメラの軸で向くよう計算（`compute_camera_relative_quat`） | `main` |
-| `guidance.align_settle_time` | 事前/事後アラインメントで角度閾値内が連続してこの時間続いたら収束とみなす（`align_pos_settle_time`とは別、姿勢版） | `0.5` |
-| `guidance.align_angular_speed_deg` | SLERP+台形整列ランプの巡航角速度 [deg/s] | `15.0` |
-| `guidance.align_angular_accel_deg` | 同ランプの角加速度 [deg/s^2] | `2.4` |
-| `guidance.tf_staleness_timeout` | このノード自身のsimクロック基準で、TFのstampがこの時間止まったらTF断とみなす [s] | `1.0` |
-| `guidance.velocity_estimate_alpha` | Guidance側TF速度推定のEMA係数（1.0で無フィルタ） | `0.3` |
-| `guidance.trajectory_tracking_mode` | 軌道追従方式（`static`=開ループ単一軌道 / `static_minco`=MINCOで一度だけ解く開ループ軌道 / `replanning_minco_v3`=global/local MINCO再計画、goal受理時にラッチ） | `static` |
-| `guidance.max_angular_rate_deg` | `q_des`のレート制限 [deg/s]（両trackingモード共通、未チューニング） | `90.0` |
+| `tf_correction.reference_frame` | 自己位置の親フレーム | `iss_body` |
+| `tf_correction.target_frame` | 機体フレーム | `body` |
+| `trajectory_controller.max_force` | 加速度上限の算出に使う力[N]（軸別、最も厳しい軸の値を使う） | `[0.181, 0.0996, 0.122]` |
+| `trajectory_controller.mass` | 加速度上限（区間時間配分・MINCOのheuristic-time）とTOPP-RAの質量[kg]。**コードの既定値は4.5なので、`--params-file`なしで起動すると実質量3.216と食い違う** | `4.5` / `3.216` |
+| `trajectory_controller.inertia` | TOPP-RAの慣性[kg·m²]（等方） | `0.0136` |
+| `thrust_allocator.*` | ファンの配置・推力上限（`kj`・`fj_max`・`cg`・`fan_positions`・`fan_vectors`など）。wrenchの範囲の算出に使う | `gnc_params.yaml`の`thrust_allocator`セクション |
+
+`minco_solver.cpp`（MINCO）の質量・慣性はC++の定数（3.216 kg・0.0136 kg·m²）で、上の`trajectory_controller.*`の影響は受けない。
 
 ### その他のROS I/Oラッパ
 
 `path_publisher`・`multi_dof_joint_trajectory_publisher`・`checkpoint_publisher`・`ctl_command_action_server`は`console_scripts`登録済みだが、通常は`guidance_node`から利用するライブラリとしての位置づけで、単体`ros2 run`はデバッグ用途のみ（各ファイルの`main()`docstring参照）。
-
-min-snapのコアロジックが未実装（実装しない方針）な状態での追加の動作確認手段として、`test/manual/`のスタンドインスクリプトで軌道を直接publishする方法もある（詳細: `test/manual/README.md`）。
 
 [↑ 目次に戻る](#目次)
