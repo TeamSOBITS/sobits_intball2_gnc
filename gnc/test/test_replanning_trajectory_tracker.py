@@ -36,7 +36,7 @@ def _make_tracker(pose_fn, tf_fresh_fn=lambda stamp: True,
                    velocity_fn=lambda: _Vel([0.0, 0.0, 0.0]),
                    distance_fallback_m=0.3, replan_every_n_ticks=5,
                    max_accel=MAX_ACCEL, route_waypoints=None,
-                   use_minco=False, q0=None):
+                   use_minco=False, q0=None, use_minco_heuristic_time=False):
     return ReplanningTrajectoryTracker(
         _flat_trajectory(), P_TARGET, pose_fn, tf_fresh_fn, velocity_fn,
         target_speed=TARGET_SPEED, max_accel=max_accel,
@@ -44,6 +44,7 @@ def _make_tracker(pose_fn, tf_fresh_fn=lambda stamp: True,
         replan_every_n_ticks=replan_every_n_ticks,
         route_waypoints=route_waypoints,
         use_minco=use_minco, q0=q0,
+        use_minco_heuristic_time=use_minco_heuristic_time,
     )
 
 
@@ -87,6 +88,75 @@ def test_use_minco_replan_produces_6dof_sample():
     assert q.shape == (4,)
     assert np.isclose(np.linalg.norm(q), 1.0)
     assert tracker.total_duration > 0.0
+
+
+def test_use_minco_heuristic_time_replan_produces_6dof_sample():
+    """use_minco_heuristic_time=True版のre-plan経路の疎通確認（docs/
+    2026-09-01_replanning_minco_v4_production_port_plan.md Phase 2、
+    minco_native_py未ビルド環境ではskip）。数値の妥当性は
+    test_minco_native_regression.py側で検証済みなので、ここでは
+    ReplanningTrajectoryTracker側の配線（MincoInfeasibleErrorのフォール
+    バックを通らず、last_replan_occurredが立つこと）だけを確認する。
+    デフォルト（use_minco_heuristic_time=False）は
+    test_use_minco_replan_produces_6dof_sampleでカバー済み、挙動が変わって
+    いないことはこのテストの追加自体では検証できないため別途、既存の
+    via退役テスト群と組み合わせたテストで確認する。"""
+    pytest.importorskip("minco_native_py")
+
+    pose_calls = {"n": 0}
+
+    def pose_fn():
+        pose_calls["n"] += 1
+        return [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], float(pose_calls["n"])
+
+    tracker = _make_tracker(
+        pose_fn, replan_every_n_ticks=1, distance_fallback_m=0.0,
+        use_minco=True, q0=[0.0, 0.0, 0.0, 1.0],
+        use_minco_heuristic_time=True,
+    )
+    p, v, a, q = tracker.sample(0.0)
+
+    assert tracker.last_replan_occurred is True
+    assert tracker.last_fallback_reason is None
+    assert p.shape == (3,)
+    assert v.shape == (3,)
+    assert a.shape == (3,)
+    assert q.shape == (4,)
+    assert np.isclose(np.linalg.norm(q), 1.0)
+    assert tracker.total_duration > 0.0
+
+
+def test_use_minco_heuristic_time_survives_via_retirement():
+    """Phase 2の本題: via退役でKが3->2に減った後もplan_minco_heuristic_time
+    呼び出しが引き続き成功することを確認する（``self._next_idx``が進んで
+    ``pending``が短くなったwaypointsがそのまま渡ることは既存コードが
+    やっているので、ここでは「Kが変わった状態でplan_minco_heuristic_time
+    が機能するか」だけを見る）。既存のtest_replan_drops_via_waypoint_once_
+    passed（use_minco=False版）と同じVIA/pose設定を使う。"""
+    pytest.importorskip("minco_native_py")
+
+    positions = iter([
+        [0.0, 0.0, 0.0],  # tick 1: 2.0m from P_TARGET, further than VIA's
+                          # 1.4142m -> still pending, K=3 (via_half_width..)
+        [1.9, 0.0, 0.0],  # tick 2: 0.1m from P_TARGET, past VIA -> retires,
+                          # K=2.
+    ])
+
+    def pose_fn():
+        return list(next(positions)), [0.0, 0.0, 0.0, 1.0], 1.0
+
+    tracker = _make_tracker(
+        pose_fn, distance_fallback_m=0.0, replan_every_n_ticks=1, route_waypoints=[VIA],
+        use_minco=True, q0=[0.0, 0.0, 0.0, 1.0],
+        use_minco_heuristic_time=True,
+    )
+    tracker.sample(0.0)
+    assert tracker.last_fallback_reason is None
+    assert tracker.trajectory.num_waypoints == 3  # head, VIA, P_TARGET
+
+    tracker.sample(1.0)
+    assert tracker.last_fallback_reason is None
+    assert tracker.trajectory.num_waypoints == 2  # head, P_TARGET (VIA retired)
 
 
 def test_replans_only_every_nth_tick():
