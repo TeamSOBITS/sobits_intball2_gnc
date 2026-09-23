@@ -19,7 +19,16 @@
 ## 未達成タスク（カテゴリ別・各カテゴリ内は優先度順）
 
 ### [G] MINCO v4：実際の速度推定を入れると破綻（根本原因未特定、Phase4着手のブロッカー）
-「完璧な速度」前提では<1mm収束するが、実際のVelocityEstimator相当（有限差分＋EMA）を入れると18〜99mに破綻する。トランジェント要因・tick0初期化バグは既に切り分け済みで否定されている。原因が判明するまで本番実装（Phase4）には進まない方針。詳細: `docs/2026-09-01_replanning_minco_v4_open_issues.md`
+「完璧な速度」前提では<1mm収束するが、実際のVelocityEstimator相当（有限差分＋EMA）を入れると18〜99mに破綻する。トランジェント要因・tick0初期化バグは既に切り分け済みで否定されている。原因が判明するまで本番実装（Phase4）には進まない方針。詳細: `docs/archive/2026-09-01_replanning_minco_v4_open_issues.md`
+
+### [G] 中断時（cancel）の制動プロファイル追加
+巡航中0.5m/sでcancelすると即座に現在位置を保持目標にするため、PDが止めるしかなく2m以上オーバーシュートしうる。JAXA型の停止距離逆算プロファイルで解消。詳細: `docs/arch/2026-09-20_jaxa_to_sobits_backport_candidates.md`（A-3）
+
+### [G] 実行不能時フォールバック順序の見直し（Hermite台形をウレンチ制約無視のまま最終手段にしない）
+現状の最終フォールバック（Hermite台形）はウレンチ包絡域を一切考慮しておらず、約92%のサンプルで真の到達可能領域を超える危険側の設計。TOPP-RA/MINCO→逐次実行（並進→回転）→直線+単軸回転、の順に変更する。詳細: 同上（B-1）
+
+### [G] 微小移動指令のデッドゾーン
+5cm未満のような微小指令でもA*→Hermite→TOPP-RAのフルパイプラインが走り、`static_minco`時は3〜5秒ブロックする。閾値未満は即`STATUS_SUCCEEDED`で返す。詳細: 同上（B-2）
 
 ### [G] K分離(2自由度版)、短距離レグでのduration悪化が未改良
 MINCOの姿勢waypoint密度↑時のduration悪化は圧縮できた（+133%→+21%等）が、短距離レグでは悪化が
@@ -35,7 +44,7 @@ MINCOの姿勢waypoint密度↑時のduration悪化は圧縮できた（+133%→
 具体名はまだ出ていない。
 
 ### [G] 移動前のロール事前回転（到着後の`align_at_arrival`高速化狙い）
-`attitude_reference_mode`(`face_travel`/`look_at`)はピッチ・ヨー（進行方向を向く方向）を経路に応じて決めるが、その向きを軸にした回転（ロール）は決めない。移動中ロールが放置されると到着時に大きなロール誤差が残り、`align_at_arrival`の補正が遅くなる（角度が大きいほど遅く・精度も悪化する、`docs/2026-08-21_tf_correction_align_slow_investigation.md`のゲイン実測で確認済み）。移動中にロールも回転させると貴重な推力が減ってしまう。そのため、移動前に、到着後のロールだけでも合わせておくことで、事後回転の高速化が狙えるはず。優先度中
+`attitude_reference_mode`(`face_travel`/`look_at`)はピッチ・ヨー（進行方向を向く方向）を経路に応じて決めるが、その向きを軸にした回転（ロール）は決めない。移動中ロールが放置されると到着時に大きなロール誤差が残り、`align_at_arrival`の補正が遅くなる（角度が大きいほど遅く・精度も悪化する、`docs/archive/achieved/2026-08-21_tf_correction_align_slow_investigation.md`のゲイン実測で確認済み）。移動中にロールも回転させると貴重な推力が減ってしまう。そのため、移動前に、到着後のロールだけでも合わせておくことで、事後回転の高速化が狙えるはず。優先度中
 
 ### [G] 経路の補間方式（直線移動モード）
 waypoint間を滑らかに補間するか、ただの直線でつなぐか未検討。姿勢モードとは直交する軌道生成側の話。`BaseTrajectoryGenerator`に3つ目の実装を追加するか、既存`HermiteSplineTrajectoryGenerator`のパラメータで代替できないか検討する。
@@ -46,6 +55,9 @@ duty≥0.95飽和頻度を48%→33.4%まで改善したが、まだ33%残って�
 2026-08-28_toppra_static_path_attitude_overshoot_incident.md`その7）。安全係数をさらに下げる
 （0.6/0.5）ことで飽和頻度と所要時間のトレードオフを追加探索する余地がある。
 
+### [G] minco_wrench_safety_marginの既定値見直し（TOPP-RA側と統一）
+TOPP-RA側は`wrench_envelope_safety_margin=0.7`だが、MINCO側は既定`1.0`（FB余力なし）で攻めすぎ。詳細: `docs/arch/2026-09-20_jaxa_to_sobits_backport_candidates.md`（C-2）
+
 ### [G] 慣性テンソルの非等方性検証
 等方前提だとジャイロ項ω×(Iω)がゼロになり無視できるが、実機の慣性テンソルが非等方ならこの項が復活し角速度の2乗で効いてくる。現状の等方スカラー0.0136 kg·m²が実機と一致するか未検証。
 
@@ -53,8 +65,20 @@ duty≥0.95飽和頻度を48%→33.4%まで改善したが、まだ33%残って�
 三谷・西下・平野2023の実測値から8基分のκ_j/k_jは同定済み・番号対応も検証済み（ロールで36%の能力回復、力とヨーは正しく1〜2割補正、面数24→112）。実装対象は自分たちの`A`行列（`actuation_envelope.py`）のみでシム変更は不要だが、現在のシムは`kappa=0`（抗力トルクなし）のままなので、シム上ではこの改善による実機フィデリティ向上分を検証しようがない点に注意。付随課題として実機の推力方向ベクトル未入手（公称モデルとの乖離あり、Y方向が実測で3割弱い；著者への問い合わせ候補）。
 
 ### [G] min_snap.py のコアロジック実装（別担当者、優先度低）
-Phase 2で契約は確定済みだがコア実装が未着手。pure functionとして実装（ROS import禁止）。理論: Mellinger & Kumar (2011)。入出力契約: `docs/min_snap_interface_contract.md`。参考実装: https://github.com/The-SS/quadrotor_trajectory 、参考解説: https://dev10110.github.io/tech-notes/control-theory/min_snap.html
+Phase 2で契約は確定済みだがコア実装が未着手。pure functionとして実装（ROS import禁止）。理論: Mellinger & Kumar (2011)。入出力契約: `docs/minimum_snap/min_snap_interface_contract.md`。参考実装: https://github.com/The-SS/quadrotor_trajectory 、参考解説: https://dev10110.github.io/tech-notes/control-theory/min_snap.html
 成果物: `test_min_snap.py`に数値解検証テスト追加、`test_trajectory_generator_contract.py`の対象に`MinSnapTrajectoryGenerator`追加、`test_segment_time_to_trajectory_pipeline.py`を差し替えて統合確認。依存関係なし（他タスクと並行可）。`static`モードは既にTOPP-RA（`ToppraTrajectory`）で力/トルク制約を考慮した軌道生成に置き換わっているため、緊急度は下がっている。
+
+### [C] 姿勢制御へのフィードフォワード導入（ω_des/α_des）とカスケード化
+姿勢制御が純粋PDでFFが無く、軌道側で計算済みの`vel[3:]`/`acc[3:]`（回転ベクトルの1・2階微分）を捨てたまま。`sample()`の戻り値拡張と、大回転時のJacobian補正（回転ベクトル微分→角速度変換）が必要。詳細: `docs/arch/2026-09-20_jaxa_to_sobits_backport_candidates.md`（A-1）
+
+### [C] omega_errを数値微分から解析値へ置き換え
+現状50Hzの数値微分（`att_filter_alpha=1.0`で無フィルタ）でノイズと位相遅れを抱えている。上記A-1で`w_des`が得られれば`omega_imu - R(qe)*w_des`で解析的に算出できる。A-1とセットで実施。詳細: 同上（A-2）
+
+### [C] thrust_allocatorの決定的な配分フォールバック
+`lsq_linear`（反復ソルバ、計算時間が非決定的）に時間上限を設け、超過・失敗時はJAXA型の行列配分（事前計算行列の積と最小値減算のみ、固定時間）に落とす。詳細: 同上（B-4）
+
+### [C] 追従誤差ガード（`Dtc`相当）の追加
+追従誤差が閾値を超えても軌道を中断しない。特に`static`モードは開ループのため機体位置に関わらず基準時刻が進み続け、外乱・衝突を検知できない。閾値超過で中断時制動プロファイル（[G]中断時の制動プロファイル追加）経由のholdへ落とすガードが必要。詳細: 同上（C-1）
 
 ### [C] trajectory_controller のTF速度推定ノイズ調査
 move_to中に`f_des`が瞬間的に0.68N超まで跳ねる事象を観測、計画側（`a_des`/`v_des`）はほぼ無風
@@ -75,6 +99,9 @@ move_to中に`f_des`が瞬間的に0.68N超まで跳ねる事象を観測、計�
 
 ### [C] tf_correction.kd_pos の位置ホールド時ノイズ増幅の見直し（優先度低）
 静止ホールド中にpx 1.0mm/pz 4.0mm peak-to-peak、周期8-9秒の微小な振動を確認。同じ仕組みの`kd_att_hold`（TF有限差分角速度ノイズの増幅）を半減して振幅が約1/11に減った実績があり、`kd_pos`（TF有限差分速度）も同様の見直しで改善する可能性がある。ただし周期が姿勢側(0.67秒)よりだいぶ遅く、`smooth_window`のTF平滑化による位相遅れなど別要因が絡む可能性もあり未検証。
+
+### [C] 積分項の追加（実験・優先度低）
+JAXAは`ki`と飽和付き積分器（`fi_max=0.02`）が配線済み（現状`ki=0`）だが、SOBITSには無い。重心オフセット・配分行列誤差由来の定常バイアス切り分け材料として、`ki=0`から始めればリスクなく実験できる。詳細: `docs/arch/2026-09-20_jaxa_to_sobits_backport_candidates.md`（B-3）
 
 ### [C] 誤差→力/トルク変換則の差し替え（具体名未定）
 現行はP+D固定則。PID等への差し替えは、候補が具体名で2つ以上出た時点で`docs/architecture_guidelines.md`の昇格ルールに従って判断する。
@@ -133,7 +160,7 @@ Minimum Snapが出す軌道が障害物と衝突する場合に局所的に押�
 実装方針の代替案: 新規Pythonファイルより`minco_solver.cpp`内に衝突ペナルティ項を足す方が工数小。積分ノード評価ループ・smoothed-L1ペナルティ・勾配蓄積・重みスケジュール・L-BFGSを再利用でき、`viol = F_ENV·w - g`を`viol = d_safe - d(p)`に置き換えるだけで構造が同じ。レンチ制約と衝突制約が同じ最適化内で同時に効く。前提としてESDF（距離場）が必須（勾配が要るためOctoMap単体では不可）。
 
 ### [将来] MPCC姿勢/トルク統合の実行可能性課題
-並進のみのMPCCはprogress stall解決済み・強擾乱250〜1000tickでinfeasible/予算超過ゼロを確認済み。しかし姿勢/トルク統合プロトタイプでは、弱擾乱時にACADOS_MINSTEPで解が不可解になる、強擾乱時は並進と姿勢が8ファンの推力予算を奪い合い並進収束が4mm→407mmへ悪化する、という新課題が判明。ソルバ時間も13〜15ms/tickに増加（100ms予算内ではある）。本番導入するか自体が未定。詳細: `docs/2026-08-29_mpcc_attitude_torque_integration_plan.md`
+並進のみのMPCCはprogress stall解決済み・強擾乱250〜1000tickでinfeasible/予算超過ゼロを確認済み。しかし姿勢/トルク統合プロトタイプでは、弱擾乱時にACADOS_MINSTEPで解が不可解になる、強擾乱時は並進と姿勢が8ファンの推力予算を奪い合い並進収束が4mm→407mmへ悪化する、という新課題が判明。ソルバ時間も13〜15ms/tickに増加（100ms予算内ではある）。本番導入するか自体が未定。詳細: `docs/archive/2026-08-29_mpcc_attitude_torque_integration_plan.md`
 
 ### [将来] 並進・姿勢分離の妥当性を数値で正当化
 Watterson, Smith & Kumar (IROS 2016)は「全軸の推力能力が同程度なら分離が妥当」と明言しているが、Int-Ball2の包絡は方向によって約58%の開き（`|b|`が0.002516/0.002835/0.003969の3種類）があり、この前提が成立していない可能性がある。定量化できれば位置と姿勢を統合的に最適化する設計判断の根拠になる（論文化する場合は新規性の主張の中核にもなり得る）。
