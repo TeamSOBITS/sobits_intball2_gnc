@@ -9,14 +9,13 @@ needing a separate script per metric or manual CSV post-processing.
 Supersedes running `move_to_wrench_duty_trace.py` +
 `measure_position_tracking_error.py` + `measure_attitude_tracking_error.py`
 separately: those each recorded/measured one slice of this (see
-test/manual/README.md); this merges the event-driven multi-topic recording
-approach from `log_replanning_attitude_trace.py` (no dropped samples under
-CPU load) with all four topics from `move_to_wrench_duty_trace.py`
+test/manual/README.md); this merges event-driven multi-topic recording
+(no dropped samples under CPU load) with all four topics from `move_to_wrench_duty_trace.py`
 (`/ctl/wrench_achieved` included) plus the actual error computation
 (position/attitude vs setpoint) that neither of those scripts did.
 
 Works with any `guidance.trajectory_tracking_mode` value (``static``,
-``replanning``, ``replanning_minco``, ``static_minco``, ...) -- pass
+``static_minco``, ``replanning_minco_v3``) -- pass
 `--set-mode` to set it first, or leave whatever is already configured.
 
 Usage:
@@ -25,9 +24,7 @@ Usage:
 
 Raw per-topic CSVs are still written to `--out-dir` (tf/setpoint/wrench/
 wrench_achieved/duty/tracking_error) for deeper inspection, but are written
-even on Ctrl-C/exception (not only on clean completion) -- unlike
-`log_replanning_attitude_trace.py`, which loses everything if killed before
-its single end-of-run `write_csv` call.
+even on Ctrl-C/exception (not only on clean completion).
 """
 import argparse
 import csv
@@ -61,9 +58,8 @@ DUTY_SATURATION_THRESHOLD = 0.99
 
 _NO_WAIT = rclpy.duration.Duration(seconds=0)
 
-# Matches the actual publishers' QoS -- see log_replanning_attitude_trace.py's
-# equivalent comments (a RELIABLE reader on a BEST_EFFORT /tf publisher would
-# silently receive nothing at all).
+# Matches the actual publishers' QoS (a RELIABLE reader on a BEST_EFFORT /tf
+# publisher would silently receive nothing at all).
 TF_QOS = QoSProfile(
     depth=200, durability=DurabilityPolicy.VOLATILE,
     history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -84,8 +80,7 @@ def geodesic_angle_deg(q_a, q_b):
 class TfRawRecorder:
     """Records every distinct ``iss_body <- body`` TF sample, event-driven.
 
-    Owns its own ``tf2_ros.Buffer`` (not ``TfClient``'s -- same reasoning as
-    ``log_replanning_attitude_trace.py``'s ``TfRawRecorder``: sharing a buffer
+    Owns its own ``tf2_ros.Buffer`` (not ``TfClient``'s -- sharing a buffer
     via a second subscription would race the read against the write for the
     same incoming message).
     """
@@ -234,8 +229,8 @@ def main():
     ap.add_argument("location_name", help="destination TF frame name (maps/iss_location.yaml)")
     ap.add_argument("--set-mode", default=None,
                      help="set guidance.trajectory_tracking_mode before sending the goal "
-                          "(any value the node accepts, e.g. static/replanning/"
-                          "replanning_minco/static_minco); default: leave as-is")
+                          "(any value the node accepts: static/static_minco/"
+                          "replanning_minco_v3); default: leave as-is")
     ap.add_argument("--out-dir", default="/tmp/move_to_full_analysis")
     ap.add_argument("--tag", default="run")
     ap.add_argument("--timeout-sec", type=float, default=90.0)

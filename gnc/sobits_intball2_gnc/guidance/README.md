@@ -42,15 +42,18 @@ guidance/
 │   ├── trajectory.py                         # Trajectory: sample(t) -> (p, v, a, q_des)
 │   ├── minco_trajectory.py                   # MINCO姿勢/トルク統合軌道（minco_native_py拡張のPythonラッパ）
 │   └── toppra_trajectory.py                  # TOPP-RAによる力/トルク制約付き時間割当済み軌道
-├── trajectory_tracking/                  # 生成済み軌道の追従方式（static/replanning切替）
+├── trajectory_tracking/                  # 生成済み軌道の追従方式（static/replanning_minco_v3切替）
 │   ├── base_trajectory_tracker.py            # 共通インターフェース
 │   ├── static_trajectory_tracker.py          # 開ループ単一軌道を最後まで追従（デフォルト）
-│   └── replanning_trajectory_tracker.py      # 実TFから一定周期で軌道を再計画しながら追従
+│   └── replanning_minco_v3_tracker.py        # global MINCO軌道を一度だけ解き、local区間を一定周期で再計画しながら追従
 └── utils/                                # ROS非依存のロジック
     ├── polynomial.py                         # 多項式（微分）評価
     ├── attitude_reference.py                 # v_des(t) -> q_des(t)（進行方向を向く姿勢参照）
     ├── actuation_envelope.py                 # 機体の達成可能wrench包絡域（wrench_envelope_halfspaces等）の算出
     ├── velocity_estimator.py                 # TF位置列からのGuidance側速度推定（EMA平滑化）
+    ├── model_kf_estimator.py                 # 指令加速度で予測・観測位置で補正する定加速度カルマンフィルタ（現在未使用）
+    ├── quintic_hermite.py                    # 両端の位置/速度/加速度から5次多項式を解析的に解く（現在未使用）
+    ├── wrench_envelope_constraint.py         # TOPP-RA用の経路非依存wrench包絡域制約（ToppraTrajectoryが使用）
     └── guidance_executor.py                  # GuidanceExecutor: 1件のCtlCommand goalを
                                                # pre-align→軌道追従→arrival-alignで駆動（cancel対応）
 ```

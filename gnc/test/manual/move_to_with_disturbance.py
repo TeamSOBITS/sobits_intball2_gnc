@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """move_to a named location while injecting one real physical disturbance
 mid-flight, to verify an outstanding "擬似衝突からの復帰"
-item: does trajectory_tracking_mode="replanning" actually recover from a
-disturbance, not just from an undisturbed/monotonic approach (the only kind
-exercised by test_execute_replanning_mode_reaches_target's fake TF)?
+item: does the active trajectory_tracking_mode actually recover from a
+disturbance, not just from an undisturbed/monotonic approach?
 
 The disturbance is a genuine Gazebo physics impulse via the ROS1
 /gazebo/apply_body_wrench service (body_name "ib2::base", confirmed reachable
 and effective 2026-08-25: a 0.3N/0.3s pulse produced a real +4.4mm TF
 displacement that then decayed back under hover control) -- NOT a TF/pose
-override, which would fake the very signal replanning is supposed to react
-to. Called from this ROS2 script via a clean ROS1 subshell (docs/archive
+override, which would fake the very signal the tracker is supposed to
+react to. Called from this ROS2 script via a clean ROS1 subshell (docs/archive
 [[ros1_bridge_access]] pattern), since the service isn't bridged into ROS2.
 
 Reuses test/manual/move_to_full_trace.py's pattern (TfClient + MoveToClient
@@ -22,19 +21,15 @@ met after --arm-delay seconds have elapsed):
     --trigger-elapsed-sec SEC   fire SEC seconds after the goal was sent
         (use for a mid-flight disturbance).
     --trigger-distance-m M      fire once remaining distance to the target
-        first drops below M (use to land the disturbance near arrival, e.g.
-        just inside distance_fallback_m, to probe the one-way-latch gap
-        documented in test_latched_fallback_does_not_recover_from_post_
-        latch_disturbance).
+        first drops below M (use to land the disturbance near arrival).
 
 The default disturbance (5N/0.3s = 1.5N*s impulse, dv~0.33m/s at this
 vehicle's ~4.5kg mass) is deliberately scaled well above the 0.3N/0.3s
-calibration pulse (4.4mm displacement) to a collision-like kick meant to
-displace the vehicle past distance_fallback_m (0.3m) -- otherwise the test
-never exercises a real re-plan, just noise-scale jitter.
+calibration pulse (4.4mm displacement) to a collision-like kick -- otherwise
+the test only exercises noise-scale jitter.
 
 Usage:
-    ros2 param set /guidance_node guidance.trajectory_tracking_mode replanning
+    ros2 param set /guidance_node guidance.trajectory_tracking_mode replanning_minco_v3
     python3 test/manual/move_to_with_disturbance.py nav_entry \\
         --trigger-elapsed-sec 3.0 --force 0.0 5.0 0.0 --force-duration 0.3 \\
         --out-csv /tmp/disturbance_nav_entry.csv
@@ -128,9 +123,7 @@ def main():
                           "dv=1.5/4.5kg=0.33m/s -- roughly 15x the 0.3N/0.3s "
                           "calibration pulse (2026-08-25) that only produced "
                           "a 4.4mm displacement, deliberately scaled up to a "
-                          "collision-like kick that should displace the "
-                          "vehicle well past distance_fallback_m (0.3m) "
-                          "before control/replanning reacts. Pick a direction "
+                          "collision-like kick. Pick a direction "
                           "roughly perpendicular to the direction of travel "
                           "for a genuine off-path knock rather than a push "
                           "straight along the line to the target "
