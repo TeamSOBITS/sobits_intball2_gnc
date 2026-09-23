@@ -60,6 +60,24 @@ class MovingTowardTf:
         return list(self.pos), list(self.quat), _next_stamp(self._state, self._stamp)
 
 
+class SetpointFollowingTf:
+    """Ideal-tracking TF fake: reports the last commanded setpoint position
+    (or ``pos`` before any command). Needed for trackers that replan from
+    their own reference state rather than from measured pose."""
+
+    def __init__(self, pos, quat, setpoint_pub, offset=(0.0, 0.0, 0.0)):
+        self._initial = list(pos)
+        self.quat = quat
+        self._setpoint_pub = setpoint_pub
+        self._offset = np.asarray(offset, dtype=float)
+        self._state = {"n": 0}
+
+    def get_pose(self):
+        calls = self._setpoint_pub.calls
+        pos = np.asarray(calls[-1][0] if calls else self._initial, dtype=float)
+        return (pos + self._offset).tolist(), list(self.quat), _next_stamp(self._state, None)
+
+
 class DisturbedApproachTf:
     """Like ``MovingTowardTf``, but on the ``disturb_after``-th ``get_pose()``
     call it reports one large one-off displacement from wherever the vehicle
@@ -839,6 +857,151 @@ def test_execute_replanning_minco_mode_reaches_target():
     assert not any("falling back to 'static'" in w for w in logger.warnings)
     final_p, _v, _a, _q = setpoint_pub.calls[-1]
     assert np.allclose(final_p, [1.0, 0.0, 0.0], atol=0.15)
+
+
+def test_execute_replanning_minco_v2_mode_reaches_target():
+    """Same shape as test_execute_replanning_minco_mode_reaches_target
+    above, but for trajectory_tracking_mode="replanning_minco_v2" (docs/
+    2026-09-01_replanning_minco_v4_production_port_plan.md Phase 4).
+    Notably does NOT pass velocity_fn -- this mode's ReplanningMincoV2Tracker
+    has its own MODEL_KF estimator and never reads it.
+
+    Unlike the other modes' analogous tests, this one uses a longer
+    approach (2.0m at a slow step) rather than reusing their 1.0m/step=0.05
+    scenario: ReplanningMincoV2Tracker's local layer only looks
+    ``t_local`` (default 1.0s) seconds ahead each tick, so a TF fake that
+    reaches the target in ~1s flat (as the other tests' scenario does)
+    converges before the local layer has had time to catch up to a moving
+    target, which the ``atol`` below would then need to be implausibly
+    loose to paper over -- a longer approach exercises this mode
+    representatively instead."""
+    pytest.importorskip("minco_native_py")
+
+    setpoint_pub = FakeSetpointPublisher()
+    logger = FakeLogger()
+    tf = MovingTowardTf([0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], step=0.02)
+    executor = GuidanceExecutor(
+        tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05),
+        logger, target_speed=1.0, max_accel=0.02,
+        align_pos_tolerance_m=0.05, align_pos_settle_time=0.1, align_pos_timeout=5.0,
+        velocity_fn=None, distance_fallback_m=0.3, replan_rate_hz=5.0,
+    )
+    status = executor.execute(
+        [2.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=False,
+        trajectory_tracking_mode="replanning_minco_v2",
+    )
+    assert status == STATUS_SUCCESS
+    assert not any("falling back to 'static'" in w for w in logger.warnings)
+    final_p, _v, _a, _q = setpoint_pub.calls[-1]
+    assert np.allclose(final_p, [2.0, 0.0, 0.0], atol=0.15)
+
+
+def test_execute_replanning_minco_v3_mode_reaches_target():
+    """Same shape as test_execute_replanning_minco_v2_mode_reaches_target
+    above, but for trajectory_tracking_mode="replanning_minco_v3" (docs/
+    2026-09-20_ego_v2_style_replan_migration_plan.md). Does NOT pass
+    velocity_fn -- ReplanningMincoV3Tracker never reads it. Uses an
+    ideal-tracking TF fake: this tracker replans from its own reference
+    state (EGO-Planner v2), so a TF fake advancing independently of the
+    commanded setpoint would converge while the reference is still mid-route."""
+    pytest.importorskip("minco_native_py")
+
+    setpoint_pub = FakeSetpointPublisher()
+    logger = FakeLogger()
+    tf = SetpointFollowingTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], setpoint_pub)
+    executor = GuidanceExecutor(
+        tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05),
+        logger, target_speed=1.0, max_accel=0.02,
+        align_pos_tolerance_m=0.05, align_pos_settle_time=1.5, align_pos_timeout=8.0,
+        velocity_fn=None, distance_fallback_m=0.3, replan_rate_hz=5.0,
+    )
+    status = executor.execute(
+        [2.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=False,
+        trajectory_tracking_mode="replanning_minco_v3",
+    )
+    assert status == STATUS_SUCCESS
+    assert not any("falling back to 'static'" in w for w in logger.warnings)
+    final_p, _v, _a, _q = setpoint_pub.calls[-1]
+    assert np.allclose(final_p, [2.0, 0.0, 0.0], atol=0.15)
+
+
+def test_execute_replanning_minco_v3_mode_terminates_with_steady_state_offset():
+    """Live-sim regression (docs/2026-09-23_replanning_minco_v3_fix_live_sim_
+    verification.md): a constant in-tolerance TF offset used to keep the
+    ETA-based total_duration ahead of elapsed forever, so the goal never ended."""
+    pytest.importorskip("minco_native_py")
+
+    setpoint_pub = FakeSetpointPublisher()
+    logger = FakeLogger()
+    tf = SetpointFollowingTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], setpoint_pub,
+                             offset=(0.0, 0.02, 0.0))
+    clock_seconds_fn, spin_fn = _make_clock(dt_per_spin=0.05)
+    local_speed_path_pub = FakeSpeedPathPublisher()
+    executor = GuidanceExecutor(
+        tf, setpoint_pub, FakeCheckpointPublisher(), clock_seconds_fn, spin_fn,
+        logger, target_speed=1.0, max_accel=0.02,
+        align_pos_tolerance_m=0.05, align_pos_settle_time=1.5, align_pos_timeout=8.0,
+        velocity_fn=None, distance_fallback_m=0.3, replan_rate_hz=5.0,
+        local_speed_path_publisher=local_speed_path_pub,
+    )
+    status = executor.execute(
+        [2.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None,
+        is_cancel_requested=lambda: clock_seconds_fn() > 300.0,
+        face_travel=False, align_at_arrival=False,
+        trajectory_tracking_mode="replanning_minco_v3",
+    )
+    assert status == STATUS_SUCCESS
+    assert not any("did not converge" in w for w in logger.warnings)
+    final_p, _v, _a, _q = setpoint_pub.calls[-1]
+    assert np.allclose(final_p, [2.0, 0.0, 0.0], atol=1e-3)
+    assert len(local_speed_path_pub.calls) >= 1
+    last_local_end, _speed = local_speed_path_pub.calls[-1][-1]
+    assert np.allclose(last_local_end, [2.0, 0.0, 0.0], atol=1e-3)
+
+
+def test_execute_replanning_minco_v3_mode_falls_back_to_static_without_max_accel():
+    setpoint_pub = FakeSetpointPublisher()
+    logger = FakeLogger()
+    tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
+    executor = GuidanceExecutor(
+        tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05),
+        logger, target_speed=1.0, max_accel=None,
+        align_pos_tolerance_m=0.05, align_pos_settle_time=0.1, align_pos_timeout=1.0,
+    )
+    executor.execute(
+        [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=False,
+        trajectory_tracking_mode="replanning_minco_v3",
+    )
+    assert any(
+        "replanning_minco_v3' requires max_accel" in w for w in logger.warnings
+    )
+
+
+def test_execute_replanning_minco_v2_mode_falls_back_to_static_without_max_accel():
+    setpoint_pub = FakeSetpointPublisher()
+    logger = FakeLogger()
+    tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
+    executor = GuidanceExecutor(
+        tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05),
+        logger, target_speed=1.0, max_accel=None,
+        align_pos_tolerance_m=0.05, align_pos_settle_time=0.1, align_pos_timeout=1.0,
+    )
+    executor.execute(
+        [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=False,
+        trajectory_tracking_mode="replanning_minco_v2",
+    )
+    assert any(
+        "replanning_minco_v2' requires max_accel" in w for w in logger.warnings
+    )
 
 
 def test_execute_replanning_mode_passes_via_waypoints_to_the_tracker(monkeypatch):

@@ -324,6 +324,19 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /gnc/trajectory_path_speed
       Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: Marker (local trajectory speed, viz-only)
+      Namespaces:
+        speed_path: true
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /gnc/trajectory_path_speed_local
+      Value: true
     - Class: rviz_default_plugins/Image
       Enabled: true
       Max Value: 1

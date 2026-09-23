@@ -46,6 +46,7 @@ from sobits_intball2_gnc.guidance.utils.velocity_estimator import VelocityEstima
 
 ACTION_NAME = "/gnc/move_to"
 TRAJECTORY_SPEED_PATH_TOPIC = "/gnc/trajectory_path_speed"
+LOCAL_TRAJECTORY_SPEED_PATH_TOPIC = "/gnc/trajectory_path_speed_local"
 TF_STARTUP_TIMEOUT = 5.0
 # Separate lock file from control_node's: a leftover process once survived
 # kill as a child and answered /gnc/move_to alongside the new one,
@@ -80,23 +81,28 @@ _GUIDANCE_PARAM_DEFAULTS = {
     # as the other per-goal options here. [] (default) means no via
     # waypoints -- unchanged prior 2-waypoint behavior.
     "guidance.via_waypoints": [""],
-    # "static_minco"/"replanning_minco" only: MincoTrajectory's via-point
+    # "static_minco"/"replanning_minco"/"replanning_minco_v2"/
+    # "replanning_minco_v3" only: MincoTrajectory's via-point
     # free-variable box half-width [m] (docs/
     # 2026-08-30_static_minco_face_travel_gap.md 追記3 -- was a hardcoded
     # C++ constant in minco_solver.cpp, now tunable without a rebuild). 0.0
-    # pins every via waypoint exactly (TOPPRA-style hard pass-through); 0.3
-    # matches the original hardcoded value. Same Category B per-goal
-    # latching as via_waypoints above.
-    "guidance.minco_via_half_width": 0.3,
-    # "static_minco"/"replanning_minco" only: MincoTrajectory's
-    # attitude_resample_spacing_m (docs/
-    # 2026-08-30_static_minco_face_travel_gap.md 追記4). 0.0 (default) means
-    # "off" (None -- attitude only seeded at the given waypoints, prior
-    # behavior); a positive value densifies face-travel attitude seeding
-    # every that many meters along each segment without changing the
-    # position path shape. Same Category B per-goal latching as
-    # via_waypoints above.
-    "guidance.minco_attitude_resample_spacing_m": 0.0,
+    # pins every via waypoint exactly (TOPPRA-style hard pass-through) --
+    # default (2026-09-01, prior default was 0.3): via waypoints should be
+    # hit exactly unless a goal explicitly opts into slack. Same Category B
+    # per-goal latching as via_waypoints above.
+    "guidance.minco_via_half_width": 0.0,
+    # "static_minco"/"replanning_minco"/"replanning_minco_v2"/
+    # "replanning_minco_v3" only:
+    # MincoTrajectory's attitude_resample_spacing_m (docs/
+    # 2026-08-30_static_minco_face_travel_gap.md 追記4). 0.0 means "off"
+    # (None -- attitude only seeded at the given waypoints, prior behavior);
+    # a positive value densifies face-travel attitude seeding every that
+    # many meters along each segment without changing the position path
+    # shape. Default 0.3 (2026-09-01, prior default was 0.0): attitude
+    # tracking observed to lag badly over long legs (e.g. nav_entry ->
+    # inspection_entry_1, ~4.7m) with seeding only at waypoints. Same
+    # Category B per-goal latching as via_waypoints above.
+    "guidance.minco_attitude_resample_spacing_m": 0.3,
     "guidance.face_travel_camera": "main",
     "guidance.align_at_arrival_camera": "main",
     # Real-time re-planning (docs/guidance_realtime_replanning_design.md):
@@ -134,19 +140,30 @@ _GUIDANCE_PARAM_DEFAULTS = {
     # docstring and docs/2026-08-28_toppra_static_path_attitude_overshoot_
     # incident.md "追記（2026-08-28 その5/6）"). Only read once at
     # wrench_envelope construction below -- static like the fan geometry it's
-    # paired with. static_minco/replanning_minco reuse this same value,
+    # paired with. static_minco/replanning_minco/replanning_minco_v2/
+    # replanning_minco_v3 reuse this same value,
     # forwarded to MincoTrajectory's wrench_safety_margin each goal (docs/
     # 2026-08-30_static_minco_face_travel_gap.md 追記2) -- one physical
     # meaning (feedback headroom against the fan envelope), one parameter,
     # rather than a second minco-specific margin that could drift from this
     # one.
     "guidance.wrench_envelope_safety_margin": 0.7,
+    # "replanning_minco_v2"/"replanning_minco_v3" only: forwarded to
+    # GuidanceExecutor.execute()'s minco_freetime (see that method's
+    # docstring). False (default, unchanged prior behavior) uses this
+    # mode's configured target_speed/max_accel (plan_minco_heuristic_time)
+    # for the global build; True switches the global build to
+    # MincoTrajectory's free-time plan_minco path instead
+    # (docs/2026-09-20_minco_global_replan_freetime_switch_offline_
+    # investigation.md).
+    "guidance.minco_freetime": False,
 }
 
 _ATTITUDE_REFERENCE_MODES = frozenset({"fixed", "face_travel", "look_at"})
 _CAMERA_NAMES = frozenset({"main", "stereo"})
 _TRAJECTORY_TRACKING_MODES = frozenset(
-    {"static", "replanning", "replanning_minco", "static_minco"}
+    {"static", "replanning", "replanning_minco", "static_minco",
+     "replanning_minco_v2", "replanning_minco_v3"}
 )
 
 
@@ -257,6 +274,11 @@ class GuidanceNode(Node):
             self, TRAJECTORY_SPEED_PATH_TOPIC, reference_frame=reference_frame,
             max_speed=float(g("target_speed")),
         )
+        self._local_speed_path_pub = SpeedPathPublisher(
+            self, LOCAL_TRAJECTORY_SPEED_PATH_TOPIC, reference_frame=reference_frame,
+            max_speed=float(g("target_speed")), line_width=0.03,
+            low_rgb=(0.0, 1.0, 0.0), high_rgb=(1.0, 1.0, 0.0),
+        )
 
         # Guidance-side TF velocity estimate (docs/
         # guidance_velocity_estimator_design.md): driven by its own low-rate
@@ -309,6 +331,7 @@ class GuidanceNode(Node):
                 "stereo": g("camera_forward_axis.stereo"),
             },
             speed_path_publisher=self._speed_path_pub,
+            local_speed_path_publisher=self._local_speed_path_pub,
             max_accel=trajectory_max_force / trajectory_mass,
             wrench_envelope=wrench_envelope,
             mass=trajectory_mass,
@@ -505,6 +528,9 @@ class GuidanceNode(Node):
             ),
             trajectory_tracking_mode=str(
                 self.get_parameter("guidance.trajectory_tracking_mode").value
+            ),
+            minco_freetime=bool(
+                self.get_parameter("guidance.minco_freetime").value
             ),
         )
         if status == STATUS_SUCCESS:

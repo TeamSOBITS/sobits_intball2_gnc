@@ -7,7 +7,7 @@ gradient by speed, for a human to see in RViz. ``nav_msgs/Path``
 (``guidance/ros/path_publisher.py``) has no per-point color support, so this
 is a separate marker rather than an extension of that class.
 
-Color is blue (0 m/s) -> red (>= ``max_speed``), linearly interpolated and
+Color is ``low_rgb`` (default blue, 0 m/s) -> ``high_rgb`` (default red, >= ``max_speed``), linearly interpolated and
 clamped -- an absolute scale, not normalized to the min/max speed of a given
 call, so the same color always means the same speed across different paths.
 RViz interpolates ``marker.colors`` between adjacent vertices, so the result
@@ -36,13 +36,18 @@ DEFAULT_QOS = QoSProfile(
 )
 
 
-def _speed_to_color(speed: float, max_speed: float) -> ColorRGBA:
-    """Blue (0 m/s) -> red (>= max_speed), clamped to [0, max_speed]."""
+BLUE = (0.0, 0.0, 1.0)
+RED = (1.0, 0.0, 0.0)
+
+
+def _speed_to_color(speed: float, max_speed: float,
+                    low_rgb=BLUE, high_rgb=RED) -> ColorRGBA:
+    """``low_rgb`` (0 m/s) -> ``high_rgb`` (>= max_speed), clamped to [0, max_speed]."""
     frac = 0.0 if max_speed <= 0.0 else min(1.0, max(0.0, speed / max_speed))
     color = ColorRGBA()
-    color.r = frac
-    color.g = 0.0
-    color.b = 1.0 - frac
+    color.r, color.g, color.b = (
+        lo + (hi - lo) * frac for lo, hi in zip(low_rgb, high_rgb)
+    )
     color.a = 1.0
     return color
 
@@ -62,6 +67,8 @@ class SpeedPathPublisher:
             ``guidance.target_speed`` so "red" means "at the planned cruise
             speed").
         line_width: marker line width [m] (default: ``DEFAULT_LINE_WIDTH``).
+        low_rgb/high_rgb: color at 0 m/s / at ``max_speed`` (default blue/red),
+            e.g. to tell apart two paths shown together.
         qos_profile: QoS for the publisher (default: transient-local +
             reliable, see ``DEFAULT_QOS``).
     """
@@ -70,11 +77,14 @@ class SpeedPathPublisher:
                  reference_frame: str = DEFAULT_REFERENCE_FRAME,
                  max_speed: float = DEFAULT_MAX_SPEED,
                  line_width: float = DEFAULT_LINE_WIDTH,
-                 qos_profile: QoSProfile = DEFAULT_QOS) -> None:
+                 qos_profile: QoSProfile = DEFAULT_QOS,
+                 low_rgb=BLUE, high_rgb=RED) -> None:
         self._node = node
         self._reference_frame = reference_frame
         self._max_speed = float(max_speed)
         self._line_width = float(line_width)
+        self._low_rgb = tuple(low_rgb)
+        self._high_rgb = tuple(high_rgb)
         self._pub = node.create_publisher(Marker, topic, qos_profile)
         node.get_logger().info(
             "[SpeedPathPublisher] publishing to %s (frame: %s, max_speed: %.3f)"
@@ -102,7 +112,8 @@ class SpeedPathPublisher:
             point = Point()
             point.x, point.y, point.z = pos
             marker.points.append(point)
-            marker.colors.append(_speed_to_color(speed, self._max_speed))
+            marker.colors.append(
+                _speed_to_color(speed, self._max_speed, self._low_rgb, self._high_rgb))
         self._pub.publish(marker)
         # debug, not info: a replanning tracker's own tracker re-publishes
         # this on every re-plan (up to replan_rate_hz), unlike the prior
