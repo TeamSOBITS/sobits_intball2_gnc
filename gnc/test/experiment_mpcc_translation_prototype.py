@@ -358,7 +358,10 @@ def main():
 
         v_true = v_true + a0 * DT_TICK
         p_true = p_true + v_true * DT_TICK
-        vtheta_true = vtheta_true + atheta0 * DT_TICK
+        # plant-side integration has no OCP box to bound it (that's only enforced
+        # inside the solver's prediction horizon) -- clamp to the same physical
+        # range so a stuck solver (atheta0 pinned) can't run vtheta away unbounded
+        vtheta_true = np.clip(vtheta_true + atheta0 * DT_TICK, 0.0, VTHETA_MAX)
         theta_true = theta_true + vtheta_true * DT_TICK
 
     solve_times = np.array(solve_times)
