@@ -22,6 +22,9 @@ from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajector
 from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_trajectory_tracker import (
     ReplanningTrajectoryTracker,
 )
+from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
+    ReplanningMincoV3Tracker,
+)
 from sobits_intball2_gnc.guidance.trajectory_tracking.static_trajectory_tracker import (
     StaticTrajectoryTracker,
 )
@@ -85,7 +88,29 @@ class _ReplanningFixture:
         self._t = t
 
 
-FIXTURE_FACTORIES = [_StaticFixture, _ReplanningFixture]
+class _MincoV3Fixture:
+    """Ideal tracking: the "TF" reports the tracker's own last setpoint,
+    since v3 replans from its reference state rather than a trajectory the
+    fixture could sample independently."""
+
+    def __init__(self):
+        pytest.importorskip("minco_native_py")
+        self._t = 0.0
+        self.tracker = ReplanningMincoV3Tracker(
+            P0, P_TARGET, self._pose_fn, tf_fresh_fn=lambda stamp: True,
+            q0=[0.0, 0.0, 0.0, 1.0], target_speed=TARGET_SPEED,
+            max_accel=MAX_ACCEL,
+        )
+
+    def _pose_fn(self):
+        p, _v, _a, _q = self.tracker._last_output
+        return list(p), [0.0, 0.0, 0.0, 1.0], self._t
+
+    def step(self, t):
+        self._t = t
+
+
+FIXTURE_FACTORIES = [_StaticFixture, _ReplanningFixture, _MincoV3Fixture]
 
 
 @pytest.mark.parametrize("make_fixture", FIXTURE_FACTORIES)

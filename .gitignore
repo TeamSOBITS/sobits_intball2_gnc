@@ -75,6 +75,7 @@ CLAUDE.md
 docs/results/
 docs/archive/
 docs/**/*.pdf
+docs/**/*.zip
 docs/**/*.py
 docs/minimum_snap
 # GCOPTERヘッダ（MITライセンス）。ベンダリングせずinstall.shでclone取得する
@@ -82,6 +83,7 @@ docs/minimum_snap
 
 # gen_*.py生成物・ビルド成果物（regenerable）
 /gnc/test/experiment_minco_native/minco_attitude_native
+/gnc/test/experiment_minco_native/compare_heuristic_vs_ego_v2_segment_time_allocator
 
 # bench_*.cppをその場でg++ビルドした実行ファイル（regenerable、ソースの.cppは除外しない）
 /gnc/test/experiment_minco_native/bench_*
