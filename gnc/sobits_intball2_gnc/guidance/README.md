@@ -154,7 +154,6 @@ ros2 action send_goal /gnc/move_to ib2_msgs/action/CtlCommand \
 | `guidance.wrench_envelope_safety_margin` | `static`モード（TOPP-RA）の達成可能ウレンチ包絡域（`wrench_envelope_halfspaces`）を原点中心にこの係数で縮小し、フィードバック補正の余力を計画段階から確保する（`docs/2026-08-28_toppra_static_path_attitude_overshoot_incident.md`その5/6） | `0.7` |
 | `guidance.align_traj_publish_rate_hz` | SLERP+台形整列ランプの中間目標publishレート [Hz] | `20.0` |
 | `guidance.velocity_estimate_rate` | Guidance側TF速度推定器の更新レート [Hz]（`TrajectoryController`自身の推定器とは独立） | `10.0` |
-| `guidance.replan_rate_hz` | `replanning`モードの再計画レート [Hz]（`velocity_estimate_rate`と一致させる） | `10.0` |
 
 ### 動的パラメータ（`ros2 param set`で実行中に変更可能）
 
@@ -176,9 +175,8 @@ ros2 action send_goal /gnc/move_to ib2_msgs/action/CtlCommand \
 | `guidance.align_angular_accel_deg` | 同ランプの角加速度 [deg/s^2] | `2.4` |
 | `guidance.tf_staleness_timeout` | このノード自身のsimクロック基準で、TFのstampがこの時間止まったらTF断とみなす [s] | `1.0` |
 | `guidance.velocity_estimate_alpha` | Guidance側TF速度推定のEMA係数（1.0で無フィルタ） | `0.3` |
-| `guidance.trajectory_tracking_mode` | 軌道追従方式（`static`=開ループ単一軌道 / `replanning`=実TFから再計画、goal受理時にラッチ） | `static` |
+| `guidance.trajectory_tracking_mode` | 軌道追従方式（`static`=開ループ単一軌道 / `static_minco`=MINCOで一度だけ解く開ループ軌道 / `replanning_minco_v3`=global/local MINCO再計画、goal受理時にラッチ） | `static` |
 | `guidance.max_angular_rate_deg` | `q_des`のレート制限 [deg/s]（両trackingモード共通、未チューニング） | `90.0` |
-| `guidance.distance_fallback_m` | `replanning`モードのみ: 残距離がこの値未満になったら残りは再計画を打ち切る [m] | `0.3` |
 
 ### その他のROS I/Oラッパ
 

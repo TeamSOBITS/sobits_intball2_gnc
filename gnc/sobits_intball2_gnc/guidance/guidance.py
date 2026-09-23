@@ -107,21 +107,10 @@ _GUIDANCE_PARAM_DEFAULTS = {
     # B, like attitude_reference_mode -- latched at goal receipt in
     # _execute_fn below, not applied mid-trajectory.
     "guidance.trajectory_tracking_mode": "static",
-    # q_des rate limit for both modes (docs/archive/achieved/
+    # q_des rate limit (docs/archive/achieved/
     # 2026-08-24_trajectory_state_carryover_design.md 3-4節). First-cut
     # default, not yet tuned against real tracking performance.
     "guidance.max_angular_rate_deg": 90.0,
-    # Remaining-distance threshold below which "replanning" mode
-    # permanently stops re-planning for the rest of that goal (docs/
-    # archive/achieved/2026-08-24_replanning_distance_fallback_decision.md).
-    "guidance.distance_fallback_m": 0.3,
-    # Re-plan cadence for "replanning" mode, deliberately far below `rate`
-    # (docs/archive/achieved/2026-08-24_replan_rate_design.md) -- matches
-    # velocity_estimate_rate since v0 (this tracker's re-plan input) only
-    # refreshes that often anyway. Read-only: implemented as a tick counter
-    # inside _run_trajectory's existing `rate`-paced loop, not a separate
-    # timer, so it only ever takes effect at construction.
-    "guidance.replan_rate_hz": 10.0,
     # SLERP+trapezoid align ramp (docs/2026-08-27_align_slerp_trapezoid_
     # next_steps.md): _align_to() feeds the checkpoint a moving intermediate
     # target along this profile instead of stepping straight to the goal
@@ -184,16 +173,12 @@ class GuidanceNode(Node):
         # like guidance.rate (docs/guidance_velocity_estimator_design.md 5 節).
         _STATIC_PARAMS = frozenset({
             "guidance.rate", "guidance.velocity_estimate_rate",
-            # max_angular_rate_deg/distance_fallback_m: no dynamic-reconfigure
-            # design has been done for these yet (docs/archive/achieved/
-            # 2026-08-24_replanning_distance_fallback_decision.md /
+            # max_angular_rate_deg: no dynamic-reconfigure design has been
+            # done for it yet (docs/archive/achieved/
             # 2026-08-24_trajectory_state_carryover_design.md only decided the
-            # values/semantics, not a Category-A wiring) -- read-only until
-            # that's explicitly designed. replan_rate_hz is read-only for the
-            # same reason as velocity_estimate_rate above (only read at
-            # construction, to compute _replan_every_n_ticks).
-            "guidance.max_angular_rate_deg", "guidance.distance_fallback_m",
-            "guidance.replan_rate_hz",
+            # value/semantics, not a Category-A wiring) -- read-only until
+            # that's explicitly designed.
+            "guidance.max_angular_rate_deg",
             # Only read at GuidanceExecutor construction (see the ramp's own
             # comment above); no Category-A wiring exists for these either.
             "guidance.align_angular_speed_deg", "guidance.align_angular_accel_deg",
@@ -333,8 +318,6 @@ class GuidanceNode(Node):
             inertia=trajectory_inertia,
             velocity_fn=self._vel_estimator.get,
             max_angular_rate=np.radians(float(g("max_angular_rate_deg"))),
-            distance_fallback_m=float(g("distance_fallback_m")),
-            replan_rate_hz=float(g("replan_rate_hz")),
             align_angular_speed_deg=float(g("align_angular_speed_deg")),
             align_angular_accel_deg=float(g("align_angular_accel_deg")),
             align_traj_publish_rate_hz=float(g("align_traj_publish_rate_hz")),

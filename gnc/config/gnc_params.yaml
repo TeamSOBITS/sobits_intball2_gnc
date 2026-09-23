@@ -147,17 +147,11 @@
       face_travel_camera: main      # camera axis facing travel direction (face_travel)
       look_at_target_frame: ""      # not yet implemented
       align_at_arrival_camera: main # camera aligned to q_target on arrival
-      # Real-time re-planning (docs/guidance_realtime_replanning_design.md):
-      # static (open-loop single trajectory) or replanning (re-plans from live
-      # TF). Latched at goal receipt, like attitude_reference_mode.
+      # static / static_minco (open-loop single trajectory) or
+      # replanning_minco_v3 (global/local MINCO re-planning). Latched at goal
+      # receipt, like attitude_reference_mode.
       trajectory_tracking_mode: static
-      max_angular_rate_deg: 90.0    # q_des rate limit, both tracking modes, untuned guess
-      # replanning only: remaining-distance below which re-planning stops for
-      # the rest of the goal (docs/archive/achieved/2026-08-24_replanning_distance_fallback_decision.md).
-      distance_fallback_m: 0.3
-      # replanning only: re-plan cadence, matches velocity_estimate_rate
-      # (docs/archive/achieved/2026-08-24_replan_rate_design.md).
-      replan_rate_hz: 10.0
+      max_angular_rate_deg: 90.0    # q_des rate limit, untuned guess
       # static mode only (ToppraTrajectory): shrink wrench_envelope_halfspaces'
       # g vector by this factor (homothety about the origin, so it stays exact)
       # so the feedforward plan doesn't consume the full achievable-wrench
