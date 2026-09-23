@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One-shot move_to verification: drives a real move_to goal (MoveToClient)
 while recording everything relevant, event-driven (TF, `/gnc/trajectory_setpoint`,
-`/ctl/wrench`, `/ctl/wrench_achieved`, `/ctl/duty`), then computes and prints a
+`/gnc/checkpoints`, `/ctl/wrench`, `/ctl/wrench_achieved`, `/ctl/duty`), then computes and prints a
 single tracking-quality report -- position/attitude tracking error, fan-duty
 saturation, wrench desired-vs-achieved, and final arrival accuracy -- without
 needing a separate script per metric or manual CSV post-processing.
@@ -22,9 +22,19 @@ Usage:
     python3 test/manual/move_to_full_analysis.py nav_entry
     python3 test/manual/move_to_full_analysis.py nav_entry --set-mode static_minco --out-dir /tmp/trace --tag run1
 
-Raw per-topic CSVs are still written to `--out-dir` (tf/setpoint/wrench/
-wrench_achieved/duty/tracking_error) for deeper inspection, but are written
-even on Ctrl-C/exception (not only on clean completion).
+Tracking error is split by phase: ``trajectory`` samples are compared with the
+nearest-in-time `/gnc/trajectory_setpoint`; ``align`` samples (the latest
+reference received is a `/gnc/checkpoints` hold, i.e. pre_align/
+align_at_arrival) are compared with that checkpoint instead -- the aligner
+never updates the setpoint topic, so comparing against it would report the
+stale trajectory attitude.
+
+`--timeout-sec` bounds the wait for the goal result in sim time; on expiry
+the goal is canceled and whatever was recorded is analyzed.
+
+Raw per-topic CSVs are still written to `--out-dir` (tf/setpoint/checkpoint/
+wrench/wrench_achieved/duty/tracking_error) for deeper inspection, but are
+written even on Ctrl-C/exception (not only on clean completion).
 """
 import argparse
 import csv
@@ -36,7 +46,7 @@ import rclpy
 import rclpy.duration
 import rclpy.time
 import tf2_ros
-from geometry_msgs.msg import WrenchStamped
+from geometry_msgs.msg import PoseArray, WrenchStamped
 from rcl_interfaces.msg import Parameter as ParameterMsg
 from rcl_interfaces.msg import ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
@@ -55,6 +65,8 @@ REFERENCE_FRAME = "iss_body"
 TARGET_FRAME = "body"
 GUIDANCE_NODE = "guidance_node"
 DUTY_SATURATION_THRESHOLD = 0.99
+PHASE_TRAJECTORY = "trajectory"
+PHASE_ALIGN = "align"
 
 _NO_WAIT = rclpy.duration.Duration(seconds=0)
 
@@ -127,6 +139,23 @@ class SetpointRawRecorder:
         self.rows.append((stamp, tr.x, tr.y, tr.z, q.x, q.y, q.z, q.w))
 
 
+class CheckpointRecorder:
+    """Records every ``/gnc/checkpoints`` hold target (first pose only --
+    Guidance always publishes a single-pose array)."""
+
+    def __init__(self, node):
+        self.rows = []  # (t_sim, px,py,pz, qx,qy,qz,qw)
+        node.create_subscription(PoseArray, "/gnc/checkpoints", self._on_msg, RELIABLE_QOS)
+
+    def _on_msg(self, msg):
+        if not msg.poses:
+            return
+        pose = msg.poses[0]
+        tr, q = pose.position, pose.orientation
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        self.rows.append((stamp, tr.x, tr.y, tr.z, q.x, q.y, q.z, q.w))
+
+
 class WrenchRecorder:
     """Records ``/ctl/wrench`` (desired) or ``/ctl/wrench_achieved``
     (event-driven, whichever topic it's pointed at)."""
@@ -188,27 +217,41 @@ def write_csv(path, header, rows):
         w.writerows(rows)
 
 
-def nearest_match_errors(tf_rows, sp_rows):
-    """For each TF sample, find the nearest-in-time setpoint sample (both
-    lists are already time-ordered, event-driven) and compute position/
-    attitude tracking error against it. Two-pointer merge, O(n)."""
+def tracking_errors(tf_rows, sp_rows, cp_rows):
+    """For each TF sample, pick the reference the controller is following
+    and compute position/attitude error against it: the latest checkpoint if
+    it arrived after the latest setpoint (align phase), otherwise the
+    nearest-in-time setpoint. TF samples before the first reference are
+    skipped. All lists are time-ordered; O(n)."""
     rows = []
-    j = 0
-    n = len(sp_rows)
+    n_sp, n_cp = len(sp_rows), len(cp_rows)
+    j = 0            # nearest setpoint
+    sp_before = -1   # latest setpoint with stamp <= t
+    cp_before = -1   # latest checkpoint with stamp <= t
     for tf_row in tf_rows:
         t = tf_row[0]
-        while j + 1 < n and abs(sp_rows[j + 1][0] - t) <= abs(sp_rows[j][0] - t):
+        while j + 1 < n_sp and abs(sp_rows[j + 1][0] - t) <= abs(sp_rows[j][0] - t):
             j += 1
-        if n == 0:
+        while sp_before + 1 < n_sp and sp_rows[sp_before + 1][0] <= t:
+            sp_before += 1
+        while cp_before + 1 < n_cp and cp_rows[cp_before + 1][0] <= t:
+            cp_before += 1
+        # Before Guidance's first reference the vehicle holds a target this
+        # script never saw; the nearest future setpoint is not it.
+        if sp_before < 0 and cp_before < 0:
             continue
-        sp_row = sp_rows[j]
-        pos_now = np.array(tf_row[1:4])
-        quat_now = np.array(tf_row[4:8])
-        p_des = np.array(sp_row[1:4])
-        q_des = np.array(sp_row[4:8])
-        pos_err_m = float(np.linalg.norm(pos_now - p_des))
-        att_err_deg = geodesic_angle_deg(q_des, quat_now)
-        rows.append((t, pos_err_m, att_err_deg))
+        in_align = cp_before >= 0 and (
+            sp_before < 0 or cp_rows[cp_before][0] > sp_rows[sp_before][0]
+        )
+        if in_align:
+            phase, ref_row = PHASE_ALIGN, cp_rows[cp_before]
+        elif n_sp > 0:
+            phase, ref_row = PHASE_TRAJECTORY, sp_rows[j]
+        else:
+            continue
+        pos_err_m = float(np.linalg.norm(np.array(tf_row[1:4]) - np.array(ref_row[1:4])))
+        att_err_deg = geodesic_angle_deg(ref_row[4:8], tf_row[4:8])
+        rows.append((t, phase, pos_err_m, att_err_deg))
     return rows
 
 
@@ -233,7 +276,8 @@ def main():
                           "replanning_minco_v3); default: leave as-is")
     ap.add_argument("--out-dir", default="/tmp/move_to_full_analysis")
     ap.add_argument("--tag", default="run")
-    ap.add_argument("--timeout-sec", type=float, default=90.0)
+    ap.add_argument("--timeout-sec", type=float, default=90.0,
+                     help="sim-time limit on the goal result; the goal is canceled on expiry")
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -244,6 +288,7 @@ def main():
 
     tf_rec = TfRawRecorder(node)
     sp_rec = SetpointRawRecorder(node)
+    cp_rec = CheckpointRecorder(node)
     wrench_rec = WrenchRecorder(node, "/ctl/wrench")
     wrench_achieved_rec = WrenchRecorder(node, "/ctl/wrench_achieved")
     duty_rec = DutyRecorder(node)
@@ -266,7 +311,9 @@ def main():
 
     result = None
     try:
-        result = move_client.send_goal(target_pos, target_quat, timeout_sec=args.timeout_sec)
+        result = move_client.send_goal(
+            target_pos, target_quat, result_timeout_sec=args.timeout_sec
+        )
     except KeyboardInterrupt:
         print("interrupted -- analyzing whatever was recorded so far")
     except Exception as exc:  # noqa: BLE001 -- still want the analysis below
@@ -277,6 +324,8 @@ def main():
               ["t_sim", "px", "py", "pz", "qx", "qy", "qz", "qw"], tf_rec.rows)
     write_csv(os.path.join(args.out_dir, "%s_setpoint.csv" % args.tag),
               ["t_sim", "px", "py", "pz", "qx", "qy", "qz", "qw"], sp_rec.rows)
+    write_csv(os.path.join(args.out_dir, "%s_checkpoint.csv" % args.tag),
+              ["t_sim", "px", "py", "pz", "qx", "qy", "qz", "qw"], cp_rec.rows)
     write_csv(os.path.join(args.out_dir, "%s_wrench.csv" % args.tag),
               ["t_sim", "fx", "fy", "fz", "tx", "ty", "tz"], wrench_rec.rows)
     write_csv(os.path.join(args.out_dir, "%s_wrench_achieved.csv" % args.tag),
@@ -285,19 +334,24 @@ def main():
     write_csv(os.path.join(args.out_dir, "%s_duty.csv" % args.tag),
               ["t_sim"] + ["duty%d" % i for i in range(n_fans)], duty_rec.rows)
 
-    tracking_rows = nearest_match_errors(tf_rec.rows, sp_rec.rows)
+    tracking_rows = tracking_errors(tf_rec.rows, sp_rec.rows, cp_rec.rows)
     write_csv(os.path.join(args.out_dir, "%s_tracking_error.csv" % args.tag),
-              ["t_sim", "pos_error_m", "attitude_error_deg"], tracking_rows)
+              ["t_sim", "phase", "pos_error_m", "attitude_error_deg"], tracking_rows)
 
     # --- report ---
     print()
     print("=== move_to_full_analysis report: %s -> %s ===" % (args.location_name, args.tag))
     print("goal result: %s" % ("None (no result)" if result is None else "type=%d" % result.type))
     print()
-    print("tracking error (TF vs /gnc/trajectory_setpoint, nearest-time matched):")
-    summarize("position error", [r[1] * 1000 for r in tracking_rows], "mm", fmt="%.1f")
-    summarize("attitude error", [r[2] for r in tracking_rows], "deg")
-    print()
+    for phase, title in (
+        (PHASE_TRAJECTORY, "trajectory tracking error (TF vs /gnc/trajectory_setpoint, nearest-time matched):"),
+        (PHASE_ALIGN, "align hold error (TF vs latest /gnc/checkpoints, pre_align/align_at_arrival):"),
+    ):
+        phase_rows = [r for r in tracking_rows if r[1] == phase]
+        print(title)
+        summarize("position error", [r[2] * 1000 for r in phase_rows], "mm", fmt="%.1f")
+        summarize("attitude error", [r[3] for r in phase_rows], "deg")
+        print()
 
     if duty_rec.rows:
         duty_values = [row[1:] for row in duty_rec.rows]
