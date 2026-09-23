@@ -60,6 +60,8 @@ why ``max_accel`` is mandatory here (``HeuristicSegmentTimeAllocator``'s
 ``v0``-aware bound derivation requires it -- ``allocate()`` itself raises
 ``ValueError`` without it).
 """
+import time
+
 import numpy as np
 
 from sobits_intball2_gnc.guidance.segment_time.base_segment_time_allocator import (
@@ -142,6 +144,15 @@ class ReplanningTrajectoryTracker:
             (``docs/2026-08-30_static_minco_face_travel_gap.md`` 追記2).
             ``1.0`` (default) reproduces prior behavior. Ignored when
             ``use_minco=False``.
+        use_minco_heuristic_time: ``use_minco=True`` only -- when ``True``,
+            each re-plan's ``MincoTrajectory`` is built with
+            ``target_speed``/``max_accel`` forwarded, switching it from
+            ``plan_minco`` (segment times free-optimized) to
+            ``plan_minco_heuristic_time`` (heuristic arc-length-proportional
+            segment times + analytic wrench-violation stretch, ``docs/
+            2026-09-01_replanning_minco_v4_production_port_plan.md`` Phase
+            1/2). Default ``False`` reproduces prior behavior exactly --
+            opt-in, not yet sim-validated. Ignored when ``use_minco=False``.
 
     Raises:
         ValueError: if ``max_accel`` is ``None``, or if ``use_minco=True``
@@ -155,7 +166,8 @@ class ReplanningTrajectoryTracker:
                  route_waypoints=None, use_minco=False, q0=None,
                  minco_via_half_width=0.3,
                  minco_attitude_resample_spacing_m=None,
-                 minco_wrench_safety_margin=1.0):
+                 minco_wrench_safety_margin=1.0,
+                 use_minco_heuristic_time=False):
         if max_accel is None:
             raise ValueError(
                 "max_accel is required for replanning mode (v0-aware "
@@ -176,6 +188,7 @@ class ReplanningTrajectoryTracker:
             else float(minco_attitude_resample_spacing_m)
         )
         self._minco_wrench_safety_margin = float(minco_wrench_safety_margin)
+        self._use_minco_heuristic_time = bool(use_minco_heuristic_time)
         self._trajectory = trajectory
         # MincoTrajectoryはToppraTrajectory同様、毎回新規インスタンスとして
         # 差し替える設計（Trajectory.replace_coeffsのようなin-place更新は
@@ -217,12 +230,20 @@ class ReplanningTrajectoryTracker:
         # with re-planning (e.g. GuidanceExecutor's speed-path Marker), not
         # consumed internally by this class.
         self.last_replan_occurred = False
+        # Wall-clock seconds the most recent successful re-plan's trajectory
+        # solve took (MincoTrajectory.solve_wall_seconds for use_minco=True;
+        # HermiteSplineTrajectoryGenerator.generate() wall time otherwise).
+        # None until the first re-plan. Diagnostic only -- wall-clock, not
+        # sim time, same CLAUDE.md real-time-ban exception as
+        # MincoTrajectory.solve_wall_seconds (no control/timing decision
+        # reads this).
+        self.last_replan_solve_seconds = None
         # Which condition (module docstring) caused the one-way fallback
         # latch to trip on the most recent sample() call: "tf_stale" |
         # "distance" | "segment_time_infeasible" | None (latch not tripped
         # this tick). Stays populated (not reset)
         # after the tick it tripped on, so a caller logging once on the
-        # rising edge (docs/main_plan.md "[C] Controller内部値の可観測性強化")
+        # rising edge ("[C] Controller内部値の可観測性強化" task)
         # can still read *why* after the fact.
         self.last_fallback_reason = None
 
@@ -266,7 +287,7 @@ class ReplanningTrajectoryTracker:
             self.last_fallback_reason = "tf_stale"
             return
 
-        p_now, _quat, _stamp = pose
+        p_now, quat, _stamp = pose
         p_now = np.asarray(p_now, dtype=float)
         distance = float(np.linalg.norm(self._p_target - p_now))
 
@@ -284,7 +305,7 @@ class ReplanningTrajectoryTracker:
         )
 
         try:
-            self._replan(p_now, v0, t_global)
+            self._replan(p_now, v0, t_global, quat)
         except SegmentTimeInfeasibleError:
             # Condition 3 (module docstring): no feasible first-segment time
             # exists for the current (p_now, v0) -- freeze on whatever the
@@ -309,7 +330,7 @@ class ReplanningTrajectoryTracker:
             self._fallen_back = True
             self.last_fallback_reason = "distance"
 
-    def _replan(self, p_now, v0, t_global):
+    def _replan(self, p_now, v0, t_global, quat=None):
         pending = self._route_waypoints[self._next_idx:]
         if len(pending):
             waypoints = np.vstack([p_now, pending, self._p_target])
@@ -317,23 +338,39 @@ class ReplanningTrajectoryTracker:
             waypoints = np.array([p_now, self._p_target])
 
         if self._use_minco:
+            # self._q0はMincoTrajectoryの姿勢waypointの基準フレーム(waypoint 0
+            # =p_nowの姿勢は常にこのq0とみなされる、minco_trajectory.pyの
+            # docstring参照)。replan毎に実測姿勢(quat)へ更新しないと、goal開始
+            # 時の古い姿勢を「今の姿勢」と偽って軌道を組み立て続けることになる
+            # (docs/2026-09-01_replanning_minco_zeno_stall_investigation.md
+            # 原因2)。
+            if quat is not None:
+                self._q0 = np.asarray(quat, dtype=float)
             # 角速度w0の推定は現状未配線（VelocityEstimatorは並進速度のみ、
             # docs/archive/achieved/2026-08-30_minco_attitude_torque_status_and_next_steps.md
             # の課題外）。Phase 1は零で妥協する。
+            heuristic_time_kwargs = (
+                {"target_speed": self._target_speed, "max_accel": self._max_accel}
+                if self._use_minco_heuristic_time else {}
+            )
             new_trajectory = MincoTrajectory(
                 waypoints, self._q0, v0=v0, w0=np.zeros(3),
                 via_half_width=self._minco_via_half_width,
                 attitude_resample_spacing_m=self._minco_attitude_resample_spacing_m,
                 wrench_safety_margin=self._minco_wrench_safety_margin,
+                **heuristic_time_kwargs,
             )
             self._trajectory = new_trajectory
             self._t_origin = t_global
+            self.last_replan_solve_seconds = new_trajectory.solve_wall_seconds
             return
 
+        solve_t0 = time.perf_counter()
         segment_times = HeuristicSegmentTimeAllocator(
             target_speed=self._target_speed, max_accel=self._max_accel,
         ).allocate(waypoints, v0=v0)
         coeffs = HermiteSplineTrajectoryGenerator().generate(
             waypoints, segment_times, v0=v0
         )
+        self.last_replan_solve_seconds = time.perf_counter() - solve_t0
         self._trajectory.replace_coeffs(waypoints, segment_times, coeffs, t_global)
