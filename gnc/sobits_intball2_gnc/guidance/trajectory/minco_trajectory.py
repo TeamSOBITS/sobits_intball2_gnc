@@ -111,6 +111,8 @@ class MincoTrajectory:
             パラメータ。デフォルト``None``（両方Noneのまま）は既存の
             ``plan_minco``経路を使う既存挙動と完全に同一——オプトインの
             新経路であり、呼び出し側が明示的に指定しない限り挙動は変わらない。
+        body_frame_wrench: ``True``なら``q0``をC++に渡し、wrench envelope（機体座標）を
+            機体座標の力で評価する。``False``（既定）は従来通りreference系の加速度をそのまま当てる。
 
     Raises:
         MincoInfeasibleError: ``plan_minco``/``plan_minco_heuristic_time``が
@@ -121,7 +123,7 @@ class MincoTrajectory:
                  forward_axis=(1.0, 0.0, 0.0), face_travel=True,
                  via_half_width=0.3, attitude_resample_spacing_m=None,
                  wrench_safety_margin=1.0, target_speed=None, max_accel=None,
-                 a0=None, v_tail=None):
+                 a0=None, v_tail=None, body_frame_wrench=False):
         if (target_speed is None) != (max_accel is None):
             raise ValueError(
                 "target_speed and max_accel must be given together (both "
@@ -138,6 +140,7 @@ class MincoTrajectory:
             raise ValueError("position_waypoints must have shape (N, 3), N>=2")
 
         self._q0 = np.asarray(q0, dtype=float)
+        wrench_q0 = [float(c) for c in self._q0] if body_frame_wrench else None
         v0 = np.zeros(3) if v0 is None else np.asarray(v0, dtype=float)
         w0 = np.zeros(3) if w0 is None else np.asarray(w0, dtype=float)
 
@@ -158,7 +161,7 @@ class MincoTrajectory:
         solve_t0 = time.perf_counter()
         segment_times, coeffs, duration = self._solve(
             position_waypoints, rotvecs, v0, w0, via_half_width,
-            wrench_safety_margin, target_speed, max_accel, a0, v_tail
+            wrench_safety_margin, target_speed, max_accel, a0, v_tail, wrench_q0
         )
 
         if face_travel:
@@ -178,12 +181,47 @@ class MincoTrajectory:
             )
             segment_times, coeffs, duration = self._solve(
                 position_waypoints, rotvecs, v0, w0, via_half_width,
-                wrench_safety_margin, target_speed, max_accel, a0, v_tail
+                wrench_safety_margin, target_speed, max_accel, a0, v_tail, wrench_q0
             )
 
-        self.solve_wall_seconds = time.perf_counter() - solve_t0
-        self.num_waypoints = len(position_waypoints)
+        self._set_solution(segment_times, coeffs, duration,
+                           time.perf_counter() - solve_t0, len(position_waypoints))
 
+    @classmethod
+    def from_rotvec_waypoints(cls, position_waypoints, rotvecs, q0, v0, rotvec_rate0,
+                              a0, rotvec_accel0, v_tail=None, via_half_width=0.0,
+                              wrench_safety_margin=1.0, max_vel=None,
+                              warm_start_segment_times=None, body_frame_wrench=False):
+        """Free-time ``plan_minco`` solve with caller-given ``q0``-relative
+        ``rotvecs`` (``rotvecs[0]`` is the head attitude) and head rotvec
+        rate/accel, for a segment that starts mid-rotation (the constructor
+        always starts at ``q0`` at rest). ``max_vel=None`` disables the speed cap."""
+        position_waypoints = np.asarray(position_waypoints, dtype=float)
+        rotvecs = np.asarray(rotvecs, dtype=float)
+        if position_waypoints.ndim != 2 or position_waypoints.shape[1] != 3 \
+                or position_waypoints.shape[0] < 2 or rotvecs.shape != position_waypoints.shape:
+            raise ValueError("position_waypoints/rotvecs must both have shape (N, 3), N>=2")
+        self = cls.__new__(cls)
+        self._q0 = np.asarray(q0, dtype=float)
+        wrench_q0 = [float(c) for c in self._q0] if body_frame_wrench else None
+        solve_t0 = time.perf_counter()
+        segment_times, coeffs, duration = cls._solve(
+            position_waypoints, rotvecs, np.asarray(v0, dtype=float),
+            np.asarray(rotvec_rate0, dtype=float), float(via_half_width),
+            wrench_safety_margin, None, None, [float(c) for c in a0],
+            None if v_tail is None else [float(c) for c in v_tail], wrench_q0,
+            rot_a0=[float(c) for c in rotvec_accel0],
+            max_vel=-1.0 if max_vel is None else float(max_vel),
+            warm_start_T=None if warm_start_segment_times is None
+            else [float(t) for t in warm_start_segment_times],
+        )
+        self._set_solution(segment_times, coeffs, duration,
+                           time.perf_counter() - solve_t0, len(position_waypoints))
+        return self
+
+    def _set_solution(self, segment_times, coeffs, duration, solve_wall_seconds, num_waypoints):
+        self.solve_wall_seconds = solve_wall_seconds
+        self.num_waypoints = num_waypoints
         self._segment_times = segment_times
         self._cum_times = np.concatenate([[0.0], np.cumsum(self._segment_times)])
         self._pos_coeffs = coeffs[:, 0:3, :]
@@ -192,7 +230,8 @@ class MincoTrajectory:
 
     @classmethod
     def _solve(cls, position_waypoints, rotvecs, v0, w0, via_half_width,
-               wrench_safety_margin, target_speed, max_accel, a0=None, v_tail=None):
+               wrench_safety_margin, target_speed, max_accel, a0=None, v_tail=None,
+               wrench_q0=None, **plan_minco_kwargs):
         """Build ``waypoints_flat`` from ``position_waypoints``/``rotvecs`` and run
         one :func:`_call_minco` solve. Returns ``(segment_times, coeffs, duration)``,
         ``coeffs`` already reshaped to ``(n_segments, _N_DIMS, _N_COEFFS)``.
@@ -203,7 +242,8 @@ class MincoTrajectory:
             waypoints_flat.extend(float(c) for c in rv)
         success, error_code, segment_times, coeffs_flat, duration = cls._call_minco(
             waypoints_flat, v0.tolist(), w0.tolist(), via_half_width,
-            wrench_safety_margin, target_speed, max_accel, a0, v_tail
+            wrench_safety_margin, target_speed, max_accel, a0, v_tail, wrench_q0,
+            **plan_minco_kwargs
         )
         if not success:
             raise MincoInfeasibleError(
@@ -220,7 +260,8 @@ class MincoTrajectory:
 
     @staticmethod
     def _call_minco(waypoints_flat, v0, w0, via_half_width, wrench_safety_margin,
-                     target_speed, max_accel, a0=None, v_tail=None):
+                     target_speed, max_accel, a0=None, v_tail=None, wrench_q0=None,
+                     **plan_minco_kwargs):
         """``minco_native_py``への単一の呼び出し口（モジュール docstring参照）。
         いずれ（別の"Phase 2"、``docs/archive/achieved/
         2026-08-30_minco_attitude_torque_status_and_next_steps.md``）この
@@ -233,11 +274,11 @@ class MincoTrajectory:
         if target_speed is None:
             return minco_native_py.plan_minco(
                 waypoints_flat, v0, w0, via_half_width, wrench_safety_margin,
-                a0=a0, v_tail=v_tail,
+                a0=a0, v_tail=v_tail, q0=wrench_q0, **plan_minco_kwargs,
             )
         return minco_native_py.plan_minco_heuristic_time(
             waypoints_flat, v0, w0, target_speed, max_accel,
-            via_half_width, wrench_safety_margin
+            via_half_width, wrench_safety_margin, q0=wrench_q0
         )
 
     @staticmethod
@@ -276,12 +317,12 @@ class MincoTrajectory:
         return MincoTrajectory._rotvecs_from_directions(directions, q0, forward_axis)
 
     @staticmethod
-    def _rotvecs_from_directions(directions, q0, forward_axis):
+    def _rotvecs_from_directions(directions, q0, forward_axis, rv_head=None):
         """``_waypoint_rotvecs``（pass 1、直線方向）と``__init__``のpass 2
         （実際に解けた位置経路の接線、``sample()``の``v``）が共有する
         face-travelの中核ロジック（``ToppraTrajectory._dense_travel_rotvecs``
         と同じ考え方、waypointごとに1回だけ計算する版）。``directions[0]``は
-        使わない（サンプル0は常に``q0``・rotvec 0のまま、
+        使わない（サンプル0は``rv_head``、省略時は``q0``・rotvec 0のまま、
         ``ToppraTrajectory``の``initial_q_des``規約と同じ）。
 
         ``compute_q_des``自体は絶対姿勢（reference frame）を返すため、
@@ -302,7 +343,9 @@ class MincoTrajectory:
         n = len(directions)
         rotvecs = np.zeros((n, 3))
         q0 = np.asarray(q0, dtype=float)
-        q_prev = q0.copy()
+        if rv_head is not None:
+            rotvecs[0] = rv_head
+        q_prev = quat_mul(q0, quat_exp(rotvecs[0]))
         for i in range(1, n):
             q_prev = compute_q_des(
                 directions[i], q_prev, _DEGENERATE_TANGENT_THRESHOLD, forward_axis

@@ -281,7 +281,8 @@ class GuidanceExecutor:
                 minco_attitude_resample_spacing_m=None,
                 minco_wrench_safety_margin=1.0, minco_freetime=False,
                 minco_local_replan_period=DEFAULT_LOCAL_REPLAN_PERIOD_S,
-                minco_planning_horizon_m=DEFAULT_PLANNING_HORIZON_M):
+                minco_planning_horizon_m=DEFAULT_PLANNING_HORIZON_M,
+                minco_v3_face_travel=False, minco_local_max_vel=None):
         """Run one move-to-target goal; returns a ``STATUS_*`` constant.
 
         ``via_waypoints``: an optional ordered list of interior relay points
@@ -334,6 +335,11 @@ class GuidanceExecutor:
         ``ReplanningMincoV3Tracker``'s ``local_replan_period``/
         ``planning_horizon_m``. Non-positive values fall back to
         ``"static"``. Ignored by every other mode.
+
+        ``minco_v3_face_travel``/``minco_local_max_vel``: ``"replanning_minco_v3"``
+        only -- with ``face_travel`` also set, the tracker faces travel
+        (``ReplanningMincoV3Tracker``'s ``face_travel``/``local_max_vel``).
+        ``False`` (default) keeps the fixed-``q0`` behavior.
 
         ``look_at_target_frame`` is accepted but currently unused -- reserved
         for the future ``look_at`` attitude-reference mode (docs/
@@ -507,6 +513,9 @@ class GuidanceExecutor:
                     attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
                     local_replan_period=minco_local_replan_period,
                     planning_horizon_m=minco_planning_horizon_m,
+                    face_travel=face_travel and minco_v3_face_travel,
+                    forward_axis=forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"],
+                    local_max_vel=minco_local_max_vel,
                 )
                 traj = v3_tracker.trajectory
                 self._log.info(
