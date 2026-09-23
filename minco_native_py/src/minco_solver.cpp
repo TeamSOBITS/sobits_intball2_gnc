@@ -222,6 +222,64 @@ inline void omegaDotJacobians(const Vector3d &r, const Vector3d &rDot, const Vec
     }
 }
 
+inline Matrix3d expRot(const Vector3d &r)
+{
+    const double theta = r.norm();
+    if (theta < 1e-12)
+    {
+        return Matrix3d::Identity();
+    }
+    return AngleAxisd(theta, r / theta).toRotationMatrix();
+}
+
+// F_ENV is a body-frame envelope, so the fan force for reference-frame acceleration acc
+// at attitude R0*Exp(r) is MASS*Exp(r)^T*R0^T*acc. body=false keeps the legacy
+// reference-frame check for callers that do not pass q0.
+struct ForceFrame
+{
+    bool body = false;
+    Matrix3d R0t = Matrix3d::Identity();
+};
+
+inline Vector3d requiredForce(const ForceFrame &ff, const Vector3d &r, const Vector3d &acc)
+{
+    if (!ff.body)
+    {
+        return MASS * acc;
+    }
+    return MASS * (expRot(r).transpose() * (ff.R0t * acc));
+}
+
+inline void requiredForceGrad(const ForceFrame &ff, const Vector3d &r, const Vector3d &acc,
+                              const Vector3d &gradForce, Vector3d &gradAcc, Vector3d &gradR)
+{
+    if (!ff.body)
+    {
+        gradAcc = MASS * gradForce;
+        gradR.setZero();
+        return;
+    }
+    const Matrix3d Rr = expRot(r);
+    const Vector3d accBody = Rr.transpose() * (ff.R0t * acc);
+    gradAcc = MASS * (ff.R0t.transpose() * (Rr * gradForce));
+    gradR = MASS * ((skewMat(accBody) * rightJacobian(r)).transpose() * gradForce);
+}
+
+ForceFrame forceFrameFrom(const std::optional<std::vector<double>> &q0)
+{
+    ForceFrame ff;
+    if (q0.has_value())
+    {
+        if (q0->size() != 4)
+        {
+            throw std::invalid_argument("q0 must have size 4 ([x, y, z, w])");
+        }
+        ff.body = true;
+        ff.R0t = Quaterniond((*q0)[3], (*q0)[0], (*q0)[1], (*q0)[2]).normalized().toRotationMatrix().transpose();
+    }
+    return ff;
+}
+
 struct EvalContext
 {
     minco::MINCO_S3NU *posMinco;
@@ -234,6 +292,8 @@ struct EvalContext
     std::vector<Vector3d> viaGiven;  // 位置via点の与えられた基準値（自由変数の中心）
     Matrix3Xd rotVia;                // 姿勢via点（固定、最適化しない）
     VectorXd fixedT;  // evaluateFixedT専用: 固定されたセグメント時間（evaluate()では未使用）
+    double maxVel = -1.0;  // evaluate()専用: 位置速度の上限[m/s]、<=0で無効
+    ForceFrame forceFrame;
 };
 
 double evaluate(void *instance, const VectorXd &x, VectorXd &g)
@@ -297,6 +357,7 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
             beta2 << 0.0, 0.0, 2.0, 6.0 * s1, 12.0 * s2, 20.0 * s3;
             beta3 << 0.0, 0.0, 0.0, 6.0, 24.0 * s1, 60.0 * s2;
 
+            const Vector3d velPos = cPos.transpose() * beta1;
             const Vector3d accPos = cPos.transpose() * beta2;
             const Vector3d jerPos = cPos.transpose() * beta3;
             const Vector3d r = cRot.transpose() * beta0;
@@ -306,12 +367,22 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
             const Vector3d omegaDot = omegaDotOf(r, rDot, rDdot);
 
             Matrix<double, 6, 1> wrench;
-            wrench.head<3>() = MASS * accPos;
+            wrench.head<3>() = requiredForce(ctx->forceFrame, r, accPos);
             wrench.tail<3>() = INERTIA * omegaDot;
 
             const VectorXd viol = F_ENV * wrench - ctx->wrenchSafetyMargin * G_ENV;
             Matrix<double, 6, 1> gradWrench = Matrix<double, 6, 1>::Zero();
             double pena = 0.0;
+            Vector3d gradVelPos = Vector3d::Zero();
+            if (ctx->maxVel > 0.0)
+            {
+                double f, df;
+                if (smoothedL1(velPos.squaredNorm() - ctx->maxVel * ctx->maxVel, SMOOTH_FACTOR, f, df))
+                {
+                    gradVelPos = (ctx->penaltyWeight * df * 2.0) * velPos;
+                    pena += ctx->penaltyWeight * f;
+                }
+            }
             for (int k = 0; k < viol.size(); k++)
             {
                 double f, df;
@@ -322,21 +393,23 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
                 }
             }
 
-            const Vector3d gradAccPos = MASS * gradWrench.head<3>();
+            Vector3d gradAccPos, gradRForce;
+            requiredForceGrad(ctx->forceFrame, r, accPos, gradWrench.head<3>(), gradAccPos, gradRForce);
             const Vector3d gradWrenchRot = gradWrench.tail<3>();
             Matrix3d dOmegaDot_dR, dOmegaDot_dRDot, dOmegaDot_dRDdot;
             omegaDotJacobians(r, rDot, rDdot, dOmegaDot_dR, dOmegaDot_dRDot, dOmegaDot_dRDdot);
-            const Vector3d gradR = INERTIA * (dOmegaDot_dR.transpose() * gradWrenchRot);
+            const Vector3d gradR = INERTIA * (dOmegaDot_dR.transpose() * gradWrenchRot) + gradRForce;
             const Vector3d gradRDot = INERTIA * (dOmegaDot_dRDot.transpose() * gradWrenchRot);
             const Vector3d gradRDdot = INERTIA * (dOmegaDot_dRDdot.transpose() * gradWrenchRot);
 
             const double node = (j == 0 || j == INTEGRAL_RES) ? 0.5 : 1.0;
             const double alpha = j * integralFrac;
-            gdC_penalty_pos.block<6, 3>(i * 6, 0) += (beta2 * gradAccPos.transpose()) * node * step;
+            gdC_penalty_pos.block<6, 3>(i * 6, 0) +=
+                (beta1 * gradVelPos.transpose() + beta2 * gradAccPos.transpose()) * node * step;
             gdC_penalty_rot.block<6, 3>(i * 6, 0) +=
                 (beta0 * gradR.transpose() + beta1 * gradRDot.transpose() + beta2 * gradRDdot.transpose())
                 * node * step;
-            gdT_penalty(i) += (gradAccPos.dot(jerPos) * alpha
+            gdT_penalty(i) += (gradVelPos.dot(accPos) * alpha + gradAccPos.dot(jerPos) * alpha
                                + alpha * (gradR.dot(rDot) + gradRDot.dot(rDdot) + gradRDdot.dot(jerRot)))
                                   * node * step
                               + node * integralFrac * pena;
@@ -434,7 +507,7 @@ double evaluateFixedT(void *instance, const VectorXd &x, VectorXd &g)
             const Vector3d omegaDot = omegaDotOf(r, rDot, rDdot);
 
             Matrix<double, 6, 1> wrench;
-            wrench.head<3>() = MASS * accPos;
+            wrench.head<3>() = requiredForce(ctx->forceFrame, r, accPos);
             wrench.tail<3>() = INERTIA * omegaDot;
 
             const VectorXd viol = F_ENV * wrench - ctx->wrenchSafetyMargin * G_ENV;
@@ -450,11 +523,12 @@ double evaluateFixedT(void *instance, const VectorXd &x, VectorXd &g)
                 }
             }
 
-            const Vector3d gradAccPos = MASS * gradWrench.head<3>();
+            Vector3d gradAccPos, gradRForce;
+            requiredForceGrad(ctx->forceFrame, r, accPos, gradWrench.head<3>(), gradAccPos, gradRForce);
             const Vector3d gradWrenchRot = gradWrench.tail<3>();
             Matrix3d dOmegaDot_dR, dOmegaDot_dRDot, dOmegaDot_dRDdot;
             omegaDotJacobians(r, rDot, rDdot, dOmegaDot_dR, dOmegaDot_dRDot, dOmegaDot_dRDdot);
-            const Vector3d gradR = INERTIA * (dOmegaDot_dR.transpose() * gradWrenchRot);
+            const Vector3d gradR = INERTIA * (dOmegaDot_dR.transpose() * gradWrenchRot) + gradRForce;
             const Vector3d gradRDot = INERTIA * (dOmegaDot_dRDot.transpose() * gradWrenchRot);
             const Vector3d gradRDdot = INERTIA * (dOmegaDot_dRDdot.transpose() * gradWrenchRot);
 
@@ -487,7 +561,7 @@ double evaluateFixedT(void *instance, const VectorXd &x, VectorXd &g)
 }
 
 double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, const VectorXd &T, int K,
-                     double wrenchSafetyMargin)
+                     double wrenchSafetyMargin, const ForceFrame &ff)
 {
     const MatrixX3d &coeffsPos = posMinco.getCoeffs();
     const MatrixX3d &coeffsRot = rotMinco.getCoeffs();
@@ -509,7 +583,7 @@ double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, co
             const Vector3d rDot = cRot.transpose() * beta1;
             const Vector3d rDdot = cRot.transpose() * beta2;
             Matrix<double, 6, 1> wrench;
-            wrench.head<3>() = MASS * accPos;
+            wrench.head<3>() = requiredForce(ff, r, accPos);
             wrench.tail<3>() = INERTIA * omegaDotOf(r, rDot, rDdot);
             const VectorXd viol = F_ENV * wrench - wrenchSafetyMargin * G_ENV;
             worst = std::max(worst, viol.maxCoeff());
@@ -525,7 +599,7 @@ double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, co
 // maxRatioPerSegmentと同じ役割だが、omegaDotはSO(3)ヤコビアン補正込みの
 // omegaDotOf()を使う点が異なる）。
 VectorXd maxRatioPerSegment(const VectorXd &T, const MatrixX3d &coeffsPos, const MatrixX3d &coeffsRot,
-                             int K, double wrenchSafetyMargin)
+                             int K, double wrenchSafetyMargin, const ForceFrame &ff)
 {
     VectorXd maxRatio = VectorXd::Zero(K);
     const double integralFrac = 1.0 / INTEGRAL_RES;
@@ -546,7 +620,7 @@ VectorXd maxRatioPerSegment(const VectorXd &T, const MatrixX3d &coeffsPos, const
             const Vector3d rDot = cRot.transpose() * beta1;
             const Vector3d rDdot = cRot.transpose() * beta2;
             Matrix<double, 6, 1> wrench;
-            wrench.head<3>() = MASS * accPos;
+            wrench.head<3>() = requiredForce(ff, r, accPos);
             wrench.tail<3>() = INERTIA * omegaDotOf(r, rDot, rDdot);
             const VectorXd lhs = F_ENV * wrench;
             for (int k = 0; k < lhs.size(); k++)
@@ -634,7 +708,11 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       const std::optional<std::vector<double>> &warm_start_qvia,
                       const std::optional<std::vector<double>> &warm_start_T,
                       const std::optional<std::vector<double>> &a0,
-                      const std::optional<std::vector<double>> &v_tail)
+                      const std::optional<std::vector<double>> &v_tail,
+                      const std::optional<std::vector<double>> &rot_a0,
+                      const std::optional<std::vector<double>> &rot_v_tail,
+                      double max_vel,
+                      const std::optional<std::vector<double>> &q0)
 {
     PlanResult result;
 
@@ -656,6 +734,11 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         if ((a0.has_value() && a0->size() != 3) || (v_tail.has_value() && v_tail->size() != 3))
         {
             throw std::invalid_argument("a0/v_tail must have size 3");
+        }
+        if ((rot_a0.has_value() && rot_a0->size() != 3) ||
+            (rot_v_tail.has_value() && rot_v_tail->size() != 3))
+        {
+            throw std::invalid_argument("rot_a0/rot_v_tail must have size 3");
         }
         if (via_half_width < 0.0)
         {
@@ -699,8 +782,16 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         Matrix3d headRot = Matrix3d::Zero();
         headRot.col(0) = rotAll[0];
         headRot.col(1) = w0vec;
+        if (rot_a0.has_value())
+        {
+            headRot.col(2) = Vector3d((*rot_a0)[0], (*rot_a0)[1], (*rot_a0)[2]);
+        }
         Matrix3d tailRot = Matrix3d::Zero();
         tailRot.col(0) = rotAll[N - 1];
+        if (rot_v_tail.has_value())
+        {
+            tailRot.col(1) = Vector3d((*rot_v_tail)[0], (*rot_v_tail)[1], (*rot_v_tail)[2]);
+        }
 
         minco::MINCO_S3NU posMinco, rotMinco;
         posMinco.setConditions(headPos, tailPos, K);
@@ -724,6 +815,8 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         ctx.viaHalfWidth = via_half_width;
         ctx.wrenchSafetyMargin = wrench_safety_margin;
         ctx.penaltyWeight = weightSchedule[0];
+        ctx.maxVel = max_vel;
+        ctx.forceFrame = forceFrameFrom(q0);
 
         VectorXd x = VectorXd::Zero(3 * numVia + K);
 
@@ -792,7 +885,7 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         posMinco.setParameters(qVia, T);
         rotMinco.setParameters(rotVia, T);
 
-        const double maxViol = maxViolation(posMinco, rotMinco, T, K, wrench_safety_margin);
+        const double maxViol = maxViolation(posMinco, rotMinco, T, K, wrench_safety_margin, ctx.forceFrame);
 
         result.segment_times.resize(K);
         for (int i = 0; i < K; i++)
@@ -845,7 +938,8 @@ PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
                                    double target_speed,
                                    double max_accel,
                                    double via_half_width,
-                                   double wrench_safety_margin)
+                                   double wrench_safety_margin,
+                                   const std::optional<std::vector<double>> &q0)
 {
     PlanResult result;
 
@@ -939,6 +1033,7 @@ PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
         ctx.rotVia = rotVia;
         ctx.viaHalfWidth = via_half_width;
         ctx.wrenchSafetyMargin = wrench_safety_margin;
+        ctx.forceFrame = forceFrameFrom(q0);
 
         VectorXd x = VectorXd::Zero(3 * numVia);
         lbfgs::lbfgs_parameter_t param;
@@ -973,7 +1068,8 @@ PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
             rotMinco.setParameters(rotVia, T);
 
             const VectorXd maxRatio =
-                maxRatioPerSegment(T, posMinco.getCoeffs(), rotMinco.getCoeffs(), K, wrench_safety_margin);
+                maxRatioPerSegment(T, posMinco.getCoeffs(), rotMinco.getCoeffs(), K, wrench_safety_margin,
+                                   ctx.forceFrame);
             const bool feasible = maxRatio.maxCoeff() <= 1.0 + VIOLATION_TOLERANCE;
             if (feasible)
             {
@@ -987,7 +1083,7 @@ PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
             T *= r;
         }
 
-        const double maxViol = maxViolation(posMinco, rotMinco, T, K, wrench_safety_margin);
+        const double maxViol = maxViolation(posMinco, rotMinco, T, K, wrench_safety_margin, ctx.forceFrame);
 
         result.segment_times.resize(K);
         for (int i = 0; i < K; i++)

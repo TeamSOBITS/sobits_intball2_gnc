@@ -40,6 +40,11 @@ struct PlanResult
 // a0: head側の位置加速度（3要素）、v_tail: tail側の位置速度（3要素）。
 // nulloptなら0（従来挙動）。EGO-Planner v2のlocal replanが直前軌道の加速度と
 // global軌道上の速度を境界条件に使うのに合わせるためのもの。
+// rot_a0/rot_v_tail: 姿勢（回転ベクトル）側の同じもの。nulloptなら0（従来挙動）。
+// max_vel: 位置速度の上限[m/s]をペナルティで課す（EGO-Planner v2のmax_velと同じ柔らかい制約、
+// 成否判定はwrenchのみ）。<=0で無効（従来挙動）。
+// q0: 回転ベクトルの基準姿勢[x,y,z,w]。渡すとwrench envelope（機体座標）を機体座標の力で評価する。
+// nulloptなら従来通りreference系の加速度をそのまま当てる。
 PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       const std::vector<double> &v0,
                       const std::vector<double> &w0,
@@ -48,7 +53,11 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       const std::optional<std::vector<double>> &warm_start_qvia = std::nullopt,
                       const std::optional<std::vector<double>> &warm_start_T = std::nullopt,
                       const std::optional<std::vector<double>> &a0 = std::nullopt,
-                      const std::optional<std::vector<double>> &v_tail = std::nullopt);
+                      const std::optional<std::vector<double>> &v_tail = std::nullopt,
+                      const std::optional<std::vector<double>> &rot_a0 = std::nullopt,
+                      const std::optional<std::vector<double>> &rot_v_tail = std::nullopt,
+                      double max_vel = -1.0,
+                      const std::optional<std::vector<double>> &q0 = std::nullopt);
 
 // planMincoとの違い: セグメント時間Tを自由変数にせず、内部で
 // (1) ヒューリスティックな初期T（経路全体の弧長比配分、v0-aware台形/三角形
@@ -68,6 +77,7 @@ PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
                                    double target_speed,
                                    double max_accel,
                                    double via_half_width = 0.3,
-                                   double wrench_safety_margin = 1.0);
+                                   double wrench_safety_margin = 1.0,
+                                   const std::optional<std::vector<double>> &q0 = std::nullopt);
 
 }  // namespace minco_native
