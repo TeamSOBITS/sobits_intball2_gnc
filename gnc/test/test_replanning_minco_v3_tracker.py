@@ -6,6 +6,7 @@ import pytest
 
 pytest.importorskip("minco_native_py")
 
+from sobits_intball2_gnc.control.utils.quat_math import quat_rotate
 from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
     MincoInfeasibleError,
 )
@@ -250,3 +251,44 @@ def test_freetime_global_reaches_target():
     assert records[-1][0] < T_CAP
     assert np.allclose(records[-1][1], P_TARGET, atol=1e-3)
     assert np.allclose(records[-1][2], 0.0, atol=1e-3)
+
+
+FACE_TRAVEL_ROUTE = [[3.0, 0.0, 0.0]]
+FACE_TRAVEL_TARGET = [3.0, 3.0, 0.0]
+FACE_TRAVEL_MAX_VEL = 0.2
+
+
+@pytest.fixture(scope="module")
+def face_travel_run():
+    tf = _IdealTrackingTf()
+    tracker = _make_tracker(
+        tf, p_target=FACE_TRAVEL_TARGET, route_waypoints=FACE_TRAVEL_ROUTE,
+        planning_horizon_m=4.0, face_travel=True, local_max_vel=FACE_TRAVEL_MAX_VEL,
+        attitude_resample_spacing_m=0.3,
+    )
+    return _run_to_end(tracker, tf)
+
+
+def _angle_deg(a, b):
+    return np.degrees(np.arccos(np.clip(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)), -1.0, 1.0)))
+
+
+def test_face_travel_faces_own_velocity_through_turn(face_travel_run):
+    errors = [_angle_deg(quat_rotate(q, np.array([1.0, 0.0, 0.0])), v)
+              for _t, _p, v, _a, q, _r in face_travel_run if np.linalg.norm(v) > 0.05]
+    # The first local already aims past the corner (leg < look-ahead) while the
+    # head still faces the first leg, so the start is off by ~25 deg for a while.
+    assert np.percentile(errors, 95) < 20.0
+    assert np.allclose(face_travel_run[-1][1], FACE_TRAVEL_TARGET, atol=1e-2)
+
+
+def test_face_travel_attitude_continuous_across_replans(face_travel_run):
+    assert any(r[5] for r in face_travel_run)
+    steps = [_angle_deg(quat_rotate(prev[4], np.array([1.0, 0.0, 0.0])),
+                        quat_rotate(cur[4], np.array([1.0, 0.0, 0.0])))
+             for prev, cur in zip(face_travel_run, face_travel_run[1:])]
+    assert max(steps) < 2.0
+
+
+def test_face_travel_respects_local_speed_cap(face_travel_run):
+    assert max(np.linalg.norm(r[2]) for r in face_travel_run) < FACE_TRAVEL_MAX_VEL * 1.03

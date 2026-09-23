@@ -146,6 +146,8 @@ _GUIDANCE_PARAM_DEFAULTS = {
     # local_replan_period/planning_horizon_m. Category B, latched per goal.
     "guidance.minco_local_replan_period": 1.0,
     "guidance.minco_planning_horizon_m": 2.0,
+    "guidance.minco_v3_face_travel": False,
+    "guidance.minco_local_max_vel": 0.2,
 }
 
 _ATTITUDE_REFERENCE_MODES = frozenset({"fixed", "face_travel", "look_at"})
@@ -519,6 +521,12 @@ class GuidanceNode(Node):
             ),
             minco_planning_horizon_m=float(
                 self.get_parameter("guidance.minco_planning_horizon_m").value
+            ),
+            minco_v3_face_travel=bool(
+                self.get_parameter("guidance.minco_v3_face_travel").value
+            ),
+            minco_local_max_vel=float(
+                self.get_parameter("guidance.minco_local_max_vel").value
             ),
         )
         if status == STATUS_SUCCESS:

@@ -46,9 +46,15 @@ Architecture, matching EGO-Planner v2's actual global/local role split
   (fact 54: combining it with warm start showed no measurable benefit, and
   K>1's own production wiring is still open).
 
-Attitude is out of scope for this initial production port (依頼者の意向):
-every ``MincoTrajectory`` this class builds uses ``face_travel=False`` (fixed
-at ``q0``), and ``w0=0`` always. ``attitude_resample_spacing_m`` is still
+Attitude: with ``face_travel=False`` (default) every ``MincoTrajectory`` this
+class builds is fixed at ``q0`` and ``w0=0``. With ``face_travel=True`` the
+global faces travel, and each local is solved twice: once as a free single
+segment to get its own path, then re-solved through points on that path with
+attitude waypoints facing its own tangent (not the global attitude, so it stays
+valid once the local deviates, e.g. for obstacles), carrying the previous
+local's rotvec rate/accel. It also caps local speed (the split local otherwise
+accelerates to its braking limit every period) and checks the wrench envelope
+in the body frame (``docs/archive/achieved/2026-09-23_replanning_minco_v3_face_travel_handoff.md``). ``attitude_resample_spacing_m`` is still
 forwarded to the *global* build for spatial densify (the global route's own
 smoothness, independent of whether attitude is tracked) -- this only works
 because of the ``face_travel``/densify decoupling fix in ``minco_trajectory.
@@ -105,6 +111,8 @@ DEFAULT_PLANNING_HORIZON_M = 2.0
 # decision (no clock/sleep involved), just how finely that scan samples the
 # trajectory function, so CLAUDE.mdのreal-time禁止の対象外。
 _LOCAL_TARGET_SEARCH_DT = 0.05
+DEFAULT_LOCAL_ATTITUDE_SPACING_M = 0.3
+_SELF_PATH_SAMPLES = 400
 
 
 class ReplanningMincoV3Tracker:
@@ -138,6 +146,8 @@ class ReplanningMincoV3Tracker:
             local layer is always a 2-waypoint, no-via-point segment, so
             ``via_half_width`` doesn't apply to it).
         initial_v0: initial velocity, shape ``(3,)``, default zero.
+        face_travel, forward_axis, local_max_vel: see module docstring;
+            ``local_max_vel`` [m/s] is only used with ``face_travel``.
 
     Raises:
         ValueError: if ``target_speed``/``max_accel`` are not given together.
@@ -152,7 +162,8 @@ class ReplanningMincoV3Tracker:
                  planning_horizon_m=DEFAULT_PLANNING_HORIZON_M,
                  via_half_width=0.3, wrench_safety_margin=1.0,
                  attitude_resample_spacing_m=None,
-                 initial_v0=None):
+                 initial_v0=None, face_travel=False, forward_axis=(1.0, 0.0, 0.0),
+                 local_max_vel=None):
         if (target_speed is None) != (max_accel is None):
             raise ValueError(
                 "target_speed and max_accel must be given together (both "
@@ -177,6 +188,9 @@ class ReplanningMincoV3Tracker:
         self._via_half_width = float(via_half_width)
         self._wrench_safety_margin = float(wrench_safety_margin)
         self._attitude_resample_spacing_m = attitude_resample_spacing_m
+        self._face_travel = bool(face_travel)
+        self._forward_axis = np.asarray(forward_axis, dtype=float)
+        self._local_max_vel = None if local_max_vel is None else float(local_max_vel)
 
         route_waypoints = (
             np.zeros((0, 3)) if route_waypoints is None
@@ -196,7 +210,8 @@ class ReplanningMincoV3Tracker:
         else:
             waypoints = np.array([p0, self._p_target])
         self._global_trajectory = MincoTrajectory(
-            waypoints, self._q0, v0=v0, w0=np.zeros(3), face_travel=False,
+            waypoints, self._q0, v0=v0, w0=np.zeros(3), face_travel=self._face_travel,
+            forward_axis=self._forward_axis, body_frame_wrench=self._face_travel,
             via_half_width=self._via_half_width,
             attitude_resample_spacing_m=self._attitude_resample_spacing_m,
             wrench_safety_margin=self._wrench_safety_margin,
@@ -215,7 +230,7 @@ class ReplanningMincoV3Tracker:
         self._local_elapsed = 0.0
         self._since_replan_attempt = 0.0
         self._local_trajectory, self._local_touches_goal = self._build_local(
-            p0, v0, np.zeros(3))
+            p0, v0, np.zeros(3), np.zeros(3), np.zeros(3), np.zeros(3))
         self.last_replan_solve_seconds = self._local_trajectory.solve_wall_seconds
 
         self._fallen_back = False
@@ -250,8 +265,10 @@ class ReplanningMincoV3Tracker:
                 and self._since_replan_attempt >= self._local_replan_period):
             self._since_replan_attempt = 0.0
             p_ref, v_ref, a_ref, _q = self._local_trajectory.sample(self._local_elapsed)
+            rv_ref = self._local_trajectory.sample_rotvec_derivatives(self._local_elapsed)
             try:
-                new_local, self._local_touches_goal = self._build_local(p_ref, v_ref, a_ref)
+                new_local, self._local_touches_goal = self._build_local(
+                    p_ref, v_ref, a_ref, *rv_ref)
                 self._local_trajectory = new_local
                 self._local_elapsed = 0.0
                 self.last_replan_occurred = True
@@ -291,12 +308,13 @@ class ReplanningMincoV3Tracker:
     def local_trajectory(self):
         return self._local_trajectory
 
-    def _build_local(self, p0, v0, a0):
-        """Solve a fresh K=1 (2-waypoint, no interior via points) free-time
-        local segment from the head state ``p0``/``v0``/``a0`` to the
-        look-ahead target, ending at the global trajectory's velocity there
-        (zero at the goal or inside braking distance of it, EGO-Planner v2
-        ``getLocalTarget``)."""
+    def _build_local(self, p0, v0, a0, rv0, rv_rate0, rv_accel0):
+        """Solve a fresh free-time local segment from the head state (position
+        ``p0``/``v0``/``a0``, ``q0``-relative rotvec ``rv0`` and its rate/accel)
+        to the look-ahead target, ending at the global trajectory's velocity
+        there (zero at the goal or inside braking distance of it, EGO-Planner
+        v2 ``getLocalTarget``). K=1 without ``face_travel``; see the module
+        docstring for the ``face_travel`` two-solve."""
         target_pos, target_vel, touch_goal = self._get_local_target(p0)
         inside_braking = (
             self._max_accel is not None
@@ -304,6 +322,10 @@ class ReplanningMincoV3Tracker:
             < float(target_vel @ target_vel) / (2.0 * self._max_accel)
         )
         v_tail = np.zeros(3) if (touch_goal or inside_braking) else target_vel
+        if self._face_travel:
+            local = self._build_face_travel_local(
+                p0, v0, a0, rv0, rv_rate0, rv_accel0, target_pos, v_tail)
+            return local, touch_goal
         local = MincoTrajectory(
             [p0, target_pos], self._q0, v0=v0, w0=np.zeros(3),
             face_travel=False, via_half_width=self._via_half_width,
@@ -311,6 +333,32 @@ class ReplanningMincoV3Tracker:
             target_speed=None, max_accel=None, a0=a0, v_tail=v_tail,
         )
         return local, touch_goal
+
+    def _build_face_travel_local(self, p0, v0, a0, rv0, rv_rate0, rv_accel0,
+                                 target_pos, v_tail):
+        def solve(points, directions, warm_start_segment_times):
+            rotvecs = MincoTrajectory._rotvecs_from_directions(
+                directions, self._q0, self._forward_axis, rv_head=rv0)
+            return MincoTrajectory.from_rotvec_waypoints(
+                points, rotvecs, self._q0, v0, rv_rate0, a0, rv_accel0, v_tail=v_tail,
+                wrench_safety_margin=self._wrench_safety_margin,
+                max_vel=self._local_max_vel,
+                warm_start_segment_times=warm_start_segment_times,
+                body_frame_wrench=True)
+
+        shape = solve(np.array([p0, target_pos]), np.array([np.zeros(3), target_pos - p0]), None)
+        # Sample resolution only (the solved path is analytic), not a clock/timing decision.
+        ts = np.linspace(0.0, shape.global_total_duration, _SELF_PATH_SAMPLES)
+        path = np.array([shape.sample(t)[0] for t in ts])
+        arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))])
+        spacing = self._attitude_resample_spacing_m or DEFAULT_LOCAL_ATTITUDE_SPACING_M
+        cuts = np.searchsorted(arc, np.arange(spacing, arc[-1] - spacing / 2.0, spacing))
+        point_times = np.concatenate([[0.0], ts[cuts], [shape.global_total_duration]])
+        samples = [shape.sample(t) for t in point_times]
+        local = solve(np.array([smp[0] for smp in samples]), np.array([smp[1] for smp in samples]),
+                      np.diff(point_times))
+        local.solve_wall_seconds += shape.solve_wall_seconds
+        return local
 
     def _get_local_target(self, p_from):
         """Walk the global trajectory forward from the last search cursor
