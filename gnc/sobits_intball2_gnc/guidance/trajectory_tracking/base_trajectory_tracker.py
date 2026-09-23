@@ -42,6 +42,6 @@ class BaseTrajectoryTracker(Protocol):
         locally-zeroed ``Trajectory.total_duration``. Fixed for
         :class:`~static_trajectory_tracker.StaticTrajectoryTracker`; may
         change over time (each re-plan) for
-        :class:`~replanning_trajectory_tracker.ReplanningTrajectoryTracker`.
+        :class:`~replanning_minco_v3_tracker.ReplanningMincoV3Tracker`.
         """
         ...
