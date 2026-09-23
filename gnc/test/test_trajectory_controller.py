@@ -207,3 +207,69 @@ def test_repeated_tf_stamp_does_not_bias_attitude_rate_low():
     # Steady rate -> filtered d(qe_vec)/dt settles at 0.5*rate*cos(half).
     half = 0.5 * rate * stamp
     assert math.isclose(torques[-1], -0.5 * rate * math.cos(half), rel_tol=0.02)
+
+
+def _rot_z_quat(angle):
+    return [0.0, 0.0, math.sin(0.5 * angle), math.cos(0.5 * angle)]
+
+
+def test_attitude_feedforward_off_ignores_alpha_des():
+    ctrl = TrajectoryController(kp_att=[0, 0, 0], kd_att=[0, 0, 0],
+                                max_torque=100.0, inertia=2.0,
+                                attitude_feedforward=False)
+    torque = ctrl.compute_attitude(stamp=0.0, quat_now=IDENTITY_QUAT,
+                                   q_des=IDENTITY_QUAT, alpha_des=[1.0, 0.0, 0.0])
+    assert torque == [0.0, 0.0, 0.0]
+
+
+def test_attitude_feedforward_adds_inertia_times_alpha_at_zero_error():
+    ctrl = TrajectoryController(kp_att=[0, 0, 0], kd_att=[0, 0, 0],
+                                max_torque=100.0, inertia=2.0,
+                                attitude_feedforward=True)
+    torque = ctrl.compute_attitude(stamp=0.0, quat_now=IDENTITY_QUAT,
+                                   q_des=IDENTITY_QUAT, alpha_des=[0.5, -1.0, 0.25])
+    assert all(math.isclose(a, b, abs_tol=1e-12)
+               for a, b in zip(torque, [1.0, -2.0, 0.5]))
+
+
+def test_attitude_feedforward_rotates_alpha_into_current_body_frame():
+    ctrl = TrajectoryController(kp_att=[0, 0, 0], kd_att=[0, 0, 0],
+                                max_torque=100.0, inertia=1.0,
+                                attitude_feedforward=True)
+    # Body is yawed +90deg from q_des: q_des's x axis is the body's -y axis.
+    torque = ctrl.compute_attitude(stamp=0.0, quat_now=_rot_z_quat(math.pi / 2),
+                                   q_des=IDENTITY_QUAT, alpha_des=[1.0, 0.0, 0.0])
+    assert all(math.isclose(a, b, abs_tol=1e-12)
+               for a, b in zip(torque, [0.0, -1.0, 0.0]))
+
+
+def _closed_loop_max_yaw_error_deg(attitude_feedforward):
+    """Isotropic rigid body tracking a 100deg minimum-jerk yaw in 8s, with
+    config/gnc_params.yaml's gains and the ~0.008Nm physical torque ceiling."""
+    inertia, total, turn, dt, substeps = 0.0136, 8.0, math.radians(100.0), 0.02, 20
+    ctrl = TrajectoryController(kp_att=[0.20] * 3, kd_att=[0.0626] * 3,
+                                att_filter_alpha=1.0, max_torque=0.008,
+                                inertia=inertia,
+                                attitude_feedforward=attitude_feedforward)
+    yaw, yaw_rate, max_err = 0.0, 0.0, 0.0
+    for tick in range(int(1.5 * total / dt)):
+        t = tick * dt
+        s = min(t / total, 1.0)
+        yaw_des = turn * (10 * s ** 3 - 15 * s ** 4 + 6 * s ** 5)
+        yaw_acc_des = (turn / total ** 2) * (60 * s - 180 * s ** 2 + 120 * s ** 3) \
+            if s < 1.0 else 0.0
+        max_err = max(max_err, abs(math.degrees(yaw - yaw_des)))
+        torque = ctrl.compute_attitude(stamp=t, quat_now=_rot_z_quat(yaw),
+                                       q_des=_rot_z_quat(yaw_des),
+                                       alpha_des=[0.0, 0.0, yaw_acc_des])
+        for _ in range(substeps):
+            yaw_rate += torque[2] / inertia * (dt / substeps)
+            yaw += yaw_rate * (dt / substeps)
+    return max_err
+
+
+def test_attitude_feedforward_cuts_closed_loop_tracking_lag():
+    pd_only = _closed_loop_max_yaw_error_deg(attitude_feedforward=False)
+    with_ff = _closed_loop_max_yaw_error_deg(attitude_feedforward=True)
+    assert pd_only > 1.0
+    assert with_ff < 0.05 * pd_only

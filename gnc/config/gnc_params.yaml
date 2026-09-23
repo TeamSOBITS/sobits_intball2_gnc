@@ -321,3 +321,6 @@
       # tf_correction.torque_direction_preserving above and
       # docs/2026-08-27_align_hold_gain_oscillation_investigation.md
       torque_direction_preserving: false
+      # Adds inertia * alpha_des (from /gnc/trajectory_setpoint's angular
+      # acceleration) to the attitude torque. Off until A/B-verified live.
+      attitude_feedforward: false

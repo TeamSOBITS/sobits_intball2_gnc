@@ -60,9 +60,12 @@ class FakeVelocityEstimate:
 class FakeSetpointPublisher:
     def __init__(self):
         self.calls = []
+        self.angular_calls = []
 
-    def publish(self, p, v, a, q):
+    def publish(self, p, v, a, q, omega_des=(0.0, 0.0, 0.0),
+                alpha_des=(0.0, 0.0, 0.0)):
         self.calls.append((list(p), list(v), list(a), list(q)))
+        self.angular_calls.append((list(omega_des), list(alpha_des)))
 
 
 class FakeCheckpointPublisher:

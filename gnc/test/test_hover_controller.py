@@ -465,6 +465,7 @@ class _FakeTrajectorySub:
         self.v_des = v_des
         self.a_des = a_des
         self.q_des = _IDENTITY
+        self.alpha_des = None
         self.last_received_t = last_received_t
 
     @property

@@ -226,7 +226,7 @@ class HoverController:
             "reference_frame", "target_frame", "poll_rate",
             "smooth_window", "smooth_sigma", "checkpoint_topic",
         }
-        trajectory_static_keys = {"mass"}
+        trajectory_static_keys = {"mass", "inertia"}
         for key, default in DEFAULT_HOVER.items():
             name = f"hover_control.{key}"
             if not node.has_parameter(name):
@@ -289,6 +289,8 @@ class HoverController:
                 kp_att=g("kp_att"), kd_att=g("kd_att"),
                 att_filter_alpha=g("att_filter_alpha"), max_torque=g("max_torque"),
                 torque_direction_preserving=g("torque_direction_preserving"),
+                inertia=g("inertia"),
+                attitude_feedforward=g("attitude_feedforward"),
             )
         return cls(imu_subscriber, fan_publisher, allocator, law,
                    tf_client, corrector, trajectory_subscriber, trajectory_ctrl,
@@ -427,6 +429,7 @@ class HoverController:
                 if q_des is not None:
                     t_corr = self._trajectory_ctrl.compute_attitude(
                         stamp, quat_now, q_des,
+                        alpha_des=self._trajectory_sub.alpha_des,
                     )
                     traj_torque_used = True
 

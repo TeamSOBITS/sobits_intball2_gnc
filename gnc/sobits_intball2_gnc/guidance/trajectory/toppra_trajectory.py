@@ -88,6 +88,7 @@ from sobits_intball2_gnc.control.utils.quat_math import (
     quat_exp,
     quat_log,
     quat_mul,
+    rotvec_rates_to_body_rates,
     unwrap_rotvec,
 )
 from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator import (
@@ -295,6 +296,17 @@ class ToppraTrajectory:
         a = acc[:3]
         q = quat_mul(self._q0, quat_exp(state[3:]))
         return p, v, a, q
+
+    def sample_body_angular(self, t):
+        """Return body-frame ``(omega, omega_dot)`` of ``sample(t)``'s ``q``;
+        zero from the end on, where ``sample()`` holds ``q`` fixed."""
+        t = max(float(t), 0.0)
+        if t >= self._jnt_traj.duration:
+            return np.zeros(3), np.zeros(3)
+        return rotvec_rates_to_body_rates(
+            self._jnt_traj(t)[3:], self._jnt_traj(t, 1)[3:],
+            self._jnt_traj(t, 2)[3:],
+        )
 
 
 def _dense_travel_rotvecs(v_list, q0, forward_axis, face_travel):

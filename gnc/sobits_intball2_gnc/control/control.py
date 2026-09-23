@@ -83,7 +83,8 @@ TF_CORRECTION_DYNAMIC_KEYS = frozenset(
 )
 TRAJECTORY_DYNAMIC_KEYS = frozenset(
     {"kp_pos", "kd_pos", "vel_filter_alpha", "max_force", "kp_att", "kd_att",
-     "att_filter_alpha", "max_torque", "torque_direction_preserving", "timeout"}
+     "att_filter_alpha", "max_torque", "torque_direction_preserving", "timeout",
+     "attitude_feedforward"}
 )
 THRUST_ALLOCATOR_DYNAMIC_KEYS = frozenset(
     {"force_weight_ref", "torque_weight_ref", "torque_axis_balance", "minimax_objective"}

@@ -63,7 +63,8 @@ class MultiDOFJointTrajectoryPublisher:
             % (topic, reference_frame)
         )
 
-    def publish(self, p_des, v_des, a_des, q_des=_IDENTITY_QUAT) -> None:
+    def publish(self, p_des, v_des, a_des, q_des=_IDENTITY_QUAT,
+                omega_des=(0.0, 0.0, 0.0), alpha_des=(0.0, 0.0, 0.0)) -> None:
         """Publish one setpoint sample.
 
         Args:
@@ -73,6 +74,8 @@ class MultiDOFJointTrajectoryPublisher:
             q_des: Desired orientation ``[x, y, z, w]``. Unused by Phase 3a's
                 translation-only trajectory_controller (identity by default);
                 exposed for Phase 3b's attitude tracking.
+            omega_des: Desired angular velocity, ``q_des`` body frame.
+            alpha_des: Desired angular acceleration, ``q_des`` body frame.
         """
         transform = Transform()
         transform.translation.x, transform.translation.y, transform.translation.z = p_des
@@ -81,9 +84,11 @@ class MultiDOFJointTrajectoryPublisher:
 
         velocity = Twist()
         velocity.linear.x, velocity.linear.y, velocity.linear.z = v_des
+        velocity.angular.x, velocity.angular.y, velocity.angular.z = omega_des
 
         accel = Twist()
         accel.linear.x, accel.linear.y, accel.linear.z = a_des
+        accel.angular.x, accel.angular.y, accel.angular.z = alpha_des
 
         point = MultiDOFJointTrajectoryPoint()
         point.transforms = [transform]

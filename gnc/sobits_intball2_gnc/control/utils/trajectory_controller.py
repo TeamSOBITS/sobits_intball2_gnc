@@ -77,6 +77,8 @@ DEFAULT_TRAJECTORY = {
     # -- flip live via `ros2 param set` to A/B test without a node restart
     # (Category A dynamic parameter, see TRAJECTORY_DYNAMIC_KEYS in control.py).
     "torque_direction_preserving": False,
+    "inertia": 0.0136,
+    "attitude_feedforward": False,
 }
 
 
@@ -99,6 +101,10 @@ class TrajectoryController:
         torque_direction_preserving: When True, scale all torque axes
             uniformly instead of clamping each independently -- see
             :func:`~sobits_intball2_gnc.control.utils.pose_control_law.attitude_error_to_torque`.
+        inertia: Isotropic vehicle inertia [kg*m^2] for the attitude
+            feedforward term.
+        attitude_feedforward: When True, :meth:`compute_attitude` adds
+            ``inertia * alpha_des`` (rotated into the current body frame).
     """
 
     def __init__(
@@ -113,6 +119,8 @@ class TrajectoryController:
         att_filter_alpha=DEFAULT_TRAJECTORY["att_filter_alpha"],
         max_torque=DEFAULT_TRAJECTORY["max_torque"],
         torque_direction_preserving=DEFAULT_TRAJECTORY["torque_direction_preserving"],
+        inertia=DEFAULT_TRAJECTORY["inertia"],
+        attitude_feedforward=DEFAULT_TRAJECTORY["attitude_feedforward"],
     ) -> None:
         self.mass = float(mass)
         self.kp_pos = np.asarray(kp_pos, dtype=float)
@@ -124,6 +132,8 @@ class TrajectoryController:
         self.att_filter_alpha = float(att_filter_alpha)
         self.max_torque = float(max_torque)
         self.torque_direction_preserving = bool(torque_direction_preserving)
+        self.inertia = float(inertia)
+        self.attitude_feedforward = bool(attitude_feedforward)
 
         # Velocity estimate: finite difference of the TF position between
         # successive compute() calls, independent of PoseCorrector's own
@@ -240,8 +250,13 @@ class TrajectoryController:
         self._last_force_raw = force_body
         return np.clip(force_body, -self.max_force, self.max_force).tolist()
 
-    def compute_attitude(self, stamp, quat_now, q_des):
+    def compute_attitude(self, stamp, quat_now, q_des, alpha_des=None):
         """Return a clamped body-frame torque toward the moving ``q_des(t)``.
+
+        ``alpha_des`` is ``q_des``'s angular acceleration expressed in the
+        ``q_des`` body frame; used only when ``attitude_feedforward`` is on.
+        No ``omega_des`` feedforward is needed: ``omega_err`` differentiates
+        the error quaternion, so it is already relative to ``q_des``'s rate.
 
         ``stamp`` is the TF pose's own timestamp (seconds), for the same
         reason :meth:`compute` takes a TF stamp rather than wall-clock time:
@@ -282,6 +297,9 @@ class TrajectoryController:
             self.kp_att, self.kd_att, q_des, quat_now, self._omega_filtered,
             np.inf,
         )
+        if self.attitude_feedforward and alpha_des is not None:
+            alpha_body = quat_rotate(quat_conj(qe), np.asarray(alpha_des, dtype=float))
+            self._last_torque_raw = self._last_torque_raw + self.inertia * alpha_body
         torque = clamp_torque(
             self._last_torque_raw, self.max_torque,
             preserve_direction=self.torque_direction_preserving,
@@ -291,7 +309,8 @@ class TrajectoryController:
     def set_gains(self, kp_pos=None, kd_pos=None, vel_filter_alpha=None,
                   max_force=None, kp_att=None, kd_att=None,
                   att_filter_alpha=None, max_torque=None,
-                  torque_direction_preserving=None) -> None:
+                  torque_direction_preserving=None,
+                  attitude_feedforward=None) -> None:
         """Update gains/clamps in place (dynamic reconfiguration).
 
         Any argument left as ``None`` keeps its current value. Does not touch
@@ -318,3 +337,5 @@ class TrajectoryController:
             self.max_torque = float(max_torque)
         if torque_direction_preserving is not None:
             self.torque_direction_preserving = bool(torque_direction_preserving)
+        if attitude_feedforward is not None:
+            self.attitude_feedforward = bool(attitude_feedforward)

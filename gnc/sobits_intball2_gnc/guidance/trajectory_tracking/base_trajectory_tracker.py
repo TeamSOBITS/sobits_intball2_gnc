@@ -34,6 +34,10 @@ class BaseTrajectoryTracker(Protocol):
         """
         ...
 
+    # ``(omega_des, alpha_des)`` of the most recent ``sample()``'s ``q_des``,
+    # in the ``q_des`` body frame; zeros while the setpoint is held fixed.
+    last_body_angular: tuple
+
     @property
     def total_duration(self):
         """Current global "reaches the target" time [s], on the same time

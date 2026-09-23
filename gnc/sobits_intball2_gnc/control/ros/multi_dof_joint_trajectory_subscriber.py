@@ -73,6 +73,8 @@ class MultiDOFJointTrajectorySubscriber:
         self._v_des = None
         self._a_des = None
         self._q_des = None
+        self._omega_des = None
+        self._alpha_des = None
         self._last_received_t = None  # caller's monotonic clock, set on accept
         self._sub = node.create_subscription(
             MultiDOFJointTrajectory, topic, self._callback, qos_profile
@@ -110,6 +112,8 @@ class MultiDOFJointTrajectorySubscriber:
                         transform.rotation.z, transform.rotation.w]
         self._v_des = [velocity.linear.x, velocity.linear.y, velocity.linear.z]
         self._a_des = [accel.linear.x, accel.linear.y, accel.linear.z]
+        self._omega_des = [velocity.angular.x, velocity.angular.y, velocity.angular.z]
+        self._alpha_des = [accel.angular.x, accel.angular.y, accel.angular.z]
         self._last_received_t = self._node.get_clock().now().nanoseconds * 1e-9
 
     @property
@@ -140,6 +144,18 @@ class MultiDOFJointTrajectorySubscriber:
         for Phase 3b's attitude tracking.
         """
         return self._q_des
+
+    @property
+    def omega_des(self):
+        """Latest desired angular velocity [x, y, z] in the ``q_des`` body
+        frame, or None."""
+        return self._omega_des
+
+    @property
+    def alpha_des(self):
+        """Latest desired angular acceleration [x, y, z] in the ``q_des``
+        body frame, or None."""
+        return self._alpha_des
 
     @property
     def last_received_t(self):

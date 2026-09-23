@@ -120,6 +120,45 @@ def quat_exp(rotvec):
                       axis[2] * np.sin(half), np.cos(half)])
 
 
+def _skew(v):
+    return np.array([
+        [0.0, -v[2], v[1]],
+        [v[2], 0.0, -v[0]],
+        [-v[1], v[0], 0.0],
+    ])
+
+
+def right_jacobian(rotvec):
+    """SO(3) right Jacobian ``Jr(r)``: body angular velocity of ``exp(r(t))``
+    is ``Jr(r) @ r_dot``. Same formula as ``minco_solver.cpp``'s
+    ``rightJacobian``."""
+    r = np.asarray(rotvec, dtype=float)
+    theta = np.linalg.norm(r)
+    if theta < 1e-8:
+        return np.eye(3)
+    k = _skew(r)
+    a = (1.0 - np.cos(theta)) / theta ** 2
+    b = (theta - np.sin(theta)) / theta ** 3
+    return np.eye(3) - a * k + b * (k @ k)
+
+
+def rotvec_rates_to_body_rates(rotvec, rotvec_dot, rotvec_ddot, h=1e-6):
+    """Return ``(omega, omega_dot)`` in the body frame of ``q0 ⊗ exp(r(t))``
+    from ``r``, ``r_dot``, ``r_ddot``.
+
+    ``r_dot``/``r_ddot`` equal ``omega``/``omega_dot`` only as ``|r| -> 0`` or
+    for a fixed rotation axis. ``omega_dot`` uses the same jerk-free central
+    difference as ``minco_solver.cpp``'s ``omegaDotOf``.
+    """
+    r = np.asarray(rotvec, dtype=float)
+    r_dot = np.asarray(rotvec_dot, dtype=float)
+    r_ddot = np.asarray(rotvec_ddot, dtype=float)
+    omega = right_jacobian(r) @ r_dot
+    g_plus = right_jacobian(r + h * r_dot) @ (r_dot + h * r_ddot)
+    g_minus = right_jacobian(r - h * r_dot) @ (r_dot - h * r_ddot)
+    return omega, (g_plus - g_minus) / (2.0 * h)
+
+
 def slerp(q0, q1, t):
     """SLERP between unit quaternions ``q0``/``q1`` (both [x, y, z, w]) at
     ``t`` in [0, 1], resolving the double-cover sign so the interpolation

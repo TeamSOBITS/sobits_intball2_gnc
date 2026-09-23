@@ -10,6 +10,7 @@ trajectory_tracking.base_trajectory_tracker.BaseTrajectoryTracker` instead of
 a bare ``Trajectory`` must not change today's behavior by a single bit when
 this implementation is selected.
 """
+import numpy as np
 
 
 class StaticTrajectoryTracker:
@@ -18,8 +19,12 @@ class StaticTrajectoryTracker:
 
     def __init__(self, trajectory):
         self._trajectory = trajectory
+        self.last_body_angular = (np.zeros(3), np.zeros(3))
 
     def sample(self, t):
+        # The Hermite fallback Trajectory has no analytic attitude rates.
+        if hasattr(self._trajectory, "sample_body_angular"):
+            self.last_body_angular = self._trajectory.sample_body_angular(t)
         return self._trajectory.sample(t)
 
     @property
