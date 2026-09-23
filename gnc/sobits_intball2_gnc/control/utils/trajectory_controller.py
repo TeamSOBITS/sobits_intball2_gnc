@@ -209,36 +209,17 @@ class TrajectoryController:
         v_des = np.asarray(v_des, dtype=float)
         a_des = np.asarray(a_des, dtype=float)
 
-        vel_now = np.zeros(3)
-        if self._last_pos is not None:
-            dt = stamp - self._last_t
-            if dt > 1e-6:
-                vel_now = (pos_now - self._last_pos) / dt
-        self._last_pos, self._last_t = pos_now, stamp
-
-        self._vel_filtered = (
-            self.vel_filter_alpha * vel_now
-            + (1.0 - self.vel_filter_alpha) * self._vel_filtered
-        )
-
-        # TEMPORARY debug instrumentation (docs/recording_cpu_load_control_degradation.md):
-        # confirming the "reference races ahead of sim-time capacity" hypothesis --
-        # dumping wall-clock time alongside the TF stamp (to derive local RTF) and
-        # the position error (p_des - pos_now), to check whether error growth
-        # correlates with RTF drops rather than with the (now stamp-based, fixed)
-        # velocity estimate. Remove after that investigation concludes.
-        try:
-            import time as _time
-            with open("/tmp/trajectory_reference_race_timing.log", "a") as _dbgf:
-                _err = p_des - pos_now
-                _dbgf.write(
-                    f"{_time.monotonic():.6f},{stamp:.6f},"
-                    f"{pos_now[0]:.6f},{pos_now[1]:.6f},{pos_now[2]:.6f},"
-                    f"{p_des[0]:.6f},{p_des[1]:.6f},{p_des[2]:.6f},"
-                    f"{_err[0]:.6f},{_err[1]:.6f},{_err[2]:.6f}\n"
-                )
-        except Exception:
-            pass
+        # TF (~42Hz) is slower than this loop (50Hz): a repeated stamp carries no
+        # new motion, and feeding it as zero velocity biased v_filt ~20% low.
+        if self._last_pos is None:
+            self._last_pos, self._last_t = pos_now, stamp
+        elif stamp - self._last_t > 1e-6:
+            vel_now = (pos_now - self._last_pos) / (stamp - self._last_t)
+            self._last_pos, self._last_t = pos_now, stamp
+            self._vel_filtered = (
+                self.vel_filter_alpha * vel_now
+                + (1.0 - self.vel_filter_alpha) * self._vel_filtered
+            )
 
         # position_error_to_force computes `-kd_pos * vel`; passing the
         # velocity ERROR (now - desired) here yields the intended
@@ -282,17 +263,16 @@ class TrajectoryController:
         sign = np.sign(qe[3] if qe[3] != 0.0 else 1.0)
         qe_vec = sign * qe[:3]
 
-        omega_err = np.zeros(3)
-        if self._last_qe_vec is not None:
-            dt = stamp - self._last_att_t
-            if dt > 1e-6:
-                omega_err = (qe_vec - self._last_qe_vec) / dt
-        self._last_qe_vec, self._last_att_t = qe_vec, stamp
-
-        self._omega_filtered = (
-            self.att_filter_alpha * omega_err
-            + (1.0 - self.att_filter_alpha) * self._omega_filtered
-        )
+        # Same repeated-TF-stamp handling as compute().
+        if self._last_qe_vec is None:
+            self._last_qe_vec, self._last_att_t = qe_vec, stamp
+        elif stamp - self._last_att_t > 1e-6:
+            omega_err = (qe_vec - self._last_qe_vec) / (stamp - self._last_att_t)
+            self._last_qe_vec, self._last_att_t = qe_vec, stamp
+            self._omega_filtered = (
+                self.att_filter_alpha * omega_err
+                + (1.0 - self.att_filter_alpha) * self._omega_filtered
+            )
 
         # Requested torque BEFORE the clamp (max_torque=inf), so a caller can
         # tell "the P+D law wanted more than the clamp allows" apart from

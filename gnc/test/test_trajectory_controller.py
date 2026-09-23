@@ -178,3 +178,32 @@ def test_raw_state_reset_by_reset():
     ctrl.reset()
     assert ctrl.last_force_raw == [0.0, 0.0, 0.0]
     assert ctrl.last_torque_raw == [0.0, 0.0, 0.0]
+
+
+def test_repeated_tf_stamp_does_not_bias_velocity_estimate_low():
+    # Control ticks faster than TF updates, so some ticks see the same stamp.
+    ctrl = TrajectoryController(mass=1.0, kp_pos=[0, 0, 0], kd_pos=[1.0, 0, 0],
+                                 vel_filter_alpha=0.3, max_force=100.0)
+    v, tf_dt, force = 0.2, 0.024, None
+    for tick in range(500):
+        stamp = (tick * 0.02 // tf_dt) * tf_dt
+        force = ctrl.compute(stamp=stamp, pos_now=[v * stamp, 0.0, 0.0],
+                             quat_now=IDENTITY_QUAT, p_des=[v * stamp, 0.0, 0.0],
+                             v_des=[v, 0.0, 0.0], a_des=[0.0, 0.0, 0.0])
+    assert math.isclose(force[0], 0.0, abs_tol=1e-6)
+
+
+def test_repeated_tf_stamp_does_not_bias_attitude_rate_low():
+    ctrl = TrajectoryController(kp_att=[0, 0, 0], kd_att=[1.0, 0, 0],
+                                att_filter_alpha=0.3, max_torque=100.0)
+    rate, tf_dt = 0.1, 0.024
+    torques = []
+    for tick in range(500):
+        stamp = (tick * 0.02 // tf_dt) * tf_dt
+        half = 0.5 * rate * stamp
+        quat_now = [math.sin(half), 0.0, 0.0, math.cos(half)]
+        torques.append(ctrl.compute_attitude(stamp=stamp, quat_now=quat_now,
+                                             q_des=IDENTITY_QUAT)[0])
+    # Steady rate -> filtered d(qe_vec)/dt settles at 0.5*rate*cos(half).
+    half = 0.5 * rate * stamp
+    assert math.isclose(torques[-1], -0.5 * rate * math.cos(half), rel_tol=0.02)
