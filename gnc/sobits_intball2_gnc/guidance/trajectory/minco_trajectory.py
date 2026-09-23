@@ -18,6 +18,19 @@ ToppraTrajectory` と同じ ``sample(t) -> (p, v, a, q)`` 契約で返す
 :class:`ToppraTrajectory` の ``_dense_travel_rotvecs`` と同じ face-travel
 ヒューリスティック（waypoint間の位置差分方向を向く）で、この中で自前に
 導出する。
+
+``face_travel=True``の場合、MINCOを2回solveする（``docs/
+2026-09-20_minco_face_travel_corner_divergence_root_cause_and_fix.md``）:
+1回目は上記の通り「MINCOが実際に位置を解く前」の直線ベースの姿勢waypointで
+solveし、2回目はその1回目の解けた位置経路の実接線（``sample()``の``v``）で
+姿勢waypointを再導出してsolveし直す。1回目だけだと、直線ベースで決め打ちした
+姿勢目標と、実際にMINCOが解く（コーナーを滑らかに丸めた）位置経路の接線が
+コーナー付近で一致せず、setpoint自身の姿勢がsetpoint自身の速度方向を
+最大60度近く向かない、という不具合になる（``static``/TOPP-RA側で過去に一度
+見つかって直したのと同じ設計上のアンチパターンの再発、``docs/archive/achieved/
+2026-08-28_attitude_waypoint_premature_rotation_root_cause.md``）。2回目の
+solveで実測上は不動点に収束し、所要時間への影響は1%未満（オフライン検証は
+上記md参照）。
 """
 import time
 
@@ -69,29 +82,55 @@ class MincoTrajectory:
             拘束と同等になる。``docs/2026-08-30_static_minco_face_travel_gap.md``
             追記3参照）。
         attitude_resample_spacing_m: ``None``（既定）なら従来通り与えた
-            waypointの数だけしかface-travel姿勢をseedしない。正の値を渡すと、
-            各waypoint間をこの間隔以下になるよう直線分割し、その分割点でも
-            face-travel姿勢を計算してから``plan_minco``に渡す（``via_half_width``
-            も同じ値が全分割点に適用されるので、``0.0``と組み合わせれば
-            位置経路の形は変えずに姿勢のみ密にできる）。区間が長いほど飛行中に
-            姿勢が進行方向から外れていく問題（``docs/
-            2026-08-30_static_minco_face_travel_gap.md``追記4参照）への対処。
-            分割点数だけ``K``（区間数）が増えるため、solve時間は増える。
+            waypointの数だけしか経由点をdensifyしない。正の値を渡すと、
+            各waypoint間をこの間隔以下になるよう直線分割してから
+            ``plan_minco``に渡す（``via_half_width``も同じ値が全分割点に
+            適用されるので、``0.0``と組み合わせれば位置経路の形は変えずに
+            経由点のみ密にできる）。``face_travel``の値には依存しない
+            （以前は``face_travel=True``のときしか効かない結合バグが
+            あったが解消済み、``docs/
+            2026-09-20_ego_v2_style_replan_migration_plan.md``参照）。
+            ``face_travel=True``のときは区間が長いほど飛行中に姿勢が進行
+            方向から外れていく問題（``docs/
+            2026-08-30_static_minco_face_travel_gap.md``追記4参照）への
+            対処にもなる。分割点数だけ``K``（区間数）が増えるため、solve
+            時間は増える。
         wrench_safety_margin: ロード済みのwrench envelopeをこの係数
             （``(0, 1]``）で縮小してから制約評価する。``1.0``（既定）は
             無効化（従来の挙動と同一）。``static``（TOPPRA）パスの
             ``guidance.wrench_envelope_safety_margin``と同じ、フィードバック
             余力確保のためのマージンをMINCO側にも適用できるようにしたもの
             （``docs/2026-08-30_static_minco_face_travel_gap.md`` 追記2）。
+        target_speed, max_accel: 両方とも``None``でない場合、``plan_minco``
+            （セグメント時間も自由変数、``INITIAL_SEGMENT_TIME``一律スタート）
+            の代わりに``plan_minco_heuristic_time``（弧長比配分のヒューリス
+            ティックT＋fixed-T solve＋wrench違反時の解析的伸長ループをC++
+            内で完結、``docs/2026-09-01_replanning_minco_v4_production_port_plan.md``
+            Phase 1）を使う。``HeuristicSegmentTimeAllocator``と同じ役割の
+            パラメータ。デフォルト``None``（両方Noneのまま）は既存の
+            ``plan_minco``経路を使う既存挙動と完全に同一——オプトインの
+            新経路であり、呼び出し側が明示的に指定しない限り挙動は変わらない。
 
     Raises:
-        MincoInfeasibleError: ``plan_minco``が``success=False``を返した場合。
+        MincoInfeasibleError: ``plan_minco``/``plan_minco_heuristic_time``が
+            ``success=False``を返した場合。
     """
 
     def __init__(self, position_waypoints, q0, v0=None, w0=None,
                  forward_axis=(1.0, 0.0, 0.0), face_travel=True,
                  via_half_width=0.3, attitude_resample_spacing_m=None,
-                 wrench_safety_margin=1.0):
+                 wrench_safety_margin=1.0, target_speed=None, max_accel=None,
+                 a0=None, v_tail=None):
+        if (target_speed is None) != (max_accel is None):
+            raise ValueError(
+                "target_speed and max_accel must be given together (both "
+                "None selects the existing plan_minco path, both non-None "
+                "selects plan_minco_heuristic_time)"
+            )
+        if target_speed is not None and (a0 is not None or v_tail is not None):
+            raise ValueError("a0/v_tail are only supported on the free-time plan_minco path")
+        a0 = None if a0 is None else [float(c) for c in a0]
+        v_tail = None if v_tail is None else [float(c) for c in v_tail]
         position_waypoints = np.asarray(position_waypoints, dtype=float)
         if position_waypoints.ndim != 2 or position_waypoints.shape[1] != 3 \
                 or position_waypoints.shape[0] < 2:
@@ -101,7 +140,7 @@ class MincoTrajectory:
         v0 = np.zeros(3) if v0 is None else np.asarray(v0, dtype=float)
         w0 = np.zeros(3) if w0 is None else np.asarray(w0, dtype=float)
 
-        if attitude_resample_spacing_m is not None and face_travel:
+        if attitude_resample_spacing_m is not None:
             position_waypoints = self._densify(
                 position_waypoints, float(attitude_resample_spacing_m)
             )
@@ -110,53 +149,104 @@ class MincoTrajectory:
             position_waypoints, self._q0, forward_axis, face_travel
         )
 
-        waypoints_flat = []
-        for pos, rv in zip(position_waypoints, rotvecs):
-            waypoints_flat.extend(float(c) for c in pos)
-            waypoints_flat.extend(float(c) for c in rv)
-
         # wall-clock, not sim time: this measures actual solve compute cost
         # (the sim clock doesn't advance while this synchronous call blocks
         # the node's spin loop anyway, so it couldn't measure this even in
         # principle) -- a passive diagnostic, not used for any control/
         # timing decision, so CLAUDE.mdのreal-time禁止の対象外。
         solve_t0 = time.perf_counter()
-        success, error_code, segment_times, coeffs_flat, duration = self._call_minco(
-            waypoints_flat, v0.tolist(), w0.tolist(), via_half_width,
-            wrench_safety_margin
+        segment_times, coeffs, duration = self._solve(
+            position_waypoints, rotvecs, v0, w0, via_half_width,
+            wrench_safety_margin, target_speed, max_accel, a0, v_tail
         )
-        self.solve_wall_seconds = time.perf_counter() - solve_t0
-        self.num_waypoints = len(position_waypoints)
-        if not success:
-            raise MincoInfeasibleError(
-                "plan_minco failed (error_code=%d) for %d waypoints"
-                % (error_code, len(position_waypoints))
+
+        if face_travel:
+            # Pass 2 (module docstring): reseed rotvecs from pass 1's own
+            # solved position path's actual local tangent instead of the
+            # pre-solve straight-line direction, then re-solve once.
+            cum_times = np.concatenate([[0.0], np.cumsum(segment_times)])
+            n_segments = len(segment_times)
+            pos_coeffs = coeffs[:, 0:3, :]
+            actual_directions = np.zeros_like(position_waypoints)
+            for i in range(1, len(position_waypoints)):
+                seg = self._segment_index_for(cum_times, n_segments, cum_times[i])
+                tau = cum_times[i] - cum_times[seg]
+                actual_directions[i] = evaluate_vector(pos_coeffs[seg], tau, order=1)
+            rotvecs = self._rotvecs_from_directions(
+                actual_directions, self._q0, forward_axis
+            )
+            segment_times, coeffs, duration = self._solve(
+                position_waypoints, rotvecs, v0, w0, via_half_width,
+                wrench_safety_margin, target_speed, max_accel, a0, v_tail
             )
 
-        self._segment_times = np.asarray(segment_times, dtype=float)
+        self.solve_wall_seconds = time.perf_counter() - solve_t0
+        self.num_waypoints = len(position_waypoints)
+
+        self._segment_times = segment_times
         self._cum_times = np.concatenate([[0.0], np.cumsum(self._segment_times)])
-        n_segments = len(self._segment_times)
-        coeffs = np.asarray(coeffs_flat, dtype=float).reshape(
-            n_segments, _N_DIMS, _N_COEFFS
-        )
         self._pos_coeffs = coeffs[:, 0:3, :]
         self._rot_coeffs = coeffs[:, 3:6, :]
         self._duration = float(duration)
 
+    @classmethod
+    def _solve(cls, position_waypoints, rotvecs, v0, w0, via_half_width,
+               wrench_safety_margin, target_speed, max_accel, a0=None, v_tail=None):
+        """Build ``waypoints_flat`` from ``position_waypoints``/``rotvecs`` and run
+        one :func:`_call_minco` solve. Returns ``(segment_times, coeffs, duration)``,
+        ``coeffs`` already reshaped to ``(n_segments, _N_DIMS, _N_COEFFS)``.
+        Called twice by ``__init__`` when ``face_travel`` (module docstring)."""
+        waypoints_flat = []
+        for pos, rv in zip(position_waypoints, rotvecs):
+            waypoints_flat.extend(float(c) for c in pos)
+            waypoints_flat.extend(float(c) for c in rv)
+        success, error_code, segment_times, coeffs_flat, duration = cls._call_minco(
+            waypoints_flat, v0.tolist(), w0.tolist(), via_half_width,
+            wrench_safety_margin, target_speed, max_accel, a0, v_tail
+        )
+        if not success:
+            raise MincoInfeasibleError(
+                "plan_minco%s failed (error_code=%d) for %d waypoints"
+                % ("_heuristic_time" if target_speed is not None else "",
+                   error_code, len(position_waypoints))
+            )
+        segment_times = np.asarray(segment_times, dtype=float)
+        n_segments = len(segment_times)
+        coeffs = np.asarray(coeffs_flat, dtype=float).reshape(
+            n_segments, _N_DIMS, _N_COEFFS
+        )
+        return segment_times, coeffs, float(duration)
+
     @staticmethod
-    def _call_minco(waypoints_flat, v0, w0, via_half_width, wrench_safety_margin):
+    def _call_minco(waypoints_flat, v0, w0, via_half_width, wrench_safety_margin,
+                     target_speed, max_accel, a0=None, v_tail=None):
         """``minco_native_py``への単一の呼び出し口（モジュール docstring参照）。
-        Phase 2ではこの関数の中身だけをIPC呼び出しに差し替える。"""
+        いずれ（別の"Phase 2"、``docs/archive/achieved/
+        2026-08-30_minco_attitude_torque_status_and_next_steps.md``）この
+        関数の中身をIPC呼び出しに差し替える計画とは無関係——
+        ``target_speed``/``max_accel``（``None``でなければ）は、呼び出す
+        ネイティブ関数を``plan_minco``から``plan_minco_heuristic_time``へ
+        切り替えるためのもの（``docs/
+        2026-09-01_replanning_minco_v4_production_port_plan.md`` Phase 1）。"""
         import minco_native_py  # 遅延import: 拡張未ビルド環境でもこのモジュール自体はimportできるように
-        return minco_native_py.plan_minco(
-            waypoints_flat, v0, w0, via_half_width, wrench_safety_margin
+        if target_speed is None:
+            return minco_native_py.plan_minco(
+                waypoints_flat, v0, w0, via_half_width, wrench_safety_margin,
+                a0=a0, v_tail=v_tail,
+            )
+        return minco_native_py.plan_minco_heuristic_time(
+            waypoints_flat, v0, w0, target_speed, max_accel,
+            via_half_width, wrench_safety_margin
         )
 
     @staticmethod
     def _densify(position_waypoints, spacing_m):
         """各区間を``spacing_m``以下の間隔になるよう等分割し、元のwaypointは
-        分割境界としてそのまま残す（経路の直線形状は変えない、姿勢のseed点
-        だけを増やすための前処理）。"""
+        分割境界としてそのまま残す（経路の直線形状は変えない、姿勢のseed点や
+        global軌道の空間的な滑らかさのためにvia点を増やす前処理。
+        ``face_travel``の値には依存しない——姿勢を使わない場合でも
+        密なvia点は経路形状の滑らかさに寄与する、
+        docs/2026-09-20_ego_v2_style_replan_migration_plan.md参照）。"""
         if spacing_m <= 0.0:
             raise ValueError("attitude_resample_spacing_m must be > 0")
         dense = [position_waypoints[0]]
@@ -171,9 +261,27 @@ class MincoTrajectory:
 
     @staticmethod
     def _waypoint_rotvecs(position_waypoints, q0, forward_axis, face_travel):
-        """各waypointの``q0``相対回転ベクトルをface-travelヒューリスティックで
-        導出する（``ToppraTrajectory._dense_travel_rotvecs``と同じ考え方、
-        密サンプルではなくwaypointごとに1回だけ計算する版）。
+        """``__init__``のpass 1（module docstring）: 各waypointの``q0``相対
+        回転ベクトルを、まだMINCOが位置を解く前の**直線**方向（waypoint間の
+        位置差分）からface-travelヒューリスティックで導出する（``via_pos``
+        通過付近でこの直線方向と実際に解けた位置経路の接線がズレる問題への
+        対処が``__init__``のpass 2、``_rotvecs_from_directions``参照）。
+        """
+        n = len(position_waypoints)
+        if not face_travel:
+            return np.zeros((n, 3))
+        directions = np.zeros_like(position_waypoints)
+        directions[1:] = position_waypoints[1:] - position_waypoints[:-1]
+        return MincoTrajectory._rotvecs_from_directions(directions, q0, forward_axis)
+
+    @staticmethod
+    def _rotvecs_from_directions(directions, q0, forward_axis):
+        """``_waypoint_rotvecs``（pass 1、直線方向）と``__init__``のpass 2
+        （実際に解けた位置経路の接線、``sample()``の``v``）が共有する
+        face-travelの中核ロジック（``ToppraTrajectory._dense_travel_rotvecs``
+        と同じ考え方、waypointごとに1回だけ計算する版）。``directions[0]``は
+        使わない（サンプル0は常に``q0``・rotvec 0のまま、
+        ``ToppraTrajectory``の``initial_q_des``規約と同じ）。
 
         ``compute_q_des``自体は絶対姿勢（reference frame）を返すため、
         ``sample()``が期待する``q0``相対のrotvecにするには``quat_conj(q0)``を
@@ -190,20 +298,25 @@ class MincoTrajectory:
         （``docs/2026-08-31_multi_via_waypoints_static_test_near_dock_anomaly.md``、
         ``ToppraTrajectory._dense_travel_rotvecs``と同じ不具合）。
         """
-        n = len(position_waypoints)
+        n = len(directions)
         rotvecs = np.zeros((n, 3))
-        if not face_travel:
-            return rotvecs
         q0 = np.asarray(q0, dtype=float)
         q_prev = q0.copy()
         for i in range(1, n):
-            direction = position_waypoints[i] - position_waypoints[i - 1]
             q_prev = compute_q_des(
-                direction, q_prev, _DEGENERATE_TANGENT_THRESHOLD, forward_axis
+                directions[i], q_prev, _DEGENERATE_TANGENT_THRESHOLD, forward_axis
             )
             raw_rotvec = quat_log(quat_mul(quat_conj(q0), q_prev))
             rotvecs[i] = unwrap_rotvec(raw_rotvec, rotvecs[i - 1])
         return rotvecs
+
+    @staticmethod
+    def _segment_index_for(cum_times, n_segments, t):
+        """Same lookup as the instance ``_segment_index``, but usable in
+        ``__init__`` before ``self._cum_times``/``self._segment_times`` exist
+        (pass 2's reseed needs to sample pass 1's own solved coefficients)."""
+        idx = int(np.searchsorted(cum_times, t, side="right")) - 1
+        return min(max(idx, 0), n_segments - 1)
 
     @property
     def global_total_duration(self):
@@ -223,6 +336,22 @@ class MincoTrajectory:
         q = quat_mul(self._q0, quat_exp(rv))
         return p, v, a, q
 
+    def sample_rotvec_derivatives(self, t):
+        """Return ``(rv, rv_vel, rv_accel)`` at time ``t`` -- the ``q0``-
+        relative rotation vector and its first two derivatives (``sample()``
+        only returns the absolute quaternion ``q``, not enough to recover a
+        rotational analog of "velocity"/"acceleration" for a caller that
+        needs them, e.g. the replanning_minco v4 local layer's rotation
+        boundary condition, ``docs/
+        2026-09-01_replanning_minco_v4_production_port_plan.md`` Phase 4).
+        Same clamping as ``sample()``."""
+        t = min(max(float(t), 0.0), self._duration)
+        seg_idx = self._segment_index(t)
+        tau = t - self._cum_times[seg_idx]
+        rv = evaluate_vector(self._rot_coeffs[seg_idx], tau, order=0)
+        rv_vel = evaluate_vector(self._rot_coeffs[seg_idx], tau, order=1)
+        rv_accel = evaluate_vector(self._rot_coeffs[seg_idx], tau, order=2)
+        return rv, rv_vel, rv_accel
+
     def _segment_index(self, t):
-        idx = int(np.searchsorted(self._cum_times, t, side="right")) - 1
-        return min(max(idx, 0), len(self._segment_times) - 1)
+        return self._segment_index_for(self._cum_times, len(self._segment_times), t)
