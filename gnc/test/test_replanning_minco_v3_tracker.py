@@ -234,6 +234,15 @@ def test_target_speed_and_max_accel_must_be_given_together():
         _make_tracker(_IdealTrackingTf(), target_speed=None, max_accel=MAX_ACCEL)
 
 
+@pytest.mark.parametrize("kwargs", [
+    {"local_replan_period": 0.0},
+    {"planning_horizon_m": -1.0},
+])
+def test_non_positive_local_replan_params_are_rejected(kwargs):
+    with pytest.raises(ValueError):
+        _make_tracker(_IdealTrackingTf(), **kwargs)
+
+
 def test_freetime_global_reaches_target():
     tf = _IdealTrackingTf()
     tracker = _make_tracker(tf, target_speed=None, max_accel=None)

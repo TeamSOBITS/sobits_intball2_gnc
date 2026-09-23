@@ -40,6 +40,8 @@ from sobits_intball2_gnc.guidance.trajectory_generation import (
 )
 from sobits_intball2_gnc.guidance.align.attitude_aligner import AttitudeAligner
 from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
+    DEFAULT_LOCAL_REPLAN_PERIOD_S,
+    DEFAULT_PLANNING_HORIZON_M,
     ReplanningMincoV3Tracker,
 )
 from sobits_intball2_gnc.guidance.trajectory_tracking.static_trajectory_tracker import (
@@ -277,7 +279,9 @@ class GuidanceExecutor:
                 align_at_arrival_camera="main", trajectory_tracking_mode="static",
                 via_waypoints=None, minco_via_half_width=0.3,
                 minco_attitude_resample_spacing_m=None,
-                minco_wrench_safety_margin=1.0, minco_freetime=False):
+                minco_wrench_safety_margin=1.0, minco_freetime=False,
+                minco_local_replan_period=DEFAULT_LOCAL_REPLAN_PERIOD_S,
+                minco_planning_horizon_m=DEFAULT_PLANNING_HORIZON_M):
         """Run one move-to-target goal; returns a ``STATUS_*`` constant.
 
         ``via_waypoints``: an optional ordered list of interior relay points
@@ -324,6 +328,12 @@ class GuidanceExecutor:
         exists for the heuristic-time path, which needs ``max_accel`` to
         size its initial guess -- free-time doesn't). Ignored by every
         other mode. ``False`` (default) reproduces prior behavior.
+
+        ``minco_local_replan_period``/``minco_planning_horizon_m``:
+        ``"replanning_minco_v3"`` only -- forwarded to
+        ``ReplanningMincoV3Tracker``'s ``local_replan_period``/
+        ``planning_horizon_m``. Non-positive values fall back to
+        ``"static"``. Ignored by every other mode.
 
         ``look_at_target_frame`` is accepted but currently unused -- reserved
         for the future ``look_at`` attitude-reference mode (docs/
@@ -495,6 +505,8 @@ class GuidanceExecutor:
                     via_half_width=minco_via_half_width,
                     wrench_safety_margin=minco_wrench_safety_margin,
                     attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
+                    local_replan_period=minco_local_replan_period,
+                    planning_horizon_m=minco_planning_horizon_m,
                 )
                 traj = v3_tracker.trajectory
                 self._log.info(
@@ -502,10 +514,10 @@ class GuidanceExecutor:
                     "solve took %.2fs (%d waypoints)"
                     % (traj.solve_wall_seconds, traj.num_waypoints)
                 )
-            except MincoInfeasibleError as exc:
+            except (MincoInfeasibleError, ValueError) as exc:
                 self._log.warn(
-                    "[GuidanceExecutor] initial replanning_minco_v3 global "
-                    "trajectory infeasible (%s) -- falling back to 'static'" % exc
+                    "[GuidanceExecutor] replanning_minco_v3 tracker "
+                    "construction failed (%s) -- falling back to 'static'" % exc
                 )
                 v3_tracker = None
                 traj = None

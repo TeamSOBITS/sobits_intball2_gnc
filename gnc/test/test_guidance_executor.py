@@ -859,6 +859,56 @@ def test_execute_replanning_minco_v3_mode_passes_via_waypoints_to_the_tracker(mo
     assert np.allclose(captured["route_waypoints"], via_waypoints)
 
 
+def test_execute_replanning_minco_v3_mode_passes_local_replan_params_to_the_tracker(monkeypatch):
+    pytest.importorskip("minco_native_py")
+    import sobits_intball2_gnc.guidance.utils.guidance_executor as ge_module
+
+    captured = {}
+    real_tracker_cls = ge_module.ReplanningMincoV3Tracker
+
+    class SpyTracker(real_tracker_cls):
+        def __init__(self, *args, **kwargs):
+            captured["local_replan_period"] = kwargs.get("local_replan_period")
+            captured["planning_horizon_m"] = kwargs.get("planning_horizon_m")
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(ge_module, "ReplanningMincoV3Tracker", SpyTracker)
+
+    tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
+    executor = GuidanceExecutor(
+        tf, FakeSetpointPublisher(), FakeCheckpointPublisher(),
+        *_make_clock(dt_per_spin=0.05), FakeLogger(),
+        target_speed=1.0, max_accel=0.02,
+    )
+    executor.execute(
+        [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: True,
+        face_travel=False, align_at_arrival=False,
+        trajectory_tracking_mode="replanning_minco_v3",
+        minco_local_replan_period=0.5, minco_planning_horizon_m=1.5,
+    )
+    assert captured == {"local_replan_period": 0.5, "planning_horizon_m": 1.5}
+
+
+def test_execute_replanning_minco_v3_mode_falls_back_to_static_on_non_positive_horizon():
+    pytest.importorskip("minco_native_py")
+    logger = FakeLogger()
+    tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
+    executor = GuidanceExecutor(
+        tf, FakeSetpointPublisher(), FakeCheckpointPublisher(),
+        *_make_clock(dt_per_spin=0.05), logger,
+        target_speed=1.0, max_accel=0.02,
+    )
+    executor.execute(
+        [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: True,
+        face_travel=False, align_at_arrival=False,
+        trajectory_tracking_mode="replanning_minco_v3",
+        minco_planning_horizon_m=0.0,
+    )
+    assert any("falling back to 'static'" in w for w in logger.warnings)
+
+
 def test_execute_replanning_minco_v3_mode_republishes_speed_path_preview_on_replan():
     """The speed-path preview must be re-published beyond the initial
     goal-start call once the tracker actually re-plans, so RViz doesn't show
