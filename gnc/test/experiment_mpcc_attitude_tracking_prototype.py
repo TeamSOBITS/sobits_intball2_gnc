@@ -86,6 +86,14 @@ ATHETA_MAX = 0.05
 W_CONTOUR = 5e2
 W_LAG = 5e2
 LAG_HUBER_DELTA = 0.05
+# contour cost is quadratic (unbounded) by default, unlike lag_cost's
+# pseudo-Huber saturation below -- this asymmetry is the suspected cause of
+# the theta-abandonment failure mode (docs/2026-09-18_mpcc_attitude_weight_
+# tuning_step2_findings.md, "progress stall再発の原因"): once perpendicular
+# deviation is large, contour's quadratic growth dwarfs lag's saturated
+# growth, so advancing theta (which only reduces lag) stops paying off.
+# --contour-shape huber lets this be tested symmetrically against lag.
+CONTOUR_HUBER_DELTA = 0.1
 W_V_LATERAL = 3e3
 W_V_ALONG = 50.0
 MU_PROGRESS = 1.0
@@ -125,7 +133,9 @@ def resolve_target_hemisphere(q0, q_target):
     return np.asarray(q_target, dtype=float)
 
 
-def build_solver(A_full, fj_max, n_fans, R, q_target):
+def build_solver(A_full, fj_max, n_fans, R, q_target, p0=P0, tag="",
+                  contour_shape="quadratic", contour_huber_delta=CONTOUR_HUBER_DELTA,
+                  lag_huber_delta=LAG_HUBER_DELTA, progress_mode="goal", mu_progress=MU_PROGRESS):
     import casadi as ca
     from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 
@@ -167,17 +177,40 @@ def build_solver(A_full, fj_max, n_fans, R, q_target):
     direction = ca.DM(R[:, 2])
     Rt = ca.DM(R.T)
 
-    e = p - ca.DM(P0) - theta * direction
+    e = p - ca.DM(p0) - theta * direction
     e_local = Rt @ e
     v_local = Rt @ v
 
     to_goal = ca.DM(P1) - p
     dist_to_goal = ca.sqrt(ca.sumsqr(to_goal) + 1e-6)
-    closing_rate = ca.dot(to_goal, v) / dist_to_goal
+    closing_rate_goal = ca.dot(to_goal, v) / dist_to_goal
 
-    lag_cost = W_LAG * LAG_HUBER_DELTA ** 2 * (
-        ca.sqrt(1.0 + (e_local[2] / LAG_HUBER_DELTA) ** 2) - 1.0
+    # theta-referenced progress reward (docs/2026-09-18_mpcc_attitude_weight_
+    # tuning_step2_findings.md "progress stall再発の原因"): closing_rate_goal
+    # rewards raw approach to P1 regardless of theta, so once contour
+    # dominates the vehicle earns full progress credit by beelining to the
+    # goal without ever advancing theta -- lag then only grows (adds cost)
+    # and theta has zero incentive to move. to_ref = p_ref(theta) - p = -e,
+    # so this reward vanishes/reverses once the vehicle catches up to (or
+    # passes) theta's reference point, restoring the incentive to advance
+    # theta if it wants to keep collecting progress reward. Kept as a
+    # velocity dot-product (not a direct function of vtheta) so it retains
+    # 案1's fix for the old self-reinforcing vtheta=0 lock (docs/archive/
+    # achieved/2026-08-29_mpcc_progress_stall_fix_plan.md).
+    to_ref = -e
+    dist_to_ref = ca.sqrt(ca.sumsqr(to_ref) + 1e-6)
+    closing_rate_theta = ca.dot(to_ref, v) / dist_to_ref
+    closing_rate = closing_rate_theta if progress_mode == "path_point" else closing_rate_goal
+
+    lag_cost = W_LAG * lag_huber_delta ** 2 * (
+        ca.sqrt(1.0 + (e_local[2] / lag_huber_delta) ** 2) - 1.0
     )
+    if contour_shape == "huber":
+        contour_cost = W_CONTOUR * contour_huber_delta ** 2 * (
+            ca.sqrt(1.0 + ca.sumsqr(e_local[0:2]) / contour_huber_delta ** 2) - 1.0
+        )
+    else:
+        contour_cost = W_CONTOUR * ca.sumsqr(e_local[0:2])
 
     # Attitude error: vector part of q_target^-1 (x) q (see module docstring
     # for the small-angle / no-wraparound caveat).
@@ -192,11 +225,11 @@ def build_solver(A_full, fj_max, n_fans, R, q_target):
     att_cost = W_ATT * ca.sumsqr(q_err[0:3]) + W_W * ca.sumsqr(w)
 
     stage_cost = (
-        W_CONTOUR * ca.sumsqr(e_local[0:2])
+        contour_cost
         + lag_cost
         + W_V_LATERAL * ca.sumsqr(v_local[0:2])
         + W_V_ALONG * v_local[2] ** 2
-        - MU_PROGRESS * closing_rate
+        - mu_progress * closing_rate
         + W_F * ca.sumsqr(f)
         + W_ATHETA * atheta ** 2
         + att_cost
@@ -246,19 +279,66 @@ def build_solver(A_full, fj_max, n_fans, R, q_target):
     ocp.solver_options.integrator_type = "ERK"
     ocp.solver_options.nlp_solver_type = "SQP_RTI"
     ocp.solver_options.tf = TF_HORIZON
-    ocp.code_export_directory = "/tmp/acados_mpcc_attitude_tracking_prototype_codegen"
+    # tag keeps parallel invocations (different weights/disturbance) from
+    # clobbering each other's codegen output -- these paths are per-process
+    # scratch, not shared state, so a suffix based on the caller-supplied tag
+    # (falls back to pid) is enough.
+    suffix = tag or str(os.getpid())
+    ocp.code_export_directory = f"/tmp/acados_mpcc_attitude_tracking_prototype_codegen_{suffix}"
 
-    return AcadosOcpSolver(ocp, json_file="/tmp/acados_mpcc_attitude_tracking_prototype_ocp.json")
+    return AcadosOcpSolver(ocp, json_file=f"/tmp/acados_mpcc_attitude_tracking_prototype_ocp_{suffix}.json")
 
 
 def main():
+    global W_ATT, W_W, W_ATT_TERM, W_W_TERM
     parser = argparse.ArgumentParser()
     parser.add_argument("--disturbance", choices=["weak", "strong"], default="strong")
     parser.add_argument("--ticks", type=int, default=N_TICKS)
+    parser.add_argument("--w-att", type=float, default=W_ATT)
+    parser.add_argument("--w-w", type=float, default=W_W)
+    parser.add_argument("--w-att-term", type=float, default=W_ATT_TERM)
+    parser.add_argument("--w-w-term", type=float, default=W_W_TERM)
+    parser.add_argument("--v-perp", type=float, default=None,
+                         help="override lateral disturbance kick (m/s); "
+                              "takes precedence over --disturbance's weak/strong preset")
+    parser.add_argument("--w-disturb", type=float, default=None,
+                         help="override angular disturbance kick magnitude, about +x (rad/s); "
+                              "takes precedence over --disturbance's weak/strong preset")
+    parser.add_argument("--tag", default="",
+                         help="unique suffix for acados codegen paths, so parallel runs don't clobber each other")
+    parser.add_argument("--contour-shape", choices=["quadratic", "huber"], default="quadratic",
+                         help="quadratic (default, current behavior) leaves contour cost unbounded; "
+                              "huber saturates it symmetrically with lag_cost, see CONTOUR_HUBER_DELTA")
+    parser.add_argument("--contour-huber-delta", type=float, default=CONTOUR_HUBER_DELTA)
+    parser.add_argument("--lag-huber-delta", type=float, default=LAG_HUBER_DELTA,
+                         help="widening this relaxes lag's saturation (stays quadratic-like over a "
+                              "larger deviation range) instead of saturating contour")
+    parser.add_argument("--mu-progress", type=float, default=MU_PROGRESS,
+                         help="progress reward weight; path_point mode is safe to raise well above "
+                              "goal mode's tuned value since it can't reopen the old vtheta self-lock")
+    parser.add_argument("--progress-mode", choices=["goal", "path_point"], default="goal",
+                         help="goal (default, current behavior): progress reward is closing_rate "
+                              "toward P1, independent of theta. path_point: reward is closing_rate "
+                              "toward theta's reference point on the path, so it vanishes once the "
+                              "vehicle catches up to theta -- ties progress reward to theta without "
+                              "reopening the old vtheta-reward self-lock (uses real velocity, not vtheta)")
+    parser.add_argument("--replan-contour-threshold-mm", type=float, default=None,
+                         help="if set, rebuild the path frame (P0=current position, theta reset to 0, "
+                              "same P1) whenever contour error exceeds this -- tests whether re-planning "
+                              "beats trying to force theta to keep following the old frame. Rebuilds the "
+                              "acados solver on trigger (real codegen cost, ~seconds, not modeled in the "
+                              "sim-time loop -- this is a concept check, not a real-time replan latency test)")
+    parser.add_argument("--replan-cooldown-ticks", type=int, default=30,
+                         help="minimum ticks between replan triggers, to avoid thrashing")
     args = parser.parse_args()
     n_ticks = args.ticks
     v_perp_error = V_PERP_WEAK if args.disturbance == "weak" else V_PERP_STRONG
     w_disturb = W_DISTURB_WEAK if args.disturbance == "weak" else W_DISTURB_STRONG
+    if args.v_perp is not None:
+        v_perp_error = args.v_perp
+    if args.w_disturb is not None:
+        w_disturb = np.array([args.w_disturb, 0.0, 0.0])
+    W_ATT, W_W, W_ATT_TERM, W_W_TERM = args.w_att, args.w_w, args.w_att_term, args.w_w_term
 
     if "ACADOS_SOURCE_DIR" not in os.environ:
         raise SystemExit(
@@ -271,9 +351,19 @@ def main():
     fj_max = allocator.fj_max
     n_fans = allocator.fan_count
 
-    direction, path_length, R = build_path_frame(P0, P1)
+    p0_current = P0.copy()
+    direction, path_length, R = build_path_frame(p0_current, P1)
     q_target = resolve_target_hemisphere(Q0, Q_TARGET)
-    solver = build_solver(A_full, fj_max, n_fans, R, q_target)
+
+    def _build(tag_suffix):
+        return build_solver(A_full, fj_max, n_fans, R, q_target, p0=p0_current, tag=tag_suffix,
+                             contour_shape=args.contour_shape,
+                             contour_huber_delta=args.contour_huber_delta,
+                             lag_huber_delta=args.lag_huber_delta,
+                             progress_mode=args.progress_mode,
+                             mu_progress=args.mu_progress)
+
+    solver = _build(args.tag)
 
     p_true = P0.copy()
     v_true = np.zeros(3)
@@ -281,6 +371,8 @@ def main():
     vtheta_true = 0.0
     q_true = Q0.copy()
     w_true = np.zeros(3)
+    replan_ticks = []
+    last_replan_tick = -10**9
 
     print(f"path length={path_length*1000:.1f}mm, disturbance={args.disturbance} "
           f"(+{v_perp_error} m/s lateral, +{w_disturb} rad/s angular at tick {DISTURB_TICK})")
@@ -290,6 +382,8 @@ def main():
     over_budget_ticks = []
     infeasible_ticks = []
     solve_times = []
+    vtheta_history = []
+    lag_mm_history = []
 
     for tick in range(n_ticks):
         if tick == DISTURB_TICK:
@@ -314,11 +408,29 @@ def main():
         torque0 = wrench0[3:6]
         wdot0 = torque0 / INERTIA
 
-        e = p_true - P0 - theta_true * direction
+        e = p_true - p0_current - theta_true * direction
         e_local = R.T @ e
         contour_mm = np.linalg.norm(e_local[:2]) * 1000
         lag_mm = e_local[2] * 1000
         dist_to_goal_mm = np.linalg.norm(P1 - p_true) * 1000
+
+        if (args.replan_contour_threshold_mm is not None
+                and contour_mm > args.replan_contour_threshold_mm
+                and tick - last_replan_tick >= args.replan_cooldown_ticks):
+            print(f"--- replan triggered at tick {tick}: contour_mm={contour_mm:.1f} > "
+                  f"threshold={args.replan_contour_threshold_mm:.1f}, "
+                  f"rebuilding path frame from current position ---")
+            p0_current = p_true.copy()
+            direction, path_length, R = build_path_frame(p0_current, P1)
+            theta_true = 0.0
+            vtheta_true = 0.0
+            solver = _build(f"{args.tag}_replan{len(replan_ticks)}")
+            replan_ticks.append(tick)
+            last_replan_tick = tick
+            e = p_true - p0_current - theta_true * direction
+            e_local = R.T @ e
+            contour_mm = np.linalg.norm(e_local[:2]) * 1000
+            lag_mm = e_local[2] * 1000
         q_err = quat_mul(quat_conj(q_target), q_true)
         att_err_deg = np.degrees(2.0 * np.arctan2(np.linalg.norm(q_err[:3]), abs(q_err[3])))
 
@@ -327,18 +439,56 @@ def main():
             over_budget_ticks.append(tick)
         if status != 0:
             infeasible_ticks.append(tick)
+        vtheta_history.append(vtheta_true)
+        lag_mm_history.append(lag_mm)
 
         a0_along = np.dot(a0, direction)
         v_local = R.T @ v_true
+
+        # Cost-term breakdown (mirrors build_solver's stage_cost, computed in
+        # numpy from the true post-solve state) -- added to diagnose the
+        # progress-stall recurrence (vtheta pinned at 0 while lag_mm blows
+        # up), see docs/2026-09-18_mpcc_attitude_weight_tuning_step2_findings.md.
+        e_local_z = e_local[2]
+        if args.contour_shape == "huber":
+            cost_contour = W_CONTOUR * args.contour_huber_delta ** 2 * (
+                np.sqrt(1.0 + np.sum(e_local[:2] ** 2) / args.contour_huber_delta ** 2) - 1.0
+            )
+        else:
+            cost_contour = W_CONTOUR * np.sum(e_local[:2] ** 2)
+        cost_lag = W_LAG * args.lag_huber_delta ** 2 * (np.sqrt(1.0 + (e_local_z / args.lag_huber_delta) ** 2) - 1.0)
+        cost_lateral = W_V_LATERAL * np.sum(v_local[:2] ** 2)
+        cost_along = W_V_ALONG * v_local[2] ** 2
+        if args.progress_mode == "path_point":
+            to_ref = -e
+            dist_to_ref = np.linalg.norm(to_ref) + 1e-6
+            closing_rate = np.dot(to_ref, v_true) / dist_to_ref
+        else:
+            to_goal = P1 - p_true
+            dist_to_goal = np.linalg.norm(to_goal) + 1e-6
+            closing_rate = np.dot(to_goal, v_true) / dist_to_goal
+        cost_progress = -args.mu_progress * closing_rate
+        cost_att = W_ATT * np.sum(q_err[:3] ** 2)
+        cost_w = W_W * np.sum(w_true ** 2)
+        cost_f = W_F * np.sum(f0 ** 2)
+        cost_atheta = W_ATHETA * atheta0 ** 2
+
         print(f"{tick:>4} {elapsed:>9.4f} {str(over_budget):>12} {status:>7} "
               f"{contour_mm:>11.2f} {lag_mm:>8.2f} {dist_to_goal_mm:>16.2f} {att_err_deg:>12.3f} "
-              f"|f0|={np.linalg.norm(f0):.4f} vtheta={vtheta_true:.4f} a0_along_path={a0_along:.5f} "
+              f"|f0|={np.linalg.norm(f0):.4f} vtheta={vtheta_true:.4f} atheta0={atheta0:.5f} "
+              f"a0_along_path={a0_along:.5f} "
               f"v_lat=({v_local[0]:.4f},{v_local[1]:.4f}) v_along={v_local[2]:.4f} "
-              f"|w|={np.linalg.norm(w_true):.4f}")
+              f"|w|={np.linalg.norm(w_true):.4f} "
+              f"cost[contour={cost_contour:.3f} lag={cost_lag:.3f} lateral={cost_lateral:.3f} "
+              f"along={cost_along:.3f} progress={cost_progress:.3f} att={cost_att:.3f} "
+              f"w={cost_w:.3f} f={cost_f:.3f} atheta={cost_atheta:.3f}]")
 
         v_true = v_true + a0 * DT_TICK
         p_true = p_true + v_true * DT_TICK
-        vtheta_true = vtheta_true + atheta0 * DT_TICK
+        # plant-side integration has no OCP box to bound it (that's only enforced
+        # inside the solver's prediction horizon) -- clamp to the same physical
+        # range so a stuck solver (atheta0 pinned) can't run vtheta away unbounded
+        vtheta_true = np.clip(vtheta_true + atheta0 * DT_TICK, 0.0, VTHETA_MAX)
         theta_true = theta_true + vtheta_true * DT_TICK
         w_true = w_true + wdot0 * DT_TICK
         q_true = q_true + quat_mul(q_true, np.concatenate([w_true, [0.0]])) * 0.5 * DT_TICK
@@ -351,9 +501,29 @@ def main():
     print(f"solve time: mean={solve_times.mean()*1000:.3f}ms "
           f"max={solve_times.max()*1000:.3f}ms")
     print(f"final distance to goal: {np.linalg.norm(P1 - p_true)*1000:.2f} mm")
+    vtheta_arr = np.array(vtheta_history)
+    stalled = vtheta_arr < 1e-4
+    stall_run = 0
+    longest_stall_start = None
+    longest_stall_len = 0
+    run_start = None
+    for i, s in enumerate(stalled):
+        if s:
+            if run_start is None:
+                run_start = i
+            stall_run += 1
+            if stall_run > longest_stall_len:
+                longest_stall_len = stall_run
+                longest_stall_start = run_start
+        else:
+            stall_run = 0
+            run_start = None
+    print(f"longest vtheta==0 streak: {longest_stall_len} ticks "
+          f"(starting tick {longest_stall_start}), max |lag_mm|={np.max(np.abs(lag_mm_history)):.1f}")
     q_err_final = quat_mul(quat_conj(q_target), q_true)
     att_err_final_deg = np.degrees(2.0 * np.arctan2(np.linalg.norm(q_err_final[:3]), abs(q_err_final[3])))
     print(f"final attitude error: {att_err_final_deg:.3f} deg")
+    print(f"replans triggered: {replan_ticks}")
 
 
 if __name__ == "__main__":
