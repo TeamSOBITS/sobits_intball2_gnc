@@ -72,12 +72,9 @@ openspec/
 /.claude
 /.github
 CLAUDE.md
-docs/results/
-docs/archive/
-docs/**/*.pdf
-docs/**/*.zip
-docs/**/*.py
-docs/minimum_snap
+# docsはissue.md以外pushしない
+/docs/*
+!/docs/issue.md
 # GCOPTERヘッダ（MITライセンス）。ベンダリングせずinstall.shでclone取得する
 /minco_native_py/third_party/
 
