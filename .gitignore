@@ -83,5 +83,9 @@ docs/minimum_snap
 # gen_*.py生成物・ビルド成果物（regenerable）
 /gnc/test/experiment_minco_native/minco_attitude_native
 
+# bench_*.cppをその場でg++ビルドした実行ファイル（regenerable、ソースの.cppは除外しない）
+/gnc/test/experiment_minco_native/bench_*
+!/gnc/test/experiment_minco_native/bench_*.cpp
+
 # CSVは全て除外対象
 *.csv
