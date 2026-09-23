@@ -45,6 +45,34 @@ const double SMOOTH_FACTOR = 1e-2;
 const double VIOLATION_TOLERANCE = 1e-3;
 const double INITIAL_SEGMENT_TIME = 15.0;
 const double weightSchedule[] = {1e2, 1e4, 1e6, 1e8, 1e10, 1e12, 1e14};
+// planMincoHeuristicTimeのanalytic stretchループ用。
+// 2026-09-18訂正: 元はFast-Planner fast_planner/bspline/src/
+// non_uniform_bspline.cppのcheckFeasibility/reallocateTime方式
+// （違反セグメントだけを個別にT(i)*=rする局所伸長）を採用していたが、
+// MINCOは全セグメントが境界条件で結合されたグローバルな系（帯行列で
+// 一括求解）のため、ある区間を伸ばすと結合を通じて別の区間の違反が
+// 変化する「モグラ叩き」が発生し、STRETCH_LIMIT_RATIO/STRETCH_MAX_ITERSを
+// 大きくしても非単調に成功/失敗が入れ替わることが実データ(zenoルート)で
+// 確認された(docs/2026-09-18_plan_minco_heuristic_time_handoff_root_cause_investigation.md
+// 追記4)。B-splineは局所サポート性を持つためFast-Planner方式でも
+// 大体機能するが、MINCOでは前提が成立しない。そのため全区間一律伸長
+// （planMincoHeuristicTime内のstretchループ、本コメント末尾のiter loop）
+// に変更した。
+// 2026-09-20訂正: この一律伸長は「EGO-Planner方式」ではない
+// （実リポジトリ EGO-Planner-v2-main を grep 全探索した結果、
+// reallocateTime/lengthenTime/scaleTimeの類は存在しないと確認済み）。
+// EGO-Planner v2はそもそも時間再割り当てループ自体を廃し、各セグメント
+// 時間T_iをforwardT/backwardT（本ファイル下記）と同じ微分同相写像
+// （traj_opt/src/poly_traj_optimizer.cpp VirtualT2RealT）でLBFGSの
+// 自由変数化し、コストにwei_time*sum(T)の線形項を足すことで、
+// 速度/加速度/jerk違反の勾配が直接gdTへ流れて違反区間を自然に伸長する
+// 設計（＝本ファイルのplan_minco自由時間LBFGS経路と同型）。
+// 本関数（planMincoHeuristicTime）の一律伸長ループは、上記の
+// モグラ叩き回避のためにこのプロジェクト独自に選んだ折衷案であり、
+// 単調収束することを実データ+合成シナリオ一式で確認済み(同doc追記6)。
+const double STRETCH_LIMIT_RATIO = 2.0;
+const int STRETCH_MAX_ITERS = 15;
+const double STRETCH_RATIO_EPS = 1e-4;
 
 MatrixXd F_ENV;
 VectorXd G_ENV;
@@ -205,6 +233,7 @@ struct EvalContext
     double wrenchSafetyMargin;       // G_ENVをこの係数で縮小してから評価する、(0,1]
     std::vector<Vector3d> viaGiven;  // 位置via点の与えられた基準値（自由変数の中心）
     Matrix3Xd rotVia;                // 姿勢via点（固定、最適化しない）
+    VectorXd fixedT;  // evaluateFixedT専用: 固定されたセグメント時間（evaluate()では未使用）
 };
 
 double evaluate(void *instance, const VectorXd &x, VectorXd &g)
@@ -342,6 +371,121 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
     return W_TIME * T.sum() + W_ENERGY * (energyPos + energyRot) + penaltyCost;
 }
 
+// evaluate()のfixed-T版（planMincoHeuristicTime専用）。Tはctx->fixedTとして
+// 固定で与えられ、xは via点のtanh変数のみ（3*numVia次元、時間項なし）。
+// wrench penaltyの勾配計算（SO(3)ヤコビアン補正込みのomegaDot）はevaluate()と
+// 完全に同一ロジック——bench_v4/v5のevaluateFixedTは補正前の素朴なaccRot版
+// だったため、そちらではなくevaluate()の式をfixed-T向けに書き換えたもの
+// （accRotバグ修正: docs/archive/achieved/
+// 2026-09-17_accrot_jacobian_bug_offline_verification.md）。
+double evaluateFixedT(void *instance, const VectorXd &x, VectorXd &g)
+{
+    auto *ctx = static_cast<EvalContext *>(instance);
+    const int K = ctx->K;
+    const int numVia = ctx->numVia;
+    const VectorXd &T = ctx->fixedT;
+
+    Matrix3Xd th(3, std::max(numVia, 0));
+    Matrix3Xd qVia(3, std::max(numVia, 0));
+    for (int i = 0; i < numVia; i++)
+    {
+        const Vector3d xi = x.segment<3>(3 * i);
+        const Vector3d t = xi.array().tanh();
+        th.col(i) = t;
+        qVia.col(i) = ctx->viaGiven[i] + ctx->viaHalfWidth * t;
+    }
+
+    ctx->posMinco->setParameters(qVia, T);
+    ctx->rotMinco->setParameters(ctx->rotVia, T);
+
+    double energyPos, energyRot;
+    ctx->posMinco->getEnergy(energyPos);
+    ctx->rotMinco->getEnergy(energyRot);
+    MatrixX3d gdC_energy_pos, gdC_energy_rot;
+    ctx->posMinco->getEnergyPartialGradByCoeffs(gdC_energy_pos);
+    ctx->rotMinco->getEnergyPartialGradByCoeffs(gdC_energy_rot);
+
+    MatrixX3d gdC_penalty_pos = MatrixX3d::Zero(6 * K, 3);
+    MatrixX3d gdC_penalty_rot = MatrixX3d::Zero(6 * K, 3);
+    double penaltyCost = 0.0;
+
+    const MatrixX3d &coeffsPos = ctx->posMinco->getCoeffs();
+    const MatrixX3d &coeffsRot = ctx->rotMinco->getCoeffs();
+    const double integralFrac = 1.0 / INTEGRAL_RES;
+
+#pragma omp parallel for num_threads(PENALTY_LOOP_THREADS) reduction(+ : penaltyCost) schedule(static)
+    for (int i = 0; i < K; i++)
+    {
+        const Matrix<double, 6, 3> &cPos = coeffsPos.block<6, 3>(i * 6, 0);
+        const Matrix<double, 6, 3> &cRot = coeffsRot.block<6, 3>(i * 6, 0);
+        const double step = T(i) * integralFrac;
+        for (int j = 0; j <= INTEGRAL_RES; j++)
+        {
+            const double s1 = j * step, s2 = s1 * s1, s3 = s2 * s1;
+            Matrix<double, 6, 1> beta0, beta1, beta2;
+            beta0 << 1.0, s1, s2, s3, s2 * s2, s2 * s3;
+            beta1 << 0.0, 1.0, 2.0 * s1, 3.0 * s2, 4.0 * s3, 5.0 * s2 * s2;
+            beta2 << 0.0, 0.0, 2.0, 6.0 * s1, 12.0 * s2, 20.0 * s3;
+
+            const Vector3d accPos = cPos.transpose() * beta2;
+            const Vector3d r = cRot.transpose() * beta0;
+            const Vector3d rDot = cRot.transpose() * beta1;
+            const Vector3d rDdot = cRot.transpose() * beta2;
+            const Vector3d omegaDot = omegaDotOf(r, rDot, rDdot);
+
+            Matrix<double, 6, 1> wrench;
+            wrench.head<3>() = MASS * accPos;
+            wrench.tail<3>() = INERTIA * omegaDot;
+
+            const VectorXd viol = F_ENV * wrench - ctx->wrenchSafetyMargin * G_ENV;
+            Matrix<double, 6, 1> gradWrench = Matrix<double, 6, 1>::Zero();
+            double pena = 0.0;
+            for (int k = 0; k < viol.size(); k++)
+            {
+                double f, df;
+                if (smoothedL1(viol(k), SMOOTH_FACTOR, f, df))
+                {
+                    gradWrench += (ctx->penaltyWeight * df) * F_ENV.row(k).transpose();
+                    pena += ctx->penaltyWeight * f;
+                }
+            }
+
+            const Vector3d gradAccPos = MASS * gradWrench.head<3>();
+            const Vector3d gradWrenchRot = gradWrench.tail<3>();
+            Matrix3d dOmegaDot_dR, dOmegaDot_dRDot, dOmegaDot_dRDdot;
+            omegaDotJacobians(r, rDot, rDdot, dOmegaDot_dR, dOmegaDot_dRDot, dOmegaDot_dRDdot);
+            const Vector3d gradR = INERTIA * (dOmegaDot_dR.transpose() * gradWrenchRot);
+            const Vector3d gradRDot = INERTIA * (dOmegaDot_dRDot.transpose() * gradWrenchRot);
+            const Vector3d gradRDdot = INERTIA * (dOmegaDot_dRDdot.transpose() * gradWrenchRot);
+
+            const double node = (j == 0 || j == INTEGRAL_RES) ? 0.5 : 1.0;
+            gdC_penalty_pos.block<6, 3>(i * 6, 0) += (beta2 * gradAccPos.transpose()) * node * step;
+            gdC_penalty_rot.block<6, 3>(i * 6, 0) +=
+                (beta0 * gradR.transpose() + beta1 * gradRDot.transpose() + beta2 * gradRDdot.transpose())
+                * node * step;
+            penaltyCost += node * step * pena;
+        }
+    }
+
+    const MatrixX3d gdC_total_pos = W_ENERGY * gdC_energy_pos + gdC_penalty_pos;
+    const MatrixX3d gdC_total_rot = W_ENERGY * gdC_energy_rot + gdC_penalty_rot;
+
+    Matrix3Xd gradByPointsPos, gradByPointsRot;
+    VectorXd gradByTimesPos, gradByTimesRot;
+    ctx->posMinco->propogateGrad(gdC_total_pos, VectorXd::Zero(K), gradByPointsPos, gradByTimesPos);
+    ctx->rotMinco->propogateGrad(gdC_total_rot, VectorXd::Zero(K), gradByPointsRot, gradByTimesRot);
+    // gradByTimes{Pos,Rot}は使わない（Tは固定、tauに対応する自由変数が存在しない）。
+
+    g.resize(3 * numVia);
+    for (int i = 0; i < numVia; i++)
+    {
+        const Vector3d gradQ = gradByPointsPos.col(i);
+        g.segment<3>(3 * i) = gradQ.array() * ctx->viaHalfWidth * (1.0 - th.col(i).array().square());
+    }
+
+    return W_ENERGY * (energyPos + energyRot) + penaltyCost;
+}
+
 double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, const VectorXd &T, int K,
                      double wrenchSafetyMargin)
 {
@@ -374,13 +518,123 @@ double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, co
     return worst;
 }
 
+// 各セグメントの正規化wrench違反比の最大値（ratio_k = (F_ENV_k・wrench) /
+// (margin*G_ENV_k)、ratio<=1でfeasible）。analytic stretchループの毎回の
+// feasibility判定に使う（INTEGRAL_RES分解能、maxViolation()のような最終合否
+// 判定用の高分解能VIOLATION_CHECK_RESとは別。bench_v5_multiscenario.cppの
+// maxRatioPerSegmentと同じ役割だが、omegaDotはSO(3)ヤコビアン補正込みの
+// omegaDotOf()を使う点が異なる）。
+VectorXd maxRatioPerSegment(const VectorXd &T, const MatrixX3d &coeffsPos, const MatrixX3d &coeffsRot,
+                             int K, double wrenchSafetyMargin)
+{
+    VectorXd maxRatio = VectorXd::Zero(K);
+    const double integralFrac = 1.0 / INTEGRAL_RES;
+    for (int i = 0; i < K; i++)
+    {
+        const Matrix<double, 6, 3> &cPos = coeffsPos.block<6, 3>(i * 6, 0);
+        const Matrix<double, 6, 3> &cRot = coeffsRot.block<6, 3>(i * 6, 0);
+        const double step = T(i) * integralFrac;
+        for (int j = 0; j <= INTEGRAL_RES; j++)
+        {
+            const double s1 = j * step, s2 = s1 * s1, s3 = s2 * s1;
+            Matrix<double, 6, 1> beta0, beta1, beta2;
+            beta0 << 1.0, s1, s2, s3, s2 * s2, s2 * s3;
+            beta1 << 0.0, 1.0, 2.0 * s1, 3.0 * s2, 4.0 * s3, 5.0 * s2 * s2;
+            beta2 << 0.0, 0.0, 2.0, 6.0 * s1, 12.0 * s2, 20.0 * s3;
+            const Vector3d accPos = cPos.transpose() * beta2;
+            const Vector3d r = cRot.transpose() * beta0;
+            const Vector3d rDot = cRot.transpose() * beta1;
+            const Vector3d rDdot = cRot.transpose() * beta2;
+            Matrix<double, 6, 1> wrench;
+            wrench.head<3>() = MASS * accPos;
+            wrench.tail<3>() = INERTIA * omegaDotOf(r, rDot, rDdot);
+            const VectorXd lhs = F_ENV * wrench;
+            for (int k = 0; k < lhs.size(); k++)
+            {
+                const double denom = wrenchSafetyMargin * G_ENV(k);
+                if (denom <= 1e-9) continue;
+                maxRatio(i) = std::max(maxRatio(i), lhs(k) / denom);
+            }
+        }
+    }
+    return maxRatio;
+}
+
+// 台形（十分な距離があれば加速→巡航→減速）/三角形（距離不足で巡航区間なし）
+// 速度プロファイルの所要時間（gnc/test/experiment_minco_native/
+// bench_v5_multiscenario.cppと同じ式）。
+double trapezoidalTime(double distance, double vCap, double aMax)
+{
+    const double dAccel = vCap * vCap / (2.0 * aMax);
+    if (distance >= 2.0 * dAccel)
+    {
+        return 2.0 * (vCap / aMax) + (distance - 2.0 * dAccel) / vCap;
+    }
+    const double vPeak = std::sqrt(aMax * distance);
+    return 2.0 * vPeak / aMax;
+}
+
+// trapezoidalTimeの結果を、head側の初速度（進行方向成分vParallel）に応じて
+// 補正する（v0=0前提の素朴な見積もりだと、巡航中の初速がある場合に時間が
+// 短すぎ／長すぎになりうる下限・上限で挟む）。
+// gnc/sobits_intball2_gnc/guidance/segment_time/
+// heuristic_segment_time_allocator.pyのv0-aware補正と同じ考え方だが、
+// このC++側は経路全体を1本の速度プロファイルとして扱う
+// （bench_v5_multiscenario.cppと同じ式）。
+double v0AwareTime(double naiveT, double distance, double vParallel, double aMax)
+{
+    if (vParallel <= 1e-9)
+    {
+        return naiveT;
+    }
+    const double tMax = 3.0 * distance / vParallel;
+    const double t1 = 12.0 * distance
+        / (4.0 * vParallel + std::sqrt(16.0 * vParallel * vParallel + 24.0 * aMax * distance));
+    const double t3 = 12.0 * distance
+        / (2.0 * vParallel + std::sqrt(4.0 * vParallel * vParallel + 24.0 * aMax * distance));
+    const double tMin = std::max(t1, t3);
+    return std::min(std::max(naiveT, tMin), std::max(tMax, tMin));
+}
+
+// 経路全体（head→via点...→tail）を1本の速度プロファイルとして扱い、
+// 弧長比でセグメントへ時間配分する（bench_v5_multiscenarioのheuristicTと
+// 同じ式）。segEnds: 各セグメントの終点（via点...tail、headは含まない）。
+VectorXd heuristicSegmentTimes(const Vector3d &headPosVec, const Vector3d &headVelVec,
+                                const std::vector<Vector3d> &segEnds, double targetSpeed,
+                                double maxAccel)
+{
+    const int K = static_cast<int>(segEnds.size());
+    VectorXd dist(K);
+    Vector3d prev = headPosVec;
+    double total = 0.0;
+    for (int i = 0; i < K; i++)
+    {
+        dist(i) = std::max((segEnds[i] - prev).norm(), 1e-6);
+        total += dist(i);
+        prev = segEnds[i];
+    }
+    const double vParallel = headVelVec.norm();
+    double tTotal = trapezoidalTime(total, targetSpeed, maxAccel);
+    tTotal = v0AwareTime(tTotal, total, vParallel, maxAccel);
+    VectorXd T(K);
+    for (int i = 0; i < K; i++)
+    {
+        T(i) = tTotal * dist(i) / total;
+    }
+    return T;
+}
+
 }  // namespace
 
 PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       const std::vector<double> &v0,
                       const std::vector<double> &w0,
                       double via_half_width,
-                      double wrench_safety_margin)
+                      double wrench_safety_margin,
+                      const std::optional<std::vector<double>> &warm_start_qvia,
+                      const std::optional<std::vector<double>> &warm_start_T,
+                      const std::optional<std::vector<double>> &a0,
+                      const std::optional<std::vector<double>> &v_tail)
 {
     PlanResult result;
 
@@ -398,6 +652,10 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         if (v0.size() != 3 || w0.size() != 3)
         {
             throw std::invalid_argument("v0/w0 must have size 3");
+        }
+        if ((a0.has_value() && a0->size() != 3) || (v_tail.has_value() && v_tail->size() != 3))
+        {
+            throw std::invalid_argument("a0/v_tail must have size 3");
         }
         if (via_half_width < 0.0)
         {
@@ -427,8 +685,16 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         Matrix3d headPos = Matrix3d::Zero();
         headPos.col(0) = posAll[0];
         headPos.col(1) = v0vec;
+        if (a0.has_value())
+        {
+            headPos.col(2) = Vector3d((*a0)[0], (*a0)[1], (*a0)[2]);
+        }
         Matrix3d tailPos = Matrix3d::Zero();
         tailPos.col(0) = posAll[N - 1];
+        if (v_tail.has_value())
+        {
+            tailPos.col(1) = Vector3d((*v_tail)[0], (*v_tail)[1], (*v_tail)[2]);
+        }
 
         Matrix3d headRot = Matrix3d::Zero();
         headRot.col(0) = rotAll[0];
@@ -460,7 +726,39 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         ctx.penaltyWeight = weightSchedule[0];
 
         VectorXd x = VectorXd::Zero(3 * numVia + K);
-        VectorXd T0 = VectorXd::Constant(K, INITIAL_SEGMENT_TIME);
+
+        // warm start: 前回solveのvia点実座標をtanhパラメータ化の逆変換で
+        // 今回のxに埋め込む。numVia不一致（waypoint数が変わった）や
+        // via_half_width<=0（via点固定、xが効かない）は無視してゼロ初期化
+        // にフォールバックする。
+        if (warm_start_qvia.has_value() && via_half_width > 0.0 &&
+            static_cast<int>(warm_start_qvia->size()) == 3 * numVia)
+        {
+            for (int i = 0; i < numVia; i++)
+            {
+                for (int d = 0; d < 3; d++)
+                {
+                    const double qPrev = (*warm_start_qvia)[3 * i + d];
+                    const double ratio = std::clamp(
+                        (qPrev - viaGiven[i](d)) / via_half_width, -0.999, 0.999);
+                    x(3 * i + d) = std::atanh(ratio);
+                }
+            }
+        }
+
+        VectorXd T0;
+        const bool warmStartTValid =
+            warm_start_T.has_value() && static_cast<int>(warm_start_T->size()) == K &&
+            std::all_of(warm_start_T->begin(), warm_start_T->end(),
+                        [](double t) { return t > 0.0; });
+        if (warmStartTValid)
+        {
+            T0 = Eigen::Map<const VectorXd>(warm_start_T->data(), K);
+        }
+        else
+        {
+            T0 = VectorXd::Constant(K, INITIAL_SEGMENT_TIME);
+        }
         VectorXd tau0;
         backwardT(T0, tau0);
         x.segment(3 * numVia, K) = tau0;
@@ -531,6 +829,201 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
     catch (const std::exception &e)
     {
         std::cerr << "[minco_native] planMinco exception: " << e.what() << std::endl;
+        result.success = false;
+        result.error_code = 1;
+        result.segment_times.clear();
+        result.coeffs_flat.clear();
+        result.duration = 0.0;
+    }
+
+    return result;
+}
+
+PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
+                                   const std::vector<double> &v0,
+                                   const std::vector<double> &w0,
+                                   double target_speed,
+                                   double max_accel,
+                                   double via_half_width,
+                                   double wrench_safety_margin)
+{
+    PlanResult result;
+
+    try
+    {
+        if (waypoints_flat.size() % 6 != 0)
+        {
+            throw std::invalid_argument("waypoints_flat size must be a multiple of 6");
+        }
+        const int N = static_cast<int>(waypoints_flat.size() / 6);
+        if (N < 2)
+        {
+            throw std::invalid_argument("need at least 2 waypoints (head, tail)");
+        }
+        if (v0.size() != 3 || w0.size() != 3)
+        {
+            throw std::invalid_argument("v0/w0 must have size 3");
+        }
+        if (via_half_width < 0.0)
+        {
+            throw std::invalid_argument("via_half_width must be >= 0");
+        }
+        if (wrench_safety_margin <= 0.0 || wrench_safety_margin > 1.0)
+        {
+            throw std::invalid_argument("wrench_safety_margin must be in (0, 1]");
+        }
+        if (target_speed <= 0.0)
+        {
+            throw std::invalid_argument("target_speed must be > 0");
+        }
+        if (max_accel <= 0.0)
+        {
+            throw std::invalid_argument("max_accel must be > 0");
+        }
+
+        ensureWrenchEnvelopeLoaded();
+
+        const int K = N - 1;
+        const int numVia = N - 2;
+
+        std::vector<Vector3d> posAll(N), rotAll(N);
+        for (int i = 0; i < N; i++)
+        {
+            posAll[i] = Vector3d(waypoints_flat[6 * i + 0], waypoints_flat[6 * i + 1],
+                                  waypoints_flat[6 * i + 2]);
+            rotAll[i] = Vector3d(waypoints_flat[6 * i + 3], waypoints_flat[6 * i + 4],
+                                  waypoints_flat[6 * i + 5]);
+        }
+        const Vector3d v0vec(v0[0], v0[1], v0[2]);
+        const Vector3d w0vec(w0[0], w0[1], w0[2]);
+
+        Matrix3d headPos = Matrix3d::Zero();
+        headPos.col(0) = posAll[0];
+        headPos.col(1) = v0vec;
+        Matrix3d tailPos = Matrix3d::Zero();
+        tailPos.col(0) = posAll[N - 1];
+
+        Matrix3d headRot = Matrix3d::Zero();
+        headRot.col(0) = rotAll[0];
+        headRot.col(1) = w0vec;
+        Matrix3d tailRot = Matrix3d::Zero();
+        tailRot.col(0) = rotAll[N - 1];
+
+        minco::MINCO_S3NU posMinco, rotMinco;
+        posMinco.setConditions(headPos, tailPos, K);
+        rotMinco.setConditions(headRot, tailRot, K);
+
+        std::vector<Vector3d> viaGiven(numVia);
+        Matrix3Xd rotVia(3, std::max(numVia, 0));
+        for (int i = 0; i < numVia; i++)
+        {
+            viaGiven[i] = posAll[i + 1];
+            rotVia.col(i) = rotAll[i + 1];
+        }
+
+        std::vector<Vector3d> segEnds;
+        segEnds.reserve(K);
+        for (int i = 0; i < numVia; i++)
+        {
+            segEnds.push_back(viaGiven[i]);
+        }
+        segEnds.push_back(posAll[N - 1]);
+        VectorXd T = heuristicSegmentTimes(posAll[0], v0vec, segEnds, target_speed, max_accel);
+
+        EvalContext ctx;
+        ctx.posMinco = &posMinco;
+        ctx.rotMinco = &rotMinco;
+        ctx.K = K;
+        ctx.numVia = numVia;
+        ctx.viaGiven = viaGiven;
+        ctx.rotVia = rotVia;
+        ctx.viaHalfWidth = via_half_width;
+        ctx.wrenchSafetyMargin = wrench_safety_margin;
+
+        VectorXd x = VectorXd::Zero(3 * numVia);
+        lbfgs::lbfgs_parameter_t param;
+        param.past = 3;
+        param.delta = 1e-8;
+        param.g_epsilon = 1e-10;
+        param.max_iterations = 500;
+
+        // EGO-Planner lengthenTime方式のanalytic stretchループ（全区間を
+        // 同一比率で一律伸長、上記コメント参照）: fixed-T solve →
+        // 全セグメント中最悪のmaxRatioからsqrt(ratio)倍（1回あたり
+        // STRETCH_LIMIT_RATIOでキャップ）を計算し、それを全セグメントの
+        // Tに一律に掛けて再solve、を最大STRETCH_MAX_ITERS回繰り返す。
+        // xは伸長間でウォームスタートする（毎回ゼロから解き直さない）。
+        for (int iter = 0; iter <= STRETCH_MAX_ITERS; iter++)
+        {
+            ctx.fixedT = T;
+            double fx = 0.0;
+            for (double w : weightSchedule)
+            {
+                ctx.penaltyWeight = w;
+                lbfgs::lbfgs_optimize(x, fx, evaluateFixedT, nullptr, nullptr, &ctx, param);
+            }
+
+            Matrix3Xd qVia(3, std::max(numVia, 0));
+            for (int i = 0; i < numVia; i++)
+            {
+                const Vector3d xi = x.segment<3>(3 * i);
+                qVia.col(i) = viaGiven[i] + via_half_width * xi.array().tanh().matrix();
+            }
+            posMinco.setParameters(qVia, T);
+            rotMinco.setParameters(rotVia, T);
+
+            const VectorXd maxRatio =
+                maxRatioPerSegment(T, posMinco.getCoeffs(), rotMinco.getCoeffs(), K, wrench_safety_margin);
+            const bool feasible = maxRatio.maxCoeff() <= 1.0 + VIOLATION_TOLERANCE;
+            if (feasible)
+            {
+                break;
+            }
+            double r = std::sqrt(maxRatio.maxCoeff()) + STRETCH_RATIO_EPS;
+            if (r > STRETCH_LIMIT_RATIO)
+            {
+                r = STRETCH_LIMIT_RATIO;
+            }
+            T *= r;
+        }
+
+        const double maxViol = maxViolation(posMinco, rotMinco, T, K, wrench_safety_margin);
+
+        result.segment_times.resize(K);
+        for (int i = 0; i < K; i++)
+        {
+            result.segment_times[i] = T(i);
+        }
+
+        const MatrixX3d &coeffsPos = posMinco.getCoeffs();
+        const MatrixX3d &coeffsRot = rotMinco.getCoeffs();
+        result.coeffs_flat.resize(static_cast<size_t>(K) * 6 * 6);
+        size_t idx = 0;
+        for (int seg = 0; seg < K; seg++)
+        {
+            for (int dim = 0; dim < 3; dim++)
+            {
+                for (int deg = 0; deg < 6; deg++)
+                {
+                    result.coeffs_flat[idx++] = coeffsPos(seg * 6 + deg, dim);
+                }
+            }
+            for (int dim = 0; dim < 3; dim++)
+            {
+                for (int deg = 0; deg < 6; deg++)
+                {
+                    result.coeffs_flat[idx++] = coeffsRot(seg * 6 + deg, dim);
+                }
+            }
+        }
+
+        result.duration = T.sum();
+        result.error_code = (maxViol <= VIOLATION_TOLERANCE) ? 0 : 1;
+        result.success = (result.error_code == 0);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "[minco_native] planMincoHeuristicTime exception: " << e.what() << std::endl;
         result.success = false;
         result.error_code = 1;
         result.segment_times.clear();
