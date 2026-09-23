@@ -142,6 +142,10 @@ _GUIDANCE_PARAM_DEFAULTS = {
     # (docs/2026-09-20_minco_global_replan_freetime_switch_offline_
     # investigation.md).
     "guidance.minco_freetime": False,
+    # "replanning_minco_v3" only: forwarded to the tracker's
+    # local_replan_period/planning_horizon_m. Category B, latched per goal.
+    "guidance.minco_local_replan_period": 1.0,
+    "guidance.minco_planning_horizon_m": 2.0,
 }
 
 _ATTITUDE_REFERENCE_MODES = frozenset({"fixed", "face_travel", "look_at"})
@@ -509,6 +513,12 @@ class GuidanceNode(Node):
             ),
             minco_freetime=bool(
                 self.get_parameter("guidance.minco_freetime").value
+            ),
+            minco_local_replan_period=float(
+                self.get_parameter("guidance.minco_local_replan_period").value
+            ),
+            minco_planning_horizon_m=float(
+                self.get_parameter("guidance.minco_planning_horizon_m").value
             ),
         )
         if status == STATUS_SUCCESS:

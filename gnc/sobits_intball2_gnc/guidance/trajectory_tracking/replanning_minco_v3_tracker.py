@@ -141,6 +141,8 @@ class ReplanningMincoV3Tracker:
 
     Raises:
         ValueError: if ``target_speed``/``max_accel`` are not given together.
+            Also if ``local_replan_period``/``planning_horizon_m`` is not
+            positive.
         MincoInfeasibleError: if the initial global or local solve fails.
     """
 
@@ -156,6 +158,11 @@ class ReplanningMincoV3Tracker:
                 "target_speed and max_accel must be given together (both "
                 "None selects MincoTrajectory's free-time plan_minco path, "
                 "both non-None selects plan_minco_heuristic_time)"
+            )
+        if local_replan_period <= 0.0 or planning_horizon_m <= 0.0:
+            raise ValueError(
+                "local_replan_period and planning_horizon_m must be positive "
+                "(got %r, %r)" % (local_replan_period, planning_horizon_m)
             )
 
         p0 = np.asarray(p0, dtype=float)

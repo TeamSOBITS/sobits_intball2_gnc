@@ -151,6 +151,8 @@
       # replanning_minco_v3 (global/local MINCO re-planning). Latched at goal
       # receipt, like attitude_reference_mode.
       trajectory_tracking_mode: static
+      minco_local_replan_period: 1.0  # [s] replanning_minco_v3 local replan period
+      minco_planning_horizon_m: 2.0   # [m] replanning_minco_v3 local look-ahead
       max_angular_rate_deg: 90.0    # q_des rate limit, untuned guess
       # static mode only (ToppraTrajectory): shrink wrench_envelope_halfspaces'
       # g vector by this factor (homothety about the origin, so it stays exact)
