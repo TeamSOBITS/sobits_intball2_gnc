@@ -24,6 +24,8 @@ from sobits_intball2_gnc.common.ros.tf_client import TfClient
 
 ACTION_NAME = "/gnc/move_to"
 DEFAULT_REFERENCE_FRAME = "iss_body"
+SPIN_POLL_SEC = 0.1
+CANCEL_WAIT_SEC = 5.0
 
 
 class MoveToClient:
@@ -61,11 +63,17 @@ class MoveToClient:
         pos, quat, _stamp = local_tf.get_pose()
         return pos, quat
 
-    def send_goal(self, pos, quat, feedback_cb=None, timeout_sec: float = 10.0):
+    def send_goal(self, pos, quat, feedback_cb=None, timeout_sec: float = 10.0,
+                  result_timeout_sec=None):
         """Send a ``MOVE_TO_ABSOLUTE_TARGET`` goal and wait for the result.
 
+        ``timeout_sec`` bounds only the wait for the action server.
+        ``result_timeout_sec`` (sim time, from goal acceptance) bounds the
+        wait for the result; on expiry the goal is canceled. ``None`` waits
+        indefinitely.
+
         Returns the ``CtlCommand.Result``, or ``None`` if the server wasn't
-        available or the goal was rejected.
+        available, the goal was rejected, or ``result_timeout_sec`` expired.
         """
         if not self._client.wait_for_server(timeout_sec=timeout_sec):
             self._node.get_logger().error(
@@ -96,8 +104,37 @@ class MoveToClient:
             return None
 
         result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self._node, result_future)
-        return result_future.result().result
+        if result_timeout_sec is None:
+            rclpy.spin_until_future_complete(self._node, result_future)
+            return result_future.result().result
+
+        if self._spin_until_done_or_sim_timeout(result_future, result_timeout_sec):
+            return result_future.result().result
+
+        self._node.get_logger().warn(
+            "[MoveToClient] no result within %.1fs (sim time), canceling goal"
+            % result_timeout_sec
+        )
+        cancel_future = goal_handle.cancel_goal_async()
+        self._spin_until_done_or_sim_timeout(cancel_future, CANCEL_WAIT_SEC)
+        self._spin_until_done_or_sim_timeout(result_future, CANCEL_WAIT_SEC)
+        return None
+
+    def _spin_until_done_or_sim_timeout(self, future, timeout_sec) -> bool:
+        clock = self._node.get_clock()
+        deadline_ns = None
+        while not future.done():
+            rclpy.spin_once(self._node, timeout_sec=SPIN_POLL_SEC)
+            now_ns = clock.now().nanoseconds
+            # Sim clock reads 0 until the first /clock arrives; starting the
+            # deadline there would expire it on the first real /clock jump.
+            if now_ns == 0:
+                continue
+            if deadline_ns is None:
+                deadline_ns = now_ns + int(timeout_sec * 1e9)
+            elif now_ns >= deadline_ns:
+                return future.done()
+        return True
 
 
 def main(args=None) -> None:
