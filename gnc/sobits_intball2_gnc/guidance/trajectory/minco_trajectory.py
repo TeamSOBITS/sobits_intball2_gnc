@@ -41,6 +41,7 @@ from sobits_intball2_gnc.control.utils.quat_math import (
     quat_exp,
     quat_log,
     quat_mul,
+    rotvec_rates_to_body_rates,
     unwrap_rotvec,
 )
 from sobits_intball2_gnc.guidance.utils.attitude_reference import compute_q_des
@@ -352,6 +353,13 @@ class MincoTrajectory:
         rv_vel = evaluate_vector(self._rot_coeffs[seg_idx], tau, order=1)
         rv_accel = evaluate_vector(self._rot_coeffs[seg_idx], tau, order=2)
         return rv, rv_vel, rv_accel
+
+    def sample_body_angular(self, t):
+        """Return body-frame ``(omega, omega_dot)`` of ``sample(t)``'s ``q``;
+        zero from the end on, where ``sample()`` holds ``q`` fixed."""
+        if float(t) >= self._duration:
+            return np.zeros(3), np.zeros(3)
+        return rotvec_rates_to_body_rates(*self.sample_rotvec_derivatives(t))
 
     def _segment_index(self, t):
         return self._segment_index_for(self._cum_times, len(self._segment_times), t)

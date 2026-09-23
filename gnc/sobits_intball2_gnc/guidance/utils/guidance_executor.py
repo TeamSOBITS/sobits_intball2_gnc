@@ -728,7 +728,8 @@ class GuidanceExecutor:
             elapsed = self._clock_seconds() - t_start
             sample_t = min(elapsed, tracker.total_duration)
             p, v, a, q = tracker.sample(sample_t)
-            self._setpoint_pub.publish(p, v, a, q)
+            omega_des, alpha_des = tracker.last_body_angular
+            self._setpoint_pub.publish(p, v, a, q, omega_des, alpha_des)
             if getattr(tracker, "last_replan_occurred", False):
                 self._log.info(
                     "[GuidanceExecutor] replanning: re-planned trajectory at "

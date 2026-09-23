@@ -222,6 +222,7 @@ class ReplanningMincoV3Tracker:
         self._prev_t = 0.0
         p_out, v_out, a_out, q_out = self._local_trajectory.sample(0.0)
         self._last_output = (p_out, v_out, a_out, q_out)
+        self.last_body_angular = self._local_trajectory.sample_body_angular(0.0)
 
     def sample(self, t):
         self.last_replan_occurred = False
@@ -233,6 +234,7 @@ class ReplanningMincoV3Tracker:
         if pose is None or not self._tf_fresh_fn(pose[2]):
             self._fallen_back = True
             self.last_fallback_reason = "tf_stale"
+            self.last_body_angular = (np.zeros(3), np.zeros(3))
             return self._last_output
 
         self._last_p_now = np.asarray(pose[0], dtype=float)
@@ -261,6 +263,8 @@ class ReplanningMincoV3Tracker:
                 self.last_local_fallback = True
 
         p_out, v_out, a_out, q_out = self._local_trajectory.sample(self._local_elapsed)
+        self.last_body_angular = self._local_trajectory.sample_body_angular(
+            self._local_elapsed)
 
         self._last_output = (p_out, v_out, a_out, q_out)
         return self._last_output
