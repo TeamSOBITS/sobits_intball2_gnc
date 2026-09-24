@@ -159,8 +159,8 @@ _GUIDANCE_PARAM_DEFAULTS = {
     # "replanning_minco_v3" only: forwarded to the tracker's
     # local_replan_period/planning_horizon_m. Category B, latched per goal.
     "guidance.minco_local_replan_period": 1.0,
-    "guidance.minco_planning_horizon_m": 2.0,
-    "guidance.minco_v3_face_travel": False,
+    "guidance.minco_planning_horizon_m": 4.0,
+    "guidance.minco_v3_face_travel": True,
     "guidance.minco_local_max_vel": 0.2,
     "guidance.minco_v3_async_replan": True,
 }
