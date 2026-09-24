@@ -18,6 +18,7 @@ waypoint列から、時間の関数としての滑らかな目標軌道（位置
 guidance/
 ├── guidance.py                           # GuidanceNode（唯一のROSノード、1file1node）
 │                                          # /gnc/move_to（ib2_msgs/action/CtlCommand）を提供
+├── guidance_params.py                    # GuidanceNodeのパラメータの既定値・読み取り専用の一覧・goalごとの読み取り
 ├── align/                                # 事前/事後アラインメント（SLERP+台形角速度ランプ）
 │   ├── angular_trajectory.py                 # 角度台形プロファイル（角速度・角加速度上限からランプ軌道を生成）
 │   └── attitude_aligner.py                   # 現在姿勢->目標姿勢のSLERP+台形ランプ整列を駆動
@@ -25,11 +26,16 @@ guidance/
 │   ├── base_global_planner.py                # 共通インターフェース
 │   ├── astar_planner.py
 │   └── rrt_planner.py
+├── local_planner/                        # 障害物を見たlocalの計画
+│   ├── minco_local_planner.py                # replanning_minco_v3のglobal/localの作り方（EGO-Planner v2のplanner_manager）
+│   └── obstacle_map.py                       # 静的な地図（OctoMap）＋仮想の箱から格子地図を作り直す
 ├── ros/                                  # ROS 入出力ラッパ
 │   ├── path_publisher.py                     # nav_msgs/Path をRVizへ可視化publish（/gnc/trajectory_path）
 │   ├── speed_path_publisher.py                # 速度で色分けしたLINE_STRIP MarkerをRVizへ可視化publish（表示のみ、制御には無関係）
 │   ├── multi_dof_joint_trajectory_publisher.py  # /gnc/trajectory_setpoint へ発行（Control側が購読）
 │   ├── checkpoint_publisher.py               # /gnc/checkpoints へ発行（事前/到着時整列の静止保持）
+│   ├── marker_array_subscriber.py            # /guidance/virtual_obstacles（MarkerArrayのCUBE）を箱の変更にして渡す
+│   ├── marker_array_publisher.py             # 今の箱の一覧を /guidance/obstacles_active へ発行（RViz表示）
 │   ├── move_to_client.py                     # move_to_client CLI（名前付きTF地点へgoal送信、手動検証用）
 │   └── ctl_command_action_server.py          # ib2_msgs/action/CtlCommand（目標姿勢へのgoal駆動）
 ├── segment_time/                         # 区間時間配分
@@ -47,7 +53,8 @@ guidance/
 ├── trajectory_tracking/                  # 生成済み軌道の追従方式（static/replanning_minco_v3切替）
 │   ├── base_trajectory_tracker.py            # 共通インターフェース
 │   ├── static_trajectory_tracker.py          # 開ループ単一軌道を最後まで追従（デフォルト）
-│   └── replanning_minco_v3_tracker.py        # global MINCO軌道を一度だけ解き、local区間を一定周期で再計画しながら追従
+│   ├── replanning_minco_v3_tracker.py        # global MINCO軌道を一度だけ解き、local区間を一定周期で再計画しながら追従（衝突確認・非常停止）
+│   └── tracker_builder.py                    # goalのtrajectory_tracking_modeに応じてtrackerを組み立てる（フォールバックの順も）
 └── utils/                                # ROS非依存のロジック
     ├── polynomial.py                         # 多項式（微分）評価
     ├── attitude_reference.py                 # v_des(t) -> q_des(t)（進行方向を向く姿勢参照）
@@ -56,6 +63,7 @@ guidance/
     ├── model_kf_estimator.py                 # 指令加速度で予測・観測位置で補正する定加速度カルマンフィルタ（現在未使用）
     ├── quintic_hermite.py                    # 両端の位置/速度/加速度から5次多項式を解析的に解く（現在未使用）
     ├── wrench_envelope_constraint.py         # TOPP-RA用の経路非依存wrench包絡域制約（ToppraTrajectoryが使用）
+    ├── cancel_brake.py                       # cancel後の制動（停止プロファイルに沿って止め、止まった点で静止保持）
     └── guidance_executor.py                  # GuidanceExecutor: 1件のCtlCommand goalを
                                                # pre-align→軌道追従→arrival-alignで駆動、cancel後はbrake()で制動
 ```
@@ -169,6 +177,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 |---|---|---|
 | `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | `iss_body <- body`のTF（`TfClient`経由、到着判定・整列判定に使用） |
 | `/imu/imu` | `ib2_msgs/IMU` | 角速度（cancel後の制動の初期角速度に使用） |
+| `/guidance/virtual_obstacles` | `visualization_msgs/MarkerArray` | 地図にない障害物（仮想の箱、CUBE）の追加・削除。`test/manual/virtual_obstacle.py`で送れる。あとでセンサーからの入力に差し替える前提の入口 |
 
 ### 出力トピック
 
@@ -178,6 +187,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `/gnc/checkpoints` | `geometry_msgs/PoseArray` | 事前整列・到着時整列での静止保持目標（Control側が購読） |
 | `/gnc/trajectory_path_speed` | `visualization_msgs/Marker` | 速度で色分けした軌道のRViz表示（表示のみ、制御には無関係） |
 | `/gnc/trajectory_path_speed_local` | `visualization_msgs/Marker` | `replanning_minco_v3`のlocal軌道のRViz表示（表示のみ） |
+| `/guidance/obstacles_active` | `visualization_msgs/MarkerArray` | 今の障害物の地図に入っている仮想の箱の一覧（RViz表示、transient local） |
 
 ### アクション
 
@@ -217,7 +227,10 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `guidance.minco_local_replan_period` | `replanning_minco_v3`のlocal再計画周期[s] | `1.0` |
 | `guidance.minco_planning_horizon_m` | `replanning_minco_v3`のlocalの先読み距離[m]（global上で直線距離がこの値以上になる最初の点を目標にする） | `4.0` |
 | `guidance.minco_v3_face_travel` | `replanning_minco_v3`で進行方向を向く（`attitude_reference_mode=face_travel`も必要）。localを2回solveし、wrenchを機体座標で評価する。先読みは`4.0`程度にする | `true` |
-| `guidance.minco_local_max_vel` | `minco_v3_face_travel`のときのlocalの速度上限[m/s] | `0.2` |
+| `guidance.minco_local_max_vel` | `minco_v3_face_travel`のときのlocalの速度上限[m/s] | `0.15` |
+| `guidance.minco_obstacle_avoidance` | `replanning_minco_v3`で障害物の地図（JEMの壁＋仮想の箱）を避ける（`minco_v3_face_travel`も必要）。避けきれないときは停止プロファイルで非常停止し、静止から再計画する | `false` |
+| `guidance.minco_local_piece_length_m` | 障害物を避けるときのlocalの1区間の長さ[m]（EGO-Planner v2の`polyTraj_piece_length`） | `1.5` |
+| `guidance.minco_obstacle_clearance_soft` | 障害物を避けるときの緩い余裕[m]（ぶつかった障害物から離す距離） | `0.2` |
 
 ### 姿勢合わせ・到着判定
 
@@ -258,6 +271,9 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `guidance.stopping.tolerance_pos`・`tolerance_att` | 制動終了とみなす停止点からの距離[m]・角度[rad] | `0.30`・`1.0` |
 | `guidance.stopping.duration_goal` | 上の範囲にこの秒数いたら制動終了[s] | `3.0` |
 | `guidance.stopping.wait_cancel` | 軌道時間＋この秒数で打ち切って静止保持[s] | `10.0` |
+| `guidance.obstacle_map_file` | 障害物の地図（OctoMap `.bt`）。相対パスは`share/sobits_intball2_gnc/maps/`から。`""`で静的な地図なし（仮想の箱だけ） | `jem_octomap.bt` |
+| `guidance.obstacle_grid_resolution` | 障害物の格子の解像度[m] | `0.1` |
+| `guidance.obstacle_grid_inflation` | 障害物の格子の膨張[m]（機体半径0.1m＋余裕0.1m）。マス単位で効く（解像度0.1mなら0.15は0.2と同じ） | `0.2` |
 
 ### Control側と共有（起動時のみ、`gnc_params.yaml`の各セクションと同じ値を使う）
 
