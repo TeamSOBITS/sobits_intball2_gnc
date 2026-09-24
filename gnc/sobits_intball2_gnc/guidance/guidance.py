@@ -210,7 +210,7 @@ class GuidanceNode(Node):
         # HeuristicSegmentTimeAllocator's docstring and
         # docs/guidance_move_to_debug_2026-08-20.md).
         self.declare_parameter("trajectory_controller.max_force", [0.181, 0.0996, 0.122])
-        self.declare_parameter("trajectory_controller.mass", 4.5, static_descriptor)
+        self.declare_parameter("trajectory_controller.mass", 3.216, static_descriptor)
         # Only used by HeuristicSegmentTimeAllocator (the replanning path's
         # scalar 1-D model) -- the static/TOPP-RA path below uses the real
         # fan-derived wrench envelope instead (wrench_envelope below), see
