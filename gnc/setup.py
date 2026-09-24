@@ -11,7 +11,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/maps', glob('maps/*.yaml')),
+        ('share/' + package_name + '/maps', glob('maps/*.yaml') + glob('maps/*.bt')),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
         ('share/' + package_name + '/rviz', glob('rviz/*.rviz')),
@@ -31,6 +31,8 @@ setup(
         'console_scripts': [
             'location_broadcaster = sobits_intball2_gnc.navigation.location_broadcaster:main',
             'location_setting = sobits_intball2_gnc.navigation.location_setting:main',
+            'octomap_marker_publisher = '
+            'sobits_intball2_gnc.navigation.octomap_marker_publisher:main',
             # Control-system orchestrator (the single control node).
             'control = sobits_intball2_gnc.control.control:main',
             # ros/ wrapper manual-test entry points.

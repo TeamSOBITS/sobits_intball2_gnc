@@ -95,6 +95,14 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[{"use_sim_time": True}],
     )
 
+    octomap_marker_node = Node(
+        package="sobits_intball2_gnc",
+        executable="octomap_marker_publisher",
+        name="octomap_marker_publisher",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+    )
+
     return LaunchDescription(
         [
             use_rviz_arg,
@@ -102,5 +110,6 @@ def generate_launch_description() -> LaunchDescription:
             ib2_state_publisher,
             rviz_node,
             location_broadcaster_node,
+            octomap_marker_node,
         ]
     )
