@@ -155,6 +155,7 @@
       minco_planning_horizon_m: 2.0   # [m] replanning_minco_v3 local look-ahead
       minco_v3_face_travel: false     # replanning_minco_v3 faces travel (needs attitude_reference_mode face_travel); use horizon ~4m
       minco_local_max_vel: 0.2        # [m/s] replanning_minco_v3 local speed cap, face travel only
+      minco_v3_async_replan: true     # replanning_minco_v3 solves local off the setpoint loop (EGO v2 planner/traj_server split)
       max_angular_rate_deg: 90.0    # q_des rate limit, untuned guess
       # static mode only (ToppraTrajectory): shrink wrench_envelope_halfspaces'
       # g vector by this factor (homothety about the origin, so it stays exact)

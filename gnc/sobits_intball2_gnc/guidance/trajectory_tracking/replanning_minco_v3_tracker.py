@@ -96,7 +96,17 @@ fallback rather than inventing new latch/hard-stop machinery):
 
 No velocity estimator: replans start from the reference state, so measured
 pose is only used for the first plan, the TF-freshness latch and the ETA.
+
+``async_replan=True`` solves the local in a background thread while
+``sample()`` keeps playing the old local (EGO-Planner v2's planner/
+``traj_server`` split), so a slow solve no longer stalls the setpoint stream.
+The new local's t=0 is when its start state was sampled, not when the solve
+finished as in EGO v2: with 0.2-0.35 s solves the latter jumps the reference
+back by v*solve_time (``docs/2026-09-24_replanning_minco_v3_face_travel_
+replan_gap_offline_check.md``).
 """
+import threading
+
 import numpy as np
 
 from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
@@ -148,6 +158,8 @@ class ReplanningMincoV3Tracker:
         initial_v0: initial velocity, shape ``(3,)``, default zero.
         face_travel, forward_axis, local_max_vel: see module docstring;
             ``local_max_vel`` [m/s] is only used with ``face_travel``.
+        async_replan: see module docstring. ``False`` solves inside
+            ``sample()`` (deterministic, for offline/unit use).
 
     Raises:
         ValueError: if ``target_speed``/``max_accel`` are not given together.
@@ -163,7 +175,7 @@ class ReplanningMincoV3Tracker:
                  via_half_width=0.3, wrench_safety_margin=1.0,
                  attitude_resample_spacing_m=None,
                  initial_v0=None, face_travel=False, forward_axis=(1.0, 0.0, 0.0),
-                 local_max_vel=None):
+                 local_max_vel=None, async_replan=False):
         if (target_speed is None) != (max_accel is None):
             raise ValueError(
                 "target_speed and max_accel must be given together (both "
@@ -191,6 +203,10 @@ class ReplanningMincoV3Tracker:
         self._face_travel = bool(face_travel)
         self._forward_axis = np.asarray(forward_axis, dtype=float)
         self._local_max_vel = None if local_max_vel is None else float(local_max_vel)
+        self._async_replan = bool(async_replan)
+        self._pending_thread = None
+        self._pending_result = None
+        self._pending_lag = 0.0
 
         route_waypoints = (
             np.zeros((0, 3)) if route_waypoints is None
@@ -204,6 +220,7 @@ class ReplanningMincoV3Tracker:
         self.last_replan_occurred = False
         self.last_local_fallback = False
         self.last_replan_solve_seconds = None
+        self.last_replan_lag_seconds = None
 
         if len(route_waypoints):
             waypoints = np.vstack([p0, route_waypoints, self._p_target])
@@ -261,23 +278,24 @@ class ReplanningMincoV3Tracker:
 
         self._local_elapsed += dt
         self._since_replan_attempt += dt
-        if (not self._local_touches_goal
+        if self._pending_thread is not None:
+            self._pending_lag += dt
+            if not self._pending_thread.is_alive():
+                self._pending_thread = None
+                self._adopt_local(self._pending_result, self._pending_lag)
+        elif (not self._local_touches_goal
                 and self._since_replan_attempt >= self._local_replan_period):
             self._since_replan_attempt = 0.0
             p_ref, v_ref, a_ref, _q = self._local_trajectory.sample(self._local_elapsed)
             rv_ref = self._local_trajectory.sample_rotvec_derivatives(self._local_elapsed)
-            try:
-                new_local, self._local_touches_goal = self._build_local(
-                    p_ref, v_ref, a_ref, *rv_ref)
-                self._local_trajectory = new_local
-                self._local_elapsed = 0.0
-                self.last_replan_occurred = True
-                self.last_replan_solve_seconds = new_local.solve_wall_seconds
-            except MincoInfeasibleError:
-                # _local_elapsed deliberately not reset: keeps the reference
-                # continuous on the old local trajectory until a retry succeeds.
-                self.last_fallback_reason = "minco_infeasible_local"
-                self.last_local_fallback = True
+            start_state = (p_ref, v_ref, a_ref, *rv_ref)
+            if self._async_replan:
+                self._pending_lag = 0.0
+                self._pending_thread = threading.Thread(
+                    target=self._solve_local_in_background, args=(start_state,), daemon=True)
+                self._pending_thread.start()
+            else:
+                self._adopt_local(self._try_build_local(start_state), 0.0)
 
         p_out, v_out, a_out, q_out = self._local_trajectory.sample(self._local_elapsed)
         self.last_body_angular = self._local_trajectory.sample_body_angular(
@@ -285,6 +303,33 @@ class ReplanningMincoV3Tracker:
 
         self._last_output = (p_out, v_out, a_out, q_out)
         return self._last_output
+
+    def _try_build_local(self, start_state):
+        try:
+            return self._build_local(*start_state)
+        except MincoInfeasibleError:
+            return None
+
+    def _solve_local_in_background(self, start_state):
+        try:
+            self._pending_result = self._try_build_local(start_state)
+        except Exception as exc:  # re-raised on the sampling thread in _adopt_local
+            self._pending_result = exc
+
+    def _adopt_local(self, result, lag):
+        if isinstance(result, Exception):
+            raise result
+        if result is None:
+            # _local_elapsed deliberately not reset: keeps the reference
+            # continuous on the old local trajectory until a retry succeeds.
+            self.last_fallback_reason = "minco_infeasible_local"
+            self.last_local_fallback = True
+            return
+        self._local_trajectory, self._local_touches_goal = result
+        self._local_elapsed = lag
+        self.last_replan_occurred = True
+        self.last_replan_solve_seconds = self._local_trajectory.solve_wall_seconds
+        self.last_replan_lag_seconds = lag
 
     @property
     def total_duration(self):

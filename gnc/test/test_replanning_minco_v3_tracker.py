@@ -1,6 +1,8 @@
 """Unit tests for ReplanningMincoV3Tracker (docs/
 2026-09-20_ego_v2_style_replan_migration_plan.md).
 """
+import threading
+
 import numpy as np
 import pytest
 
@@ -292,3 +294,65 @@ def test_face_travel_attitude_continuous_across_replans(face_travel_run):
 
 def test_face_travel_respects_local_speed_cap(face_travel_run):
     assert max(np.linalg.norm(r[2]) for r in face_travel_run) < FACE_TRAVEL_MAX_VEL * 1.03
+
+
+def _gate_local_builds(tracker):
+    gate = threading.Event()
+    build = tracker._build_local
+
+    def gated_build(*args):
+        gate.wait()
+        return build(*args)
+
+    tracker._build_local = gated_build
+    return gate
+
+
+def test_async_replan_keeps_old_local_while_solving_then_swaps_continuously():
+    tf = _IdealTrackingTf()
+    tracker = _make_tracker(tf, local_replan_period=1.0, async_replan=True)
+    gate = _gate_local_builds(tracker)
+    old_local = tracker.local_trajectory
+
+    t = 0.0
+    while tracker._pending_thread is None:
+        t += DT
+        p, _v, _a, _q = tracker.sample(t)
+    blocked_ticks = 6
+    for _ in range(blocked_ticks):
+        t += DT
+        p, _v, _a, _q = tracker.sample(t)
+        assert not tracker.last_replan_occurred
+        assert np.allclose(p, old_local.sample(t)[0], atol=1e-9)
+
+    gate.set()
+    tracker._pending_thread.join()
+    t += DT
+    p, v, _a, _q = tracker.sample(t)
+    assert tracker.last_replan_occurred
+    assert tracker.last_replan_lag_seconds == pytest.approx((blocked_ticks + 1) * DT)
+    p_old, v_old, _a_old, _q_old = old_local.sample(t)
+    assert np.allclose(p, p_old, atol=1e-3)
+    assert np.allclose(v, v_old, atol=1e-3)
+
+
+def test_async_replan_face_travel_reaches_target():
+    tf = _IdealTrackingTf()
+    tracker = _make_tracker(
+        tf, p_target=FACE_TRAVEL_TARGET, route_waypoints=FACE_TRAVEL_ROUTE,
+        planning_horizon_m=4.0, face_travel=True, local_max_vel=FACE_TRAVEL_MAX_VEL,
+        attitude_resample_spacing_m=0.3, async_replan=True,
+    )
+    replans = 0
+    t = 0.0
+    while t <= tracker.total_duration and t < T_CAP:
+        t += DT
+        tf.stamp = t
+        p, _v, _a, _q = tracker.sample(t)
+        tf.advance(t, p)
+        replans += tracker.last_replan_occurred
+        if tracker._pending_thread is not None:
+            tracker._pending_thread.join()
+    assert replans >= 2
+    assert tracker.last_fallback_reason is None
+    assert np.allclose(p, FACE_TRAVEL_TARGET, atol=1e-2)

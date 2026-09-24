@@ -162,6 +162,7 @@ _GUIDANCE_PARAM_DEFAULTS = {
     "guidance.minco_planning_horizon_m": 2.0,
     "guidance.minco_v3_face_travel": False,
     "guidance.minco_local_max_vel": 0.2,
+    "guidance.minco_v3_async_replan": True,
 }
 
 _ATTITUDE_REFERENCE_MODES = frozenset({"fixed", "face_travel", "look_at"})
@@ -564,6 +565,9 @@ class GuidanceNode(Node):
             ),
             minco_local_max_vel=float(
                 self.get_parameter("guidance.minco_local_max_vel").value
+            ),
+            minco_v3_async_replan=bool(
+                self.get_parameter("guidance.minco_v3_async_replan").value
             ),
         )
         if status == STATUS_SUCCESS:
