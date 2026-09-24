@@ -337,6 +337,31 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /gnc/trajectory_path_speed_local
       Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: false
+      Name: Marker (JEM octomap)
+      Namespaces:
+        octomap: true
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /octomap_marker
+      Value: false
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray (active obstacles)
+      Namespaces:
+        {}
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /guidance/obstacles_active
+      Value: true
     - Class: rviz_default_plugins/Image
       Enabled: true
       Max Value: 1

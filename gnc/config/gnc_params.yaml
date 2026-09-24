@@ -154,8 +154,15 @@
       minco_local_replan_period: 1.0  # [s] replanning_minco_v3 local replan period
       minco_planning_horizon_m: 4.0   # [m] replanning_minco_v3 local look-ahead (face travel needs ~4m)
       minco_v3_face_travel: true      # replanning_minco_v3 faces travel (needs attitude_reference_mode face_travel); use horizon ~4m
-      minco_local_max_vel: 0.2        # [m/s] replanning_minco_v3 local speed cap, face travel only
+      minco_local_max_vel: 0.15       # [m/s] replanning_minco_v3 local speed cap, face travel only
       minco_v3_async_replan: true     # replanning_minco_v3 solves local off the setpoint loop (EGO v2 planner/traj_server split)
+      # replanning_minco_v3 obstacle avoidance (docs/2026-09-24_obstacle_avoidance_production_integration_plan.md)
+      minco_obstacle_avoidance: false        # avoid the obstacle map (needs face travel); latched per goal
+      minco_local_piece_length_m: 1.5        # [m] local piece length when avoiding (EGO v2 polyTraj_piece_length)
+      minco_obstacle_clearance_soft: 0.2     # [m] soft clearance from collided obstacles
+      obstacle_map_file: jem_octomap.bt      # static map, relative = share/maps/; "" = boxes only (read-only)
+      obstacle_grid_resolution: 0.1          # [m] (read-only)
+      obstacle_grid_inflation: 0.2           # [m] robot radius 0.1 + 0.1 margin, whole cells (read-only)
       max_angular_rate_deg: 90.0    # q_des rate limit, untuned guess
       # static mode only (ToppraTrajectory): shrink wrench_envelope_halfspaces'
       # g vector by this factor (homothety about the origin, so it stays exact)
