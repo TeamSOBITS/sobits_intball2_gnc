@@ -7,7 +7,8 @@ The only ``rclpy`` node in the guidance system (1-file-1-node rule, matching
 via dependency injection, and serves it as the ``execute_fn`` behind
 ``CtlCommandActionServer`` (``docs/guidance_node_implementation_plan.md``).
 
-Configuration comes from ``config/gnc_params.yaml``'s ``guidance`` section.
+Configuration comes from ``config/gnc_params.yaml`` (loaded by
+``launch/guidance.launch.py``); a bare ``ros2 run`` uses in-code defaults.
 """
 import numpy as np
 import rclpy
@@ -163,10 +164,8 @@ class GuidanceNode(Node):
     def __init__(self) -> None:
         # Default use_sim_time=True since this node's whole timing model
         # (clock_seconds_fn/spin_fn below) assumes self.get_clock() is sim
-        # time, and unlike control_node it is always run standalone
-        # (`ros2 run`, CLAUDE.md), never through a launch file that would
-        # otherwise inject this parameter (hover_control.launch.py does for
-        # control_node). A parameter_override is a default, not a lock: an
+        # time. guidance.launch.py also injects it, but this keeps a bare
+        # `ros2 run` on sim time too. A parameter_override is a default, not a lock: an
         # explicit `--ros-args -p use_sim_time:=false` still wins over it.
         super().__init__(
             "guidance_node",

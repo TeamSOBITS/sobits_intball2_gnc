@@ -74,14 +74,13 @@ guidance/
 ```sh
 export ROS_DOMAIN_ID=54   # 環境に合わせて設定
 source /root/colcon_ws/install/setup.bash
-PARAMS=/root/colcon_ws/src/sobits_intball2_gnc/gnc/config/gnc_params.yaml
 
 ros2 launch sobits_intball2_gnc gnc_bringup.launch.py        # TF・機体モデル・RViz・名前付き地点のTF配信
 ros2 launch sobits_intball2_gnc hover_control.launch.py      # control_node（gnc_params.yamlを読む）
-ros2 run sobits_intball2_gnc guidance --ros-args --params-file $PARAMS -p use_sim_time:=true
+ros2 launch sobits_intball2_gnc guidance.launch.py          # guidance_node（gnc_params.yamlを読む）
 ```
 
-`guidance`は上の2つのlaunchのどちらにも含まれません。`--params-file`を付けずに起動すると、コード内の既定値で動きます（`trajectory_controller.mass`が4.5になるなど、`gnc_params.yaml`と違う値になる）。
+`guidance_node`は上の2つのlaunchには含まれず、`guidance.launch.py`で単独起動します。`ros2 run sobits_intball2_gnc guidance`で直接起動すると`gnc_params.yaml`が読まれず、コード内の既定値で動くので使わないでください。
 
 ### 2. goalを送る
 

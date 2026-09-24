@@ -130,7 +130,7 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
     ```
 - [guidance.py](gnc/sobits_intball2_gnc/guidance/guidance.py)を起動し，目標軌道の生成・追従を行います．
     ```
-    ros2 run sobits_intball2_gnc guidance
+    ros2 launch sobits_intball2_gnc guidance.launch.py
     ```
     詳細は[guidance/README.md](gnc/sobits_intball2_gnc/guidance/README.md)を参照してください．
 
