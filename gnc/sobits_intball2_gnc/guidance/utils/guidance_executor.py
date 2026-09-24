@@ -295,7 +295,8 @@ class GuidanceExecutor:
                 minco_wrench_safety_margin=1.0, minco_freetime=False,
                 minco_local_replan_period=DEFAULT_LOCAL_REPLAN_PERIOD_S,
                 minco_planning_horizon_m=DEFAULT_PLANNING_HORIZON_M,
-                minco_v3_face_travel=False, minco_local_max_vel=None):
+                minco_v3_face_travel=False, minco_local_max_vel=None,
+                minco_v3_async_replan=False):
         """Run one move-to-target goal; returns a ``STATUS_*`` constant.
 
         ``via_waypoints``: an optional ordered list of interior relay points
@@ -353,6 +354,10 @@ class GuidanceExecutor:
         only -- with ``face_travel`` also set, the tracker faces travel
         (``ReplanningMincoV3Tracker``'s ``face_travel``/``local_max_vel``).
         ``False`` (default) keeps the fixed-``q0`` behavior.
+
+        ``minco_v3_async_replan``: ``"replanning_minco_v3"`` only --
+        ``ReplanningMincoV3Tracker``'s ``async_replan`` (local solve off the
+        setpoint loop). ``False`` (default) solves inside ``sample()``.
 
         ``look_at_target_frame`` is accepted but currently unused -- reserved
         for the future ``look_at`` attitude-reference mode (docs/
@@ -529,6 +534,7 @@ class GuidanceExecutor:
                     face_travel=face_travel and minco_v3_face_travel,
                     forward_axis=forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"],
                     local_max_vel=minco_local_max_vel,
+                    async_replan=minco_v3_async_replan,
                 )
                 traj = v3_tracker.trajectory
                 self._log.info(
@@ -825,9 +831,10 @@ class GuidanceExecutor:
             if getattr(tracker, "last_replan_occurred", False):
                 self._log.info(
                     "[GuidanceExecutor] replanning: re-planned trajectory at "
-                    "t=%.2fs (solve=%.3fs)"
+                    "t=%.2fs (solve=%.3fs, lag=%.3fs)"
                     % (sample_t, getattr(tracker, "last_replan_solve_seconds", None)
-                       or float("nan"))
+                       or float("nan"),
+                       getattr(tracker, "last_replan_lag_seconds", None) or 0.0)
                 )
                 if self._speed_path_pub is not None:
                     self._publish_speed_path_preview(tracker.trajectory)

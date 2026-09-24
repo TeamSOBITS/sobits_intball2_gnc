@@ -48,7 +48,8 @@ plan_minco_heuristic_time(const std::vector<double>& waypoints_flat,
 
 PYBIND11_MODULE(minco_native_py, m) {
   m.doc() = "MINCO attitude/torque trajectory native extension (Phase 1)";
-  m.def("plan_minco", &plan_minco,
+  // Pure C++ solve: releasing the GIL lets guidance keep publishing setpoints from another thread.
+  m.def("plan_minco", &plan_minco, py::call_guard<py::gil_scoped_release>(),
         py::arg("waypoints_flat"), py::arg("v0"), py::arg("w0"),
         py::arg("via_half_width") = 0.3,
         py::arg("wrench_safety_margin") = 1.0,
@@ -79,6 +80,7 @@ PYBIND11_MODULE(minco_native_py, m) {
         "check). Returns (success, error_code, "
         "segment_times, coeffs_flat, duration).");
   m.def("plan_minco_heuristic_time", &plan_minco_heuristic_time,
+        py::call_guard<py::gil_scoped_release>(),
         py::arg("waypoints_flat"), py::arg("v0"), py::arg("w0"),
         py::arg("target_speed"), py::arg("max_accel"),
         py::arg("via_half_width") = 0.3,
