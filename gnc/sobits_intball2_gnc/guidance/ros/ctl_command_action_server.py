@@ -86,12 +86,16 @@ class CtlCommandActionServer:
         callback_group: Callback group for the action server (default: a new
             ``ReentrantCallbackGroup``, since ``execute_fn`` runs for the
             duration of the move and must not block other callbacks).
+        busy_fn: optional callable; while it returns True (e.g. the
+            post-cancel brake is still running) new goals are rejected.
     """
 
     def __init__(self, node: Node, action_name: str, execute_fn,
-                 expected_frame: str = "", callback_group=None) -> None:
+                 expected_frame: str = "", callback_group=None,
+                 busy_fn=None) -> None:
         self._node = node
         self._execute_fn = execute_fn
+        self._busy_fn = busy_fn
         self._expected_frame = expected_frame
         # Only one execute_fn may run at a time: it drives a shared
         # publisher/TF loop for the duration of the move, and this server's
@@ -120,6 +124,12 @@ class CtlCommandActionServer:
             self._node.get_logger().warn(
                 "[CtlCommandActionServer] rejecting goal: a move is already "
                 "in progress -- cancel it first"
+            )
+            return GoalResponse.REJECT
+        if self._busy_fn is not None and self._busy_fn():
+            self._node.get_logger().warn(
+                "[CtlCommandActionServer] rejecting goal: still braking after "
+                "the previous goal's cancel"
             )
             return GoalResponse.REJECT
         if goal_request.type.type != CtlStatusType.MOVE_TO_ABSOLUTE_TARGET:

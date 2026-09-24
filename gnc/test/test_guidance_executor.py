@@ -1101,3 +1101,55 @@ def test_execute_pre_aligns_toward_via_waypoint_not_final_target():
     assert np.allclose(quat, expected, atol=1e-6)
 
 
+
+
+def _brake_executor(tf, setpoint_pub, checkpoint_pub, logger, allocator=True,
+                    vel=(0.2, 0.0, 0.0), gyro=(0.0, 0.0, 0.0)):
+    from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
+    return GuidanceExecutor(
+        tf, setpoint_pub, checkpoint_pub, *_make_clock(dt_per_spin=0.05), logger,
+        mass=3.216, inertia=0.0136,
+        velocity_fn=lambda: FakeVelocityEstimate(list(vel)),
+        angular_velocity_fn=lambda: list(gyro),
+        allocator=ThrustAllocator(minimax_objective=True) if allocator else None,
+        stopping_profile_kwargs={"eta": 0.7, "max_axis_force": 0.1},
+    )
+
+
+def test_brake_without_allocator_leaves_stop_to_control():
+    setpoint_pub, checkpoint_pub = FakeSetpointPublisher(), FakeCheckpointPublisher()
+    executor = _brake_executor(FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
+                               setpoint_pub, checkpoint_pub, FakeLogger(),
+                               allocator=False)
+    assert executor.brake() == STATUS_ABORTED
+    assert setpoint_pub.calls == [] and checkpoint_pub.published == []
+
+
+def test_brake_decelerates_along_motion_then_holds_stop_point():
+    setpoint_pub, checkpoint_pub = FakeSetpointPublisher(), FakeCheckpointPublisher()
+    tf = SetpointFollowingTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], setpoint_pub)
+    executor = _brake_executor(tf, setpoint_pub, checkpoint_pub, FakeLogger())
+    assert executor.brake() == STATUS_SUCCESS
+
+    speeds = [np.linalg.norm(v) for _, v, _, _ in setpoint_pub.calls]
+    assert speeds[0] == pytest.approx(0.2, abs=1e-3)
+    assert speeds[-1] == pytest.approx(0.0, abs=1e-9)
+    assert all(b <= a + 1e-12 for a, b in zip(speeds, speeds[1:]))
+    assert all(p[1] == 0.0 and p[2] == 0.0 for p, *_ in setpoint_pub.calls)
+
+    # max_axis_force=0.1 N caps the x-axis decel at 0.1/3.216 m/s^2.
+    expected_stop = 0.2 ** 2 / (2 * 0.1 / 3.216)
+    (hold_pos, hold_quat), = checkpoint_pub.published
+    assert hold_pos[0] == pytest.approx(expected_stop, rel=1e-3)
+    assert hold_pos[0] == pytest.approx(setpoint_pub.calls[-1][0][0])
+    assert geodesic_angle(hold_quat, [0.0, 0.0, 0.0, 1.0]) < 1e-9
+
+
+def test_brake_at_rest_holds_current_pose():
+    setpoint_pub, checkpoint_pub = FakeSetpointPublisher(), FakeCheckpointPublisher()
+    tf = SetpointFollowingTf([1.0, 2.0, 3.0], [0.0, 0.0, 0.0, 1.0], setpoint_pub)
+    executor = _brake_executor(tf, setpoint_pub, checkpoint_pub, FakeLogger(),
+                               vel=(0.0, 0.0, 0.0))
+    assert executor.brake() == STATUS_SUCCESS
+    (hold_pos, _), = checkpoint_pub.published
+    np.testing.assert_allclose(hold_pos, [1.0, 2.0, 3.0])

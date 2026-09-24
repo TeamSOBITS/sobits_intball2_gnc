@@ -10,6 +10,8 @@ via dependency injection, and serves it as the ``execute_fn`` behind
 Configuration comes from ``config/gnc_params.yaml`` (loaded by
 ``launch/guidance.launch.py``); a bare ``ros2 run`` uses in-code defaults.
 """
+import threading
+
 import numpy as np
 import rclpy
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
@@ -20,6 +22,7 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 
 from sobits_intball2_gnc.common.ros.tf_client import TfClient
+from sobits_intball2_gnc.control.ros.imu_subscriber import ImuSubscriber
 from sobits_intball2_gnc.control.utils.singleton_lock import (
     SingletonLockError,
     acquire_singleton_lock,
@@ -134,6 +137,16 @@ _GUIDANCE_PARAM_DEFAULTS = {
     # rather than a second minco-specific margin that could drift from this
     # one.
     "guidance.wrench_envelope_safety_margin": 0.7,
+    # Post-cancel brake (docs/archive/achieved/2026-09-24_cancel_stopping_profile_implementation_and_sim_verification.md),
+    # JAXA ctl.yaml values. eta reuses wrench_envelope_safety_margin.
+    "guidance.stopping.x_threshold": 0.05,
+    "guidance.stopping.theta_threshold": 0.017453292519943,
+    "guidance.stopping.f_max": 181.0032e-3,
+    "guidance.stopping.t_max": 8.1904e-3,
+    "guidance.stopping.tolerance_pos": 0.30,
+    "guidance.stopping.tolerance_att": 1.0,
+    "guidance.stopping.duration_goal": 3.0,
+    "guidance.stopping.wait_cancel": 10.0,
     # "replanning_minco_v3" only: forwarded to
     # GuidanceExecutor.execute()'s minco_freetime (see that method's
     # docstring). False (default, unchanged prior behavior) uses this
@@ -189,6 +202,10 @@ class GuidanceNode(Node):
             "guidance.align_angular_speed_deg", "guidance.align_angular_accel_deg",
             "guidance.align_traj_publish_rate_hz",
             "guidance.wrench_envelope_safety_margin",
+            "guidance.stopping.x_threshold", "guidance.stopping.theta_threshold",
+            "guidance.stopping.f_max", "guidance.stopping.t_max",
+            "guidance.stopping.tolerance_pos", "guidance.stopping.tolerance_att",
+            "guidance.stopping.duration_goal", "guidance.stopping.wait_cancel",
         })
         for name, default in _GUIDANCE_PARAM_DEFAULTS.items():
             descriptor = static_descriptor if name in _STATIC_PARAMS else None
@@ -240,6 +257,9 @@ class GuidanceNode(Node):
             thrust_allocator.A, thrust_allocator.fj_max,
             safety_margin=wrench_envelope_safety_margin,
         )
+        # control_node's per-axis output clamp; the brake must stay under it.
+        self.declare_parameter("hover_control.max_force", 0.1, static_descriptor)
+        hover_max_force = float(self.get_parameter("hover_control.max_force").value)
         target_frame = str(self.get_parameter("tf_correction.target_frame").value)
 
         self._tf = TfClient(self, reference_frame, target_frame)
@@ -280,6 +300,9 @@ class GuidanceNode(Node):
         self._vel_timer = self.create_timer(
             1.0 / float(g("velocity_estimate_rate")), self._on_velocity_timer
         )
+
+        self._imu = ImuSubscriber(self)
+        self._braking = False
 
         self._executor_logic = GuidanceExecutor(
             self._tf, self._setpoint_pub, self._checkpoint_pub,
@@ -326,12 +349,27 @@ class GuidanceNode(Node):
             align_angular_speed_deg=float(g("align_angular_speed_deg")),
             align_angular_accel_deg=float(g("align_angular_accel_deg")),
             align_traj_publish_rate_hz=float(g("align_traj_publish_rate_hz")),
+            angular_velocity_fn=lambda: self._imu.gyro,
+            allocator=thrust_allocator,
+            stopping_profile_kwargs={
+                "eta": wrench_envelope_safety_margin,
+                "f_max": float(g("stopping.f_max")),
+                "t_max": float(g("stopping.t_max")),
+                "x_threshold": float(g("stopping.x_threshold")),
+                "theta_threshold": float(g("stopping.theta_threshold")),
+                "max_axis_force": hover_max_force,
+            },
+            stopping_tolerance_pos=float(g("stopping.tolerance_pos")),
+            stopping_tolerance_att=float(g("stopping.tolerance_att")),
+            stopping_duration_goal=float(g("stopping.duration_goal")),
+            stopping_wait_cancel=float(g("stopping.wait_cancel")),
         )
 
         self._action_server = CtlCommandActionServer(
             self, ACTION_NAME, self._execute_fn,
             expected_frame=reference_frame,
             callback_group=ReentrantCallbackGroup(),
+            busy_fn=lambda: self._braking,
         )
         # Effective use_sim_time, logged at startup (same reasoning as
         # control.py's equivalent log): this node's default-True
@@ -531,8 +569,22 @@ class GuidanceNode(Node):
         if status == STATUS_SUCCESS:
             return TERMINATE_SUCCESS
         if status == STATUS_CANCELED:
-            return TERMINATE_ABORTED
+            self._start_braking()
         return TERMINATE_ABORTED
+
+    def _start_braking(self) -> None:
+        """Brake after the cancel result is sent, like JAXA (setPreempted, then
+        cancelTarget): rclpy only sends the result once execute returns."""
+        self._braking = True
+        threading.Thread(target=self._run_braking, daemon=True).start()
+
+    def _run_braking(self) -> None:
+        try:
+            self._executor_logic.brake()
+        except Exception as exc:  # noqa: BLE001 -- must clear _braking regardless
+            self.get_logger().error("[GuidanceNode] brake failed: %r" % exc)
+        finally:
+            self._braking = False
 
 
 def main(args=None) -> None:
