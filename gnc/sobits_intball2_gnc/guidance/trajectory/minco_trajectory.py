@@ -191,11 +191,15 @@ class MincoTrajectory:
     def from_rotvec_waypoints(cls, position_waypoints, rotvecs, q0, v0, rotvec_rate0,
                               a0, rotvec_accel0, v_tail=None, via_half_width=0.0,
                               wrench_safety_margin=1.0, max_vel=None,
-                              warm_start_segment_times=None, body_frame_wrench=False):
+                              warm_start_segment_times=None, body_frame_wrench=False,
+                              obstacle_grid=None, obstacle_touch_goal=False,
+                              obstacle_clearance_soft=0.5):
         """Free-time ``plan_minco`` solve with caller-given ``q0``-relative
         ``rotvecs`` (``rotvecs[0]`` is the head attitude) and head rotvec
         rate/accel, for a segment that starts mid-rotation (the constructor
-        always starts at ``q0`` at rest). ``max_vel=None`` disables the speed cap."""
+        always starts at ``q0`` at rest). ``max_vel=None`` disables the speed cap.
+        ``obstacle_grid`` (``minco_native_py.OccupancyGrid``) runs EGO-Planner v2's
+        rebound loop in the solve; a collision left over raises ``MincoInfeasibleError``."""
         position_waypoints = np.asarray(position_waypoints, dtype=float)
         rotvecs = np.asarray(rotvecs, dtype=float)
         if position_waypoints.ndim != 2 or position_waypoints.shape[1] != 3 \
@@ -214,6 +218,9 @@ class MincoTrajectory:
             max_vel=-1.0 if max_vel is None else float(max_vel),
             warm_start_T=None if warm_start_segment_times is None
             else [float(t) for t in warm_start_segment_times],
+            **({} if obstacle_grid is None else dict(
+                grid=obstacle_grid, obstacle_touch_goal=bool(obstacle_touch_goal),
+                obstacle_clearance_soft=float(obstacle_clearance_soft))),
         )
         self._set_solution(segment_times, coeffs, duration,
                            time.perf_counter() - solve_t0, len(position_waypoints))

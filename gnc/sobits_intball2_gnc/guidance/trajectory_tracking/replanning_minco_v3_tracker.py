@@ -14,53 +14,17 @@ not yet the default; opt-in via ``trajectory_tracking_mode=
 sim-validated** (same caveat as v2 originally carried).
 
 Architecture, matching EGO-Planner v2's actual global/local role split
-(inverted from v2's "heavy global, cheap local"):
-
-- **Global layer**: built **once**, at construction, from ``p0`` +
-  ``route_waypoints`` + ``p_target`` via :class:`~sobits_intball2_gnc.
-  guidance.trajectory.minco_trajectory.MincoTrajectory` (heuristic-time if
-  ``target_speed``/``max_accel`` given, free-time ``plan_minco`` otherwise).
-  Never rebuilt -- no via-waypoint retirement logic is needed (unlike v2's
-  ``_next_idx``) because there is no periodic rebuild to retire waypoints
-  *for* (offline verification 追記5: reasoned to be unnecessary for a
-  build-once global, not independently implementation-verified with
-  multiple via points).
-- **Local layer**: every ``local_replan_period`` seconds, a fresh
-  single-segment (K=1, no interior via points) free-time ``MincoTrajectory``
-  connects the previous local trajectory's own position/velocity/acceleration
-  at the current time (EGO-Planner v2 ``planFromLocalTraj``; only the very
-  first local plan starts from the measured pose) to a look-ahead point
-  ``planning_horizon_m`` ahead along the global trajectory, ending at the
-  global trajectory's velocity there (EGO-Planner v2 ``getLocalTarget``; zero
-  at the goal or once inside braking distance of it). Starting from the
-  measured state with zero acceleration and ending at rest instead -- the
-  original port -- made the vehicle crawl, overshoot the goal, and absorb
-  disturbance-induced velocity into every plan as lateral drift (docs/
-  2026-09-23_replanning_minco_v3_sim_verification_result_and_root_cause.md).
-  (:meth:`_get_local_target`, ported from ``prototype_ego_v2_
-  style_local_replan.py``'s ``get_local_target``). This *is* the trajectory
-  tracked -- the closed-form quintic Hermite connector layer v2 has is
-  dropped entirely. K=1 matches the offline-verified baseline; K>1 (interior
-  via points per local segment) was offline-verified to help (~29.7% faster
-  convergence, offline verification fact 51) but is deferred as a follow-up
-  (fact 54: combining it with warm start showed no measurable benefit, and
-  K>1's own production wiring is still open).
-
-Attitude: with ``face_travel=False`` (default) every ``MincoTrajectory`` this
-class builds is fixed at ``q0`` and ``w0=0``. With ``face_travel=True`` the
-global faces travel, and each local is solved twice: once as a free single
-segment to get its own path, then re-solved through points on that path with
-attitude waypoints facing its own tangent (not the global attitude, so it stays
-valid once the local deviates, e.g. for obstacles), carrying the previous
-local's rotvec rate/accel. It also caps local speed (the split local otherwise
-accelerates to its braking limit every period) and checks the wrench envelope
-in the body frame (``docs/archive/achieved/2026-09-23_replanning_minco_v3_face_travel_handoff.md``). ``attitude_resample_spacing_m`` is still
-forwarded to the *global* build for spatial densify (the global route's own
-smoothness, independent of whether attitude is tracked) -- this only works
-because of the ``face_travel``/densify decoupling fix in ``minco_trajectory.
-py`` (2026-09-23, ``docs/2026-09-20_ego_v2_style_replan_migration_plan.md``
-"やるべき内容1"); before that fix, ``face_travel=False`` silently disabled
-densify.
+(inverted from v2's "heavy global, cheap local"): a global MINCO trajectory
+built once, and every ``local_replan_period`` seconds a fresh local
+``MincoTrajectory`` from the previous local's own state at the current time
+(EGO-Planner v2 ``planFromLocalTraj``; only the very first local plan starts
+from the measured pose) to a look-ahead point on the global. That local *is*
+the tracked trajectory -- the closed-form quintic Hermite connector layer v2
+has is dropped entirely. How the global and each local are built (look-ahead
+target, face travel two-solve, multi-piece seeds, obstacle rebound) lives in
+:class:`~sobits_intball2_gnc.guidance.local_planner.minco_local_planner.
+MincoLocalPlanner` (EGO-Planner v2 ``planner_manager``); this class is the
+``ego_replan_fsm`` side: when to replan, collision checks, emergency stop.
 
 Fallback semantics (``docs/2026-09-20_ego_v2_style_replan_migration_plan.md``
 "1.5", decided 2026-09-23 -- simplicity-first, ported from v2's local-Hermite
@@ -108,20 +72,14 @@ import threading
 
 import numpy as np
 
-from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
-    MincoInfeasibleError,
-    MincoTrajectory,
-)
+from sobits_intball2_gnc.control.utils.quat_math import quat_conj, quat_log, quat_mul
+from sobits_intball2_gnc.guidance.local_planner.minco_local_planner import MincoLocalPlanner
+from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import MincoInfeasibleError
 
 DEFAULT_LOCAL_REPLAN_PERIOD_S = 1.0
 DEFAULT_PLANNING_HORIZON_M = 2.0
-# Resolution for the internal forward-scan of the (already-solved, analytic)
-# global trajectory in _get_local_target -- not a control-loop timing
-# decision (no clock/sleep involved), just how finely that scan samples the
-# trajectory function, so CLAUDE.mdのreal-time禁止の対象外。
-_LOCAL_TARGET_SEARCH_DT = 0.05
-DEFAULT_LOCAL_ATTITUDE_SPACING_M = 0.3
-_SELF_PATH_SAMPLES = 400
+# EGO-Planner v2 safety_timer_ period.
+DEFAULT_COLLISION_CHECK_PERIOD_S = 0.05
 
 
 class ReplanningMincoV3Tracker:
@@ -157,6 +115,26 @@ class ReplanningMincoV3Tracker:
         initial_v0: initial velocity, shape ``(3,)``, default zero.
         face_travel, forward_axis, local_max_vel: see module docstring;
             ``local_max_vel`` [m/s] is only used with ``face_travel``.
+        local_piece_length_m: with ``face_travel``, splits the local's
+            position-shape solve into ``ceil(distance / this)`` (>= 2) pieces
+            with unboxed interior points, seeded from the previous local then
+            the global (EGO-Planner v2 ``polyTraj_piece_length``/
+            ``computeInitState``). ``None`` keeps the single-piece shape solve.
+        obstacle_grid, obstacle_clearance_soft: ``minco_native_py.OccupancyGrid``
+            the local shape solve avoids (EGO-Planner v2 rebound, needs
+            ``local_piece_length_m``); a goal inside it is moved back along the
+            global to the first free point (``mondifyInCollisionFinalGoal``).
+        stop_profile_fn, emergency_time_s, collision_check_period: EGO-Planner v2
+            ``checkCollisionCallback`` (with ``obstacle_grid``): every period the
+            current local is checked ahead (first 3/4, all when it touches the
+            goal); on a collision it replans at once, and if that fails with the
+            collision under ``emergency_time_s`` away it plays
+            ``stop_profile_fn(p, v, q, omega)`` (an object with ``sample(t) ->
+            (p, v, a, q, omega, alpha)`` and ``duration``, e.g. ``StoppingProfile``)
+            and holds its end, replanning from rest every period until one
+            succeeds (``EMERGENCY_STOP`` then ``GEN_NEW_TRAJ``). ``emergency_time_s=None``
+            uses the stop profile's own duration (EGO's fixed 1 s assumes a drone
+            that brakes in a fraction of a second).
         async_replan: see module docstring. ``False`` solves inside
             ``sample()`` (deterministic, for offline/unit use).
 
@@ -174,13 +152,20 @@ class ReplanningMincoV3Tracker:
                  via_half_width=0.3, wrench_safety_margin=1.0,
                  attitude_resample_spacing_m=None,
                  initial_v0=None, face_travel=False, forward_axis=(1.0, 0.0, 0.0),
-                 local_max_vel=None, async_replan=False):
+                 local_max_vel=None, async_replan=False, local_piece_length_m=None,
+                 obstacle_grid=None, obstacle_clearance_soft=0.5, stop_profile_fn=None,
+                 emergency_time_s=None,
+                 collision_check_period=DEFAULT_COLLISION_CHECK_PERIOD_S):
         if (target_speed is None) != (max_accel is None):
             raise ValueError(
                 "target_speed and max_accel must be given together (both "
                 "None selects MincoTrajectory's free-time plan_minco path, "
                 "both non-None selects plan_minco_heuristic_time)"
             )
+        if local_piece_length_m is not None and (not face_travel or local_piece_length_m <= 0.0):
+            raise ValueError("local_piece_length_m needs face_travel and must be positive")
+        if obstacle_grid is not None and local_piece_length_m is None:
+            raise ValueError("obstacle_grid needs local_piece_length_m")
         if local_replan_period <= 0.0 or planning_horizon_m <= 0.0:
             raise ValueError(
                 "local_replan_period and planning_horizon_m must be positive "
@@ -188,29 +173,25 @@ class ReplanningMincoV3Tracker:
             )
 
         p0 = np.asarray(p0, dtype=float)
-        self._p_target = np.asarray(p_target, dtype=float)
         self._pose_fn = pose_fn
         self._tf_fresh_fn = tf_fresh_fn
         self._q0 = np.asarray(q0, dtype=float)
-        self._target_speed = None if target_speed is None else float(target_speed)
-        self._max_accel = None if max_accel is None else float(max_accel)
         self._local_replan_period = float(local_replan_period)
-        self._planning_horizon_m = float(planning_horizon_m)
-        self._via_half_width = float(via_half_width)
-        self._wrench_safety_margin = float(wrench_safety_margin)
-        self._attitude_resample_spacing_m = attitude_resample_spacing_m
-        self._face_travel = bool(face_travel)
-        self._forward_axis = np.asarray(forward_axis, dtype=float)
-        self._local_max_vel = None if local_max_vel is None else float(local_max_vel)
         self._async_replan = bool(async_replan)
+        self._stop_profile_fn = stop_profile_fn
+        self._emergency_time_s = None if emergency_time_s is None else float(emergency_time_s)
+        self._collision_check_period = float(collision_check_period)
+        self._since_collision_check = 0.0
+        self._stop_profile = None
+        self._stop_elapsed = 0.0
+        self.last_collision_ahead_s = None
+        self.emergency_stops = 0
+        self._rest_replan_failures = 0
         self._pending_thread = None
         self._pending_result = None
         self._pending_lag = 0.0
-
-        route_waypoints = (
-            np.zeros((0, 3)) if route_waypoints is None
-            else np.asarray(route_waypoints, dtype=float).reshape(-1, 3)
-        )
+        self._collision_replan_pending = False
+        self._pending_is_collision_replan = False
 
         v0 = np.zeros(3) if initial_v0 is None else np.asarray(initial_v0, dtype=float)
         self._last_p_now = p0.copy()
@@ -221,32 +202,17 @@ class ReplanningMincoV3Tracker:
         self.last_replan_solve_seconds = None
         self.last_replan_lag_seconds = None
 
-        if len(route_waypoints):
-            waypoints = np.vstack([p0, route_waypoints, self._p_target])
-        else:
-            waypoints = np.array([p0, self._p_target])
-        self._global_trajectory = MincoTrajectory(
-            waypoints, self._q0, v0=v0, w0=np.zeros(3), face_travel=self._face_travel,
-            forward_axis=self._forward_axis, body_frame_wrench=self._face_travel,
-            via_half_width=self._via_half_width,
-            attitude_resample_spacing_m=self._attitude_resample_spacing_m,
-            wrench_safety_margin=self._wrench_safety_margin,
-            target_speed=self._target_speed, max_accel=self._max_accel,
-        )
-        route_length = float(np.linalg.norm(np.diff(waypoints, axis=0), axis=1).sum())
-        # Always sized from the global trajectory's own average speed (not
-        # target_speed directly), matching v2's _freetime_avg_speed -- well
-        # defined immediately, never collapses near zero the way a live
-        # velocity estimate transiently can right at start-of-motion, and
-        # works identically whether the global build used the heuristic-time
-        # or free-time path.
-        self._global_avg_speed = route_length / self._global_trajectory.global_total_duration
-        self._global_search_t = 0.0
+        self._planner = MincoLocalPlanner(
+            p0, v0, p_target, self._q0, target_speed, max_accel, route_waypoints,
+            planning_horizon_m, via_half_width, wrench_safety_margin,
+            attitude_resample_spacing_m, face_travel, forward_axis, local_max_vel,
+            local_piece_length_m, obstacle_grid, obstacle_clearance_soft)
+        self.last_goal_moved_out_of_obstacle = False
 
         self._local_elapsed = 0.0
         self._since_replan_attempt = 0.0
         self._local_trajectory, self._local_touches_goal = self._build_local(
-            p0, v0, np.zeros(3), np.zeros(3), np.zeros(3), np.zeros(3))
+            p0, v0, np.zeros(3), np.zeros(3), np.zeros(3), np.zeros(3), None, 0.0)
         self.last_replan_solve_seconds = self._local_trajectory.solve_wall_seconds
 
         self._fallen_back = False
@@ -277,31 +243,140 @@ class ReplanningMincoV3Tracker:
 
         self._local_elapsed += dt
         self._since_replan_attempt += dt
+        if self._pending_thread is None and self._planner.goal_in_obstacle():
+            p_ref, v_ref, _a, _q = self._local_trajectory.sample(self._local_elapsed)
+            if self._planner.move_goal_out_of_obstacle(p_ref, v_ref):
+                self.last_goal_moved_out_of_obstacle = True
+        if self._stop_profile is not None:
+            return self._sample_emergency_stop(dt)
+        if self._planner.obstacle_grid is not None:
+            self._since_collision_check += dt
+            if self._since_collision_check >= self._collision_check_period:
+                self._since_collision_check = 0.0
+                self._check_collision()
+                if self._stop_profile is not None:
+                    return self._sample_emergency_stop(0.0)
         if self._pending_thread is not None:
             self._pending_lag += dt
             if not self._pending_thread.is_alive():
                 self._pending_thread = None
                 self._adopt_local(self._pending_result, self._pending_lag)
+                if self._collision_replan_pending:
+                    self._resolve_collision_replan()
+                    if self._stop_profile is not None:
+                        return self._sample_emergency_stop(0.0)
         elif (not self._goal_local_played_out()
                 and self._local_elapsed >= self._local_replan_period
                 and self._since_replan_attempt >= self._local_replan_period):
             self._since_replan_attempt = 0.0
-            p_ref, v_ref, a_ref, _q = self._local_trajectory.sample(self._local_elapsed)
-            rv_ref = self._local_trajectory.sample_rotvec_derivatives(self._local_elapsed)
-            start_state = (p_ref, v_ref, a_ref, *rv_ref)
             if self._async_replan:
-                self._pending_lag = 0.0
-                self._pending_thread = threading.Thread(
-                    target=self._solve_local_in_background, args=(start_state,), daemon=True)
-                self._pending_thread.start()
+                self._start_background_replan()
             else:
-                self._adopt_local(self._try_build_local(start_state), 0.0)
+                self._adopt_local(self._try_build_local(self._reference_start_state()), 0.0)
 
         p_out, v_out, a_out, q_out = self._local_trajectory.sample(self._local_elapsed)
         self.last_body_angular = self._local_trajectory.sample_body_angular(
             self._local_elapsed)
 
         self._last_output = (p_out, v_out, a_out, q_out)
+        return self._last_output
+
+    def _reference_start_state(self):
+        p_ref, v_ref, a_ref, _q = self._local_trajectory.sample(self._local_elapsed)
+        rv_ref = self._local_trajectory.sample_rotvec_derivatives(self._local_elapsed)
+        return (p_ref, v_ref, a_ref, *rv_ref, self._local_trajectory, self._local_elapsed)
+
+    def _collision_ahead_s(self):
+        """Time until the current local first enters the inflated grid, checked from now
+        over its first 3/4 (all of it when it touches the goal), or ``None``."""
+        local = self._local_trajectory
+        end = local.global_total_duration * (1.0 if self._local_touches_goal else 0.75)
+        grid = self._planner.obstacle_grid
+        speed = self._planner.local_max_vel or self._planner.global_avg_speed
+        t_step = grid.resolution / 2.0 / max(speed, 1e-6)
+        t = self._local_elapsed
+        while t <= end:
+            if grid.inflated_occupied(list(local.sample(t)[0])):
+                return t - self._local_elapsed
+            t += t_step
+        return None
+
+    def set_obstacle_grid(self, grid):
+        """Swap in a rebuilt grid (obstacles changed); the next collision check uses it."""
+        if self._planner.obstacle_grid is None:
+            raise ValueError("set_obstacle_grid needs a tracker built with obstacle_grid")
+        self._planner.obstacle_grid = grid
+
+    def _check_collision(self):
+        self.last_collision_ahead_s = self._collision_ahead_s()
+        if self.last_collision_ahead_s is None:
+            return
+        if self._async_replan:
+            # Like EGO v2: keep playing the old local while replanning, decide to stop on the result.
+            self._collision_replan_pending = True
+            if self._pending_thread is None:
+                self._start_background_replan()
+            return
+        result = self._try_build_local(self._reference_start_state())
+        if result is not None:
+            self._adopt_local(result, 0.0)
+            self._since_replan_attempt = 0.0
+            return
+        self._emergency_stop_if_collision_close()
+
+    def _start_background_replan(self):
+        self._since_replan_attempt = 0.0
+        self._pending_lag = 0.0
+        self._pending_is_collision_replan = self._collision_replan_pending
+        self._pending_thread = threading.Thread(
+            target=self._solve_local_in_background, args=(self._reference_start_state(),),
+            daemon=True)
+        self._pending_thread.start()
+
+    def _resolve_collision_replan(self):
+        if not self._pending_is_collision_replan:
+            # Started before the collision was seen (possibly on the old grid): solve again.
+            self._start_background_replan()
+            return
+        self._collision_replan_pending = False
+        self.last_collision_ahead_s = self._collision_ahead_s()
+        if self.last_collision_ahead_s is not None:
+            self._emergency_stop_if_collision_close()
+
+    def _emergency_stop_if_collision_close(self):
+        if self._stop_profile_fn is None:
+            return
+        p_ref, v_ref, _a, q_ref = self._local_trajectory.sample(self._local_elapsed)
+        omega_ref, _alpha = self._local_trajectory.sample_body_angular(self._local_elapsed)
+        profile = self._stop_profile_fn(p_ref, v_ref, q_ref, omega_ref)
+        emergency_time = (profile.duration if self._emergency_time_s is None
+                          else self._emergency_time_s)
+        if self.last_collision_ahead_s < emergency_time:
+            self._stop_profile = profile
+            self._stop_elapsed = 0.0
+            self.emergency_stops += 1
+            self.last_fallback_reason = "emergency_stop"
+
+    def _sample_emergency_stop(self, dt):
+        """Play the stop profile, then hold its end and replan from rest every period."""
+        self._stop_elapsed += dt
+        profile = self._stop_profile
+        t = min(self._stop_elapsed, profile.duration)
+        p, v, a, q, omega, alpha = profile.sample(t)
+        self.last_body_angular = (np.asarray(omega), np.asarray(alpha))
+        self._last_output = (p, v, a, q)
+        if self._stop_elapsed >= profile.duration:
+            if self._since_replan_attempt >= self._local_replan_period:
+                self._since_replan_attempt = 0.0
+                rv = quat_log(quat_mul(quat_conj(self._q0), np.asarray(q, dtype=float)))
+                result = self._try_build_local(
+                    (np.asarray(p), np.zeros(3), np.zeros(3), rv, np.zeros(3), np.zeros(3), None, 0.0))
+                if result is not None:
+                    self._stop_profile = None
+                    self._rest_replan_failures = 0
+                    self._adopt_local(result, 0.0)
+                else:
+                    self._rest_replan_failures += 1
         return self._last_output
 
     def _goal_local_played_out(self):
@@ -340,93 +415,29 @@ class ReplanningMincoV3Tracker:
         """End of the goal-touching local trajectory once it exists, else a
         genuine ETA (remaining measured distance over the global average
         speed, always ahead of ``t`` so the reference keeps advancing)."""
-        if self._local_touches_goal:
+        if self._local_touches_goal and self._stop_profile is None:
             local_start_t = self._prev_t - self._local_elapsed
             return local_start_t + self._local_trajectory.global_total_duration
-        remaining = float(np.linalg.norm(self._p_target - self._last_p_now))
-        eta = remaining / max(self._global_avg_speed, 1e-6)
+        remaining = float(np.linalg.norm(self._planner.p_target - self._last_p_now))
+        eta = remaining / max(self._planner.global_avg_speed, 1e-6)
         return self._prev_t + eta
 
     @property
     def trajectory(self):
         """The (one-time-built) global trajectory -- analogous to v2's
         ``trajectory`` property, e.g. for an RViz preview."""
-        return self._global_trajectory
+        return self._planner.global_trajectory
 
     @property
     def local_trajectory(self):
         return self._local_trajectory
 
-    def _build_local(self, p0, v0, a0, rv0, rv_rate0, rv_accel0):
-        """Solve a fresh free-time local segment from the head state (position
-        ``p0``/``v0``/``a0``, ``q0``-relative rotvec ``rv0`` and its rate/accel)
-        to the look-ahead target, ending at the global trajectory's velocity
-        there (zero at the goal or inside braking distance of it, EGO-Planner
-        v2 ``getLocalTarget``). K=1 without ``face_travel``; see the module
-        docstring for the ``face_travel`` two-solve."""
-        target_pos, target_vel, touch_goal = self._get_local_target(p0)
-        inside_braking = (
-            self._max_accel is not None
-            and np.linalg.norm(self._p_target - target_pos)
-            < float(target_vel @ target_vel) / (2.0 * self._max_accel)
-        )
-        v_tail = np.zeros(3) if (touch_goal or inside_braking) else target_vel
-        if self._face_travel:
-            local = self._build_face_travel_local(
-                p0, v0, a0, rv0, rv_rate0, rv_accel0, target_pos, v_tail)
-            return local, touch_goal
-        local = MincoTrajectory(
-            [p0, target_pos], self._q0, v0=v0, w0=np.zeros(3),
-            face_travel=False, via_half_width=self._via_half_width,
-            wrench_safety_margin=self._wrench_safety_margin,
-            target_speed=None, max_accel=None, a0=a0, v_tail=v_tail,
-        )
-        return local, touch_goal
+    @property
+    def goal_position(self):
+        """Where the vehicle ends up: the requested goal, or the free point it was
+        moved back to when an obstacle covers it."""
+        return self._planner.p_target.copy()
 
-    def _build_face_travel_local(self, p0, v0, a0, rv0, rv_rate0, rv_accel0,
-                                 target_pos, v_tail):
-        def solve(points, directions, warm_start_segment_times):
-            rotvecs = MincoTrajectory._rotvecs_from_directions(
-                directions, self._q0, self._forward_axis, rv_head=rv0)
-            return MincoTrajectory.from_rotvec_waypoints(
-                points, rotvecs, self._q0, v0, rv_rate0, a0, rv_accel0, v_tail=v_tail,
-                wrench_safety_margin=self._wrench_safety_margin,
-                max_vel=self._local_max_vel,
-                warm_start_segment_times=warm_start_segment_times,
-                body_frame_wrench=True)
-
-        shape = solve(np.array([p0, target_pos]), np.array([np.zeros(3), target_pos - p0]), None)
-        # Sample resolution only (the solved path is analytic), not a clock/timing decision.
-        ts = np.linspace(0.0, shape.global_total_duration, _SELF_PATH_SAMPLES)
-        path = np.array([shape.sample(t)[0] for t in ts])
-        arc = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))])
-        spacing = self._attitude_resample_spacing_m or DEFAULT_LOCAL_ATTITUDE_SPACING_M
-        cuts = np.searchsorted(arc, np.arange(spacing, arc[-1] - spacing / 2.0, spacing))
-        point_times = np.concatenate([[0.0], ts[cuts], [shape.global_total_duration]])
-        samples = [shape.sample(t) for t in point_times]
-        local = solve(np.array([smp[0] for smp in samples]), np.array([smp[1] for smp in samples]),
-                      np.diff(point_times))
-        local.solve_wall_seconds += shape.solve_wall_seconds
-        return local
-
-    def _get_local_target(self, p_from):
-        """Walk the global trajectory forward from the last search cursor
-        until its sampled position is ``planning_horizon_m`` away from
-        ``p_from``, or the global trajectory's own end is reached (in which
-        case the target is ``p_target`` directly and ``touch_goal=True``).
-        Returns ``(pos, vel, touch_goal)``. Ported from
-        ``prototype_ego_v2_style_local_replan.py``'s ``get_local_target``."""
-        total_dur = self._global_trajectory.global_total_duration
-        t_step = max(
-            self._planning_horizon_m / 20.0 / max(self._global_avg_speed, 1e-6),
-            _LOCAL_TARGET_SEARCH_DT,
-        )
-        t = self._global_search_t
-        while t < total_dur:
-            pos_t, vel_t, _a, _q = self._global_trajectory.sample(t)
-            if np.linalg.norm(pos_t - p_from) >= self._planning_horizon_m:
-                self._global_search_t = t
-                return pos_t, vel_t, False
-            t += t_step
-        self._global_search_t = total_dur
-        return self._p_target.copy(), np.zeros(3), True
+    def _build_local(self, p0, v0, a0, rv0, rv_rate0, rv_accel0, prev_local, prev_elapsed):
+        return self._planner.build_local(p0, v0, a0, rv0, rv_rate0, rv_accel0, prev_local,
+                                         prev_elapsed, rest_failures=self._rest_replan_failures)
