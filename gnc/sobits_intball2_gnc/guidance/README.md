@@ -128,7 +128,7 @@ python3 gnc/test/manual/move_to_cancel_brake_test.py inspection_entry_2   # 途�
 | 追従の方式を選ぶ | `guidance.trajectory_tracking_mode` | `static`（既定、一度だけ計画した軌道を追従）/ `static_minco` / `replanning_minco_v3`（1秒ごとに再計画） |
 | 経由点を通る | `guidance.via_waypoints` | 地点名の配列、例: `"['nav_entry']"`。**使い終わったら`"['']"`に戻す**（残すと以降の全goalが経由する） |
 | 進行方向を向いて移動する | `guidance.attitude_reference_mode` | `face_travel`（既定）/ `fixed` |
-| 同上（`replanning_minco_v3`のとき） | `guidance.minco_v3_face_travel`、`guidance.minco_planning_horizon_m` | `true`と`4.0`を両方設定する（既定は`false`で姿勢固定。先読みが2mのままだと角を曲がりきれない） |
+| 同上（`replanning_minco_v3`のとき） | `guidance.minco_v3_face_travel`、`guidance.minco_planning_horizon_m` | 既定で`true`と`4.0`（姿勢を固定するなら`false`。face travelのまま先読みを2mにすると角を曲がりきれない） |
 | 出発前・到着時の姿勢合わせ | `guidance.pre_align`、`guidance.align_at_arrival` | `true`（既定）/ `false` |
 
 例: `replanning_minco_v3`で進行方向を向き、`nav_entry`を経由して`inspection_entry_1`へ行く
@@ -215,8 +215,8 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `guidance.minco_attitude_resample_spacing_m` | 経路をこの間隔[m]で分割して姿勢の経由点を置く。`0.0`で分割しない | `0.3` |
 | `guidance.minco_freetime` | `replanning_minco_v3`のglobalを、区間時間も最適化する方式（`plan_minco`）で解く。`false`は`target_speed`・加速度上限から区間時間を決める方式 | `false` |
 | `guidance.minco_local_replan_period` | `replanning_minco_v3`のlocal再計画周期[s] | `1.0` |
-| `guidance.minco_planning_horizon_m` | `replanning_minco_v3`のlocalの先読み距離[m]（global上で直線距離がこの値以上になる最初の点を目標にする） | `2.0` |
-| `guidance.minco_v3_face_travel` | `replanning_minco_v3`で進行方向を向く（`attitude_reference_mode=face_travel`も必要）。localを2回solveし、wrenchを機体座標で評価する。先読みは`4.0`程度にする | `false` |
+| `guidance.minco_planning_horizon_m` | `replanning_minco_v3`のlocalの先読み距離[m]（global上で直線距離がこの値以上になる最初の点を目標にする） | `4.0` |
+| `guidance.minco_v3_face_travel` | `replanning_minco_v3`で進行方向を向く（`attitude_reference_mode=face_travel`も必要）。localを2回solveし、wrenchを機体座標で評価する。先読みは`4.0`程度にする | `true` |
 | `guidance.minco_local_max_vel` | `minco_v3_face_travel`のときのlocalの速度上限[m/s] | `0.2` |
 
 ### 姿勢合わせ・到着判定
