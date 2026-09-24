@@ -834,7 +834,7 @@ def test_execute_replanning_minco_v3_mode_passes_via_waypoints_to_the_tracker(mo
     Trajectory (covered by
     test_execute_via_waypoints_routes_the_planned_curve_through_the_relay_points)."""
     pytest.importorskip("minco_native_py")
-    import sobits_intball2_gnc.guidance.utils.guidance_executor as ge_module
+    import sobits_intball2_gnc.guidance.trajectory_tracking.tracker_builder as ge_module
 
     captured = {}
     real_tracker_cls = ge_module.ReplanningMincoV3Tracker
@@ -864,7 +864,7 @@ def test_execute_replanning_minco_v3_mode_passes_via_waypoints_to_the_tracker(mo
 
 def test_execute_replanning_minco_v3_mode_passes_local_replan_params_to_the_tracker(monkeypatch):
     pytest.importorskip("minco_native_py")
-    import sobits_intball2_gnc.guidance.utils.guidance_executor as ge_module
+    import sobits_intball2_gnc.guidance.trajectory_tracking.tracker_builder as ge_module
 
     captured = {}
     real_tracker_cls = ge_module.ReplanningMincoV3Tracker
@@ -1153,3 +1153,55 @@ def test_brake_at_rest_holds_current_pose():
     assert executor.brake() == STATUS_SUCCESS
     (hold_pos, _), = checkpoint_pub.published
     np.testing.assert_allclose(hold_pos, [1.0, 2.0, 3.0])
+
+
+class _MovedGoalTracker:
+    """Ends at ``goal_position`` instead of the requested target, like
+    ReplanningMincoV3Tracker after moving a goal out of an obstacle."""
+
+    total_duration = 0.1
+    last_body_angular = (np.zeros(3), np.zeros(3))
+
+    def __init__(self, goal_position):
+        self.goal_position = np.asarray(goal_position, dtype=float)
+
+    def sample(self, _t):
+        return self.goal_position, np.zeros(3), np.zeros(3), np.array([0.0, 0.0, 0.0, 1.0])
+
+
+def test_run_trajectory_converges_on_the_trackers_moved_goal():
+    moved_goal = [0.55, 0.0, 0.0]
+    logger = FakeLogger()
+    executor = GuidanceExecutor(
+        FakeTf(moved_goal, [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
+        FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05), logger,
+        target_speed=1.0, align_pos_tolerance_m=0.05, align_pos_settle_time=0.2,
+        align_pos_timeout=5.0,
+    )
+    status = executor._run_trajectory(
+        _MovedGoalTracker(moved_goal), [1.0, 0.0, 0.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False)
+    assert status == STATUS_SUCCESS
+    assert not any("did not converge" in w for w in logger.warnings)
+
+
+def test_execute_aligns_at_arrival_on_the_trackers_moved_goal(monkeypatch):
+    moved_goal = [0.55, 0.0, 0.0]
+    executor = GuidanceExecutor(
+        FakeTf(moved_goal, [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
+        FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05), FakeLogger(),
+        target_speed=1.0, align_tolerance_deg=3.0, align_timeout=0.2,
+        align_pos_tolerance_m=0.05, align_pos_settle_time=0.2, align_pos_timeout=5.0,
+    )
+    monkeypatch.setattr(executor._tracker_builder, "build",
+                        lambda *a, **k: (_MovedGoalTracker(moved_goal), None))
+    aligned_at = []
+    monkeypatch.setattr(executor._aligner, "align_to",
+                        lambda p, q, cancel: aligned_at.append(np.asarray(p)) or STATUS_SUCCESS)
+    q_target = [0.0, 0.0, np.sin(np.pi / 4), np.cos(np.pi / 4)]
+    status = executor.execute(
+        [1.0, 0.0, 0.0], q_target,
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=True)
+    assert status == STATUS_SUCCESS
+    assert len(aligned_at) == 1 and np.allclose(aligned_at[0], moved_goal)

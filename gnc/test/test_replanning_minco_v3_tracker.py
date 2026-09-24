@@ -374,3 +374,101 @@ def test_keeps_replanning_after_touch_goal_until_goal_local_plays_out():
     assert t < T_CAP
     assert np.allclose(p, P_TARGET, atol=1e-3)
     assert np.allclose(v, 0.0, atol=1e-3)
+
+
+class _FreeGrid:
+    resolution = 0.1
+
+    def inflated_occupied(self, _p):
+        return False
+
+
+class _HoldStop:
+    duration = 3.0
+
+    def __init__(self, p):
+        self._p = np.asarray(p, dtype=float)
+
+    def sample(self, _t):
+        return self._p, np.zeros(3), np.zeros(3), list(Q0), np.zeros(3), np.zeros(3)
+
+
+def _async_tracker_with_scripted_collision(tf):
+    tracker = _make_tracker(
+        tf, local_replan_period=100.0, async_replan=True, collision_check_period=DT,
+        stop_profile_fn=lambda p, v, q, omega: _HoldStop(p))
+    tracker._planner.obstacle_grid = _FreeGrid()
+    collision = {"ahead_s": None}
+    tracker._collision_ahead_s = lambda: collision["ahead_s"]
+    return tracker, collision
+
+
+def _tick(tracker, tf, t):
+    t += DT
+    tf.stamp = t
+    tf.advance(t, tracker.sample(t)[0])
+    return t
+
+
+def test_async_collision_keeps_flying_while_replanning_and_adopts_success():
+    tf = _IdealTrackingTf()
+    tracker, collision = _async_tracker_with_scripted_collision(tf)
+    gate = _gate_local_builds(tracker)
+    collision["ahead_s"] = 1.0
+    t = 0.0
+    for _ in range(6):
+        t = _tick(tracker, tf, t)
+        assert tracker.emergency_stops == 0
+    assert tracker._pending_thread is not None
+
+    collision["ahead_s"] = None
+    gate.set()
+    tracker._pending_thread.join()
+    t = _tick(tracker, tf, t)
+    assert tracker.last_replan_occurred
+    assert tracker.emergency_stops == 0
+
+
+def test_async_collision_stops_once_the_replan_fails():
+    tf = _IdealTrackingTf()
+    tracker, collision = _async_tracker_with_scripted_collision(tf)
+    gate = _gate_local_builds(tracker)
+    gated_build = tracker._build_local
+
+    def failing_build(*args):
+        gated_build(*args)
+        raise MincoInfeasibleError("scripted")
+
+    tracker._build_local = failing_build
+    collision["ahead_s"] = 1.0
+    t = _tick(tracker, tf, 0.0)
+    assert tracker.emergency_stops == 0
+
+    gate.set()
+    tracker._pending_thread.join()
+    t = _tick(tracker, tf, t)
+    assert tracker.emergency_stops == 1
+    assert tracker.last_fallback_reason == "emergency_stop"
+
+
+def test_async_collision_seen_during_an_older_solve_solves_again_before_deciding():
+    tf = _IdealTrackingTf()
+    tracker, collision = _async_tracker_with_scripted_collision(tf)
+    gate = _gate_local_builds(tracker)
+    tracker._start_background_replan()
+    older = tracker._pending_thread
+
+    collision["ahead_s"] = 1.0
+    t = _tick(tracker, tf, 0.0)
+    assert tracker._pending_thread is older
+
+    gate.set()
+    older.join()
+    t = _tick(tracker, tf, t)
+    assert tracker.emergency_stops == 0
+    assert tracker._pending_thread is not None and tracker._pending_thread is not older
+
+    collision["ahead_s"] = None
+    tracker._pending_thread.join()
+    t = _tick(tracker, tf, t)
+    assert tracker.emergency_stops == 0

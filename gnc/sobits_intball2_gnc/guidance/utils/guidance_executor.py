@@ -28,44 +28,22 @@ several *separate goals* (a client streaming several ``CtlCommand`` goals in
 a row stops at each one, same granularity as ``PoseCorrector``'s existing
 checkpoint chaining) is still out of scope here.
 """
-import time
-
 import numpy as np
 
-from sobits_intball2_gnc.common.utils.stopping_profile import StoppingProfile
-from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle
-from sobits_intball2_gnc.guidance.segment_time.heuristic_segment_time_allocator import (
-    HeuristicSegmentTimeAllocator,
-)
-from sobits_intball2_gnc.guidance.trajectory_generation import (
-    hermite_spline_trajectory_generator as _hermite,
-)
 from sobits_intball2_gnc.guidance.align.attitude_aligner import AttitudeAligner
+from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import MincoTrajectory
+from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import ToppraTrajectory
+from sobits_intball2_gnc.guidance.trajectory.trajectory import Trajectory
 from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
     DEFAULT_LOCAL_REPLAN_PERIOD_S,
     DEFAULT_PLANNING_HORIZON_M,
-    ReplanningMincoV3Tracker,
 )
-from sobits_intball2_gnc.guidance.trajectory_tracking.static_trajectory_tracker import (
-    StaticTrajectoryTracker,
-)
+from sobits_intball2_gnc.guidance.trajectory_tracking.tracker_builder import TrackerBuilder
 from sobits_intball2_gnc.guidance.utils.attitude_reference import (
     compute_camera_relative_quat,
     compute_q_des,
 )
-from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
-    MincoInfeasibleError,
-    MincoTrajectory,
-)
-from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import (
-    ToppraTrajectory,
-    TrajectoryInfeasibleError,
-)
-from sobits_intball2_gnc.guidance.trajectory.trajectory import Trajectory
-
-TRAJECTORY_TRACKING_MODES = frozenset(
-    {"static", "static_minco", "replanning_minco_v3"}
-)
+from sobits_intball2_gnc.guidance.utils.cancel_brake import CancelBrake
 
 STATUS_SUCCESS = "success"
 STATUS_ABORTED = "aborted"
@@ -75,6 +53,12 @@ DEFAULT_CAMERA_FORWARD_AXIS = {
     "main": (1.0, 0.0, 0.0),
     "stereo": (0.0, 1.0, 0.0),
 }
+
+
+def _goal_position(tracker, p_target):
+    """The tracker's own goal when it can move it (an obstacle over the requested one)."""
+    goal = getattr(tracker, "goal_position", None)
+    return np.asarray(p_target if goal is None else goal, dtype=float)
 
 
 class GuidanceExecutor:
@@ -114,6 +98,9 @@ class GuidanceExecutor:
             stopping_wait_cancel: :meth:`brake`'s end conditions (JAXA
             ``ctl.tolerance_pos_stop``/``tolerance_att_stop``/
             ``duration_goal``/``wait_cancel``).
+        obstacle_map: optional ``ObstacleMap``; ``replanning_minco_v3`` goals
+            with ``minco_obstacle_avoidance`` avoid its grid, and grids it
+            rebuilds mid-goal are handed to the running tracker.
     """
 
     def __init__(self, tf_client, setpoint_publisher, checkpoint_publisher,
@@ -133,7 +120,7 @@ class GuidanceExecutor:
                  angular_velocity_fn=None, allocator=None,
                  stopping_profile_kwargs=None, stopping_tolerance_pos=0.30,
                  stopping_tolerance_att=1.0, stopping_duration_goal=3.0,
-                 stopping_wait_cancel=10.0):
+                 stopping_wait_cancel=10.0, obstacle_map=None):
         self._tf = tf_client
         self._setpoint_pub = setpoint_publisher
         self._checkpoint_pub = checkpoint_publisher
@@ -174,18 +161,6 @@ class GuidanceExecutor:
         self._tf_staleness_timeout = float(tf_staleness_timeout)
         self._tf_last_stamp = None
         self._tf_last_advance_t = None
-        # Guidance-side TF velocity estimate (docs/
-        # guidance_velocity_estimator_design.md), independent of
-        # TrajectoryController's own estimator (one-way Guidance -> Control
-        # data flow). Fed by a low-rate timer on another thread.
-        self._velocity_fn = velocity_fn
-        self._angular_velocity_fn = angular_velocity_fn
-        self._allocator = allocator
-        self._stopping_profile_kwargs = dict(stopping_profile_kwargs or {})
-        self._stopping_tolerance_pos = float(stopping_tolerance_pos)
-        self._stopping_tolerance_att = float(stopping_tolerance_att)
-        self._stopping_duration_goal = float(stopping_duration_goal)
-        self._stopping_wait_cancel = float(stopping_wait_cancel)
         self._dt = 1.0 / float(rate)
         # q_des rate limit (docs/archive/achieved/
         # 2026-08-24_trajectory_state_carryover_design.md 3-4節): always
@@ -223,6 +198,23 @@ class GuidanceExecutor:
         # of this class (docs/2026-08-29_guidance_dir_and_dead_code_survey.md)
         # -- constructed last since it needs self._dt and self._tf_pose_fresh,
         # both set above.
+        # velocity_fn: Guidance-side TF velocity estimate (docs/
+        # guidance_velocity_estimator_design.md), independent of
+        # TrajectoryController's own estimator (one-way Guidance -> Control
+        # data flow). Fed by a low-rate timer on another thread.
+        self._brake = CancelBrake(
+            tf_client, self._tf_pose_fresh, setpoint_publisher, checkpoint_publisher,
+            clock_seconds_fn, spin_fn, logger, self._dt, allocator, self._mass,
+            self._inertia, stopping_profile_kwargs, stopping_tolerance_pos,
+            stopping_tolerance_att, stopping_duration_goal, stopping_wait_cancel,
+            velocity_fn=velocity_fn, angular_velocity_fn=angular_velocity_fn,
+        )
+        self._tracker_builder = TrackerBuilder(
+            tf_client, self._tf_pose_fresh, logger, self._target_speed, self._max_accel,
+            self._attitude_speed_threshold, self._max_angular_rate, self._wrench_envelope,
+            self._mass, self._inertia, obstacle_map=obstacle_map,
+            stop_profile_fn=self._brake.profile_from if self._brake.available else None,
+        )
         self._aligner = AttitudeAligner(
             tf_client, checkpoint_publisher, spin_fn, clock_seconds_fn, logger,
             tf_fresh_fn=self._tf_pose_fresh, dt=self._dt,
@@ -296,7 +288,8 @@ class GuidanceExecutor:
                 minco_local_replan_period=DEFAULT_LOCAL_REPLAN_PERIOD_S,
                 minco_planning_horizon_m=DEFAULT_PLANNING_HORIZON_M,
                 minco_v3_face_travel=False, minco_local_max_vel=None,
-                minco_v3_async_replan=False):
+                minco_v3_async_replan=False, minco_obstacle_avoidance=False,
+                minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2):
         """Run one move-to-target goal; returns a ``STATUS_*`` constant.
 
         ``via_waypoints``: an optional ordered list of interior relay points
@@ -358,6 +351,13 @@ class GuidanceExecutor:
         ``minco_v3_async_replan``: ``"replanning_minco_v3"`` only --
         ``ReplanningMincoV3Tracker``'s ``async_replan`` (local solve off the
         setpoint loop). ``False`` (default) solves inside ``sample()``.
+
+        ``minco_obstacle_avoidance``/``minco_local_piece_length_m``/
+        ``minco_obstacle_clearance_soft``: ``"replanning_minco_v3"`` with face
+        travel only -- the tracker avoids the ``obstacle_map`` grid (EGO-Planner
+        v2 rebound, multi-piece local of this piece length) and emergency-stops
+        along a ``StoppingProfile`` when a replan cannot clear a collision.
+        Ignored without an ``obstacle_map``.
 
         ``look_at_target_frame`` is accepted but currently unused -- reserved
         for the future ``look_at`` attitude-reference mode (docs/
@@ -488,155 +488,22 @@ class GuidanceExecutor:
                 )
                 return STATUS_ABORTED
 
-        waypoints = [p0, *via_waypoints, p_target]
-
-        mode = trajectory_tracking_mode
-        if mode not in TRAJECTORY_TRACKING_MODES:
-            self._log.warn(
-                "[GuidanceExecutor] unknown trajectory_tracking_mode=%r, "
-                "falling back to 'static'" % trajectory_tracking_mode
-            )
-            mode = "static"
-        if mode == "replanning_minco_v3" and self._max_accel is None and not minco_freetime:
-            # Only the (one-time) global build's heuristic-time path needs
-            # max_accel; minco_freetime doesn't.
-            self._log.warn(
-                "[GuidanceExecutor] trajectory_tracking_mode='replanning_minco_v3' "
-                "requires max_accel to be configured (unless minco_freetime=True) "
-                "-- falling back to 'static'"
-            )
-            mode = "static"
-
-        traj = None
-        v3_tracker = None
-        if mode == "replanning_minco_v3":
-            # Builds its own trajectory internally; `traj` is set to its
-            # global MincoTrajectory only for `_publish_speed_path_preview`.
-            #
-            # This must run BEFORE toppra_ready is evaluated below: on
-            # infeasibility it downgrades `mode` to "static", and
-            # toppra_ready's `mode == "static"` check needs to see that
-            # downgraded value -- otherwise the fallback silently skips
-            # TOPP-RA and lands on the envelope-unaware legacy Hermite path
-            # (docs/archive/achieved/2026-09-18_replanning_minco_v2_zeno_route_rediagnosis_toppra_ready_bug.md).
-            try:
-                v3_tracker = ReplanningMincoV3Tracker(
-                    p0, p_target, pose_fn=self._tf.get_pose,
-                    tf_fresh_fn=self._tf_pose_fresh, q0=q0,
-                    target_speed=(None if minco_freetime else self._target_speed),
-                    max_accel=(None if minco_freetime else self._max_accel),
-                    route_waypoints=via_waypoints,
-                    via_half_width=minco_via_half_width,
-                    wrench_safety_margin=minco_wrench_safety_margin,
-                    attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
-                    local_replan_period=minco_local_replan_period,
-                    planning_horizon_m=minco_planning_horizon_m,
-                    face_travel=face_travel and minco_v3_face_travel,
-                    forward_axis=forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"],
-                    local_max_vel=minco_local_max_vel,
-                    async_replan=minco_v3_async_replan,
-                )
-                traj = v3_tracker.trajectory
-                self._log.info(
-                    "[GuidanceExecutor] initial replanning_minco_v3 global "
-                    "solve took %.2fs (%d waypoints)"
-                    % (traj.solve_wall_seconds, traj.num_waypoints)
-                )
-            except (MincoInfeasibleError, ValueError) as exc:
-                self._log.warn(
-                    "[GuidanceExecutor] replanning_minco_v3 tracker "
-                    "construction failed (%s) -- falling back to 'static'" % exc
-                )
-                v3_tracker = None
-                traj = None
-                mode = "static"
-
-        # static mode tries the force/torque-aware TOPP-RA path first (docs/
-        # 2026-08-28_constrained_trajectory_generation_research.md).
-        toppra_ready = (
-            mode == "static"
-            and self._wrench_envelope is not None
-            and self._mass is not None
-            and self._inertia is not None
-            and self._max_angular_rate is not None
+        tracker, traj = self._tracker_builder.build(
+            p0, q0, p_target, via_waypoints, trajectory_tracking_mode,
+            forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"], face_travel,
+            minco_via_half_width=minco_via_half_width,
+            minco_attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
+            minco_wrench_safety_margin=minco_wrench_safety_margin,
+            minco_freetime=minco_freetime,
+            minco_local_replan_period=minco_local_replan_period,
+            minco_planning_horizon_m=minco_planning_horizon_m,
+            minco_v3_face_travel=minco_v3_face_travel,
+            minco_local_max_vel=minco_local_max_vel,
+            minco_v3_async_replan=minco_v3_async_replan,
+            minco_obstacle_avoidance=minco_obstacle_avoidance,
+            minco_local_piece_length_m=minco_local_piece_length_m,
+            minco_obstacle_clearance_soft=minco_obstacle_clearance_soft,
         )
-        if toppra_ready:
-            resolved_forward_axis = forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"]
-            try:
-                build_t0 = time.perf_counter()
-                traj = ToppraTrajectory(
-                    waypoints, q0,
-                    max_vel=self._target_speed,
-                    mass=self._mass,
-                    inertia=self._inertia,
-                    wrench_envelope=self._wrench_envelope,
-                    max_angular_rate=self._max_angular_rate,
-                    forward_axis=resolved_forward_axis,
-                    face_travel=face_travel,
-                )
-                build_wall_seconds = time.perf_counter() - build_t0
-                self._log.info(
-                    "[GuidanceExecutor] TOPP-RA trajectory used (%d waypoints, "
-                    "duration=%.2fs, build_time=%.3fs)"
-                    % (len(waypoints), traj.global_total_duration, build_wall_seconds)
-                )
-            except TrajectoryInfeasibleError as exc:
-                self._log.warn(
-                    "[GuidanceExecutor] TOPP-RA time-parameterization "
-                    "infeasible (%s) -- falling back to the Hermite static "
-                    "path" % exc
-                )
-                traj = None
-
-        if mode == "static_minco":
-            # 再計画は一切しない: MINCOをgoal受付時に一度だけ解いて、
-            # StaticTrajectoryTracker（下のelse節）でそのまま完走させる。
-            # plan_mincoのブロッキング解決レイテンシ（実測3〜5秒）はgoal受付が
-            # 一度遅れるだけで済む（docs/archive/achieved/
-            # 2026-08-30_minco_replanning_blocking_latency_incident.md）。
-            try:
-                traj = MincoTrajectory(
-                    waypoints, q0, v0=np.zeros(3), w0=np.zeros(3),
-                    forward_axis=forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"],
-                    face_travel=face_travel,
-                    via_half_width=minco_via_half_width,
-                    attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
-                    wrench_safety_margin=minco_wrench_safety_margin,
-                )
-                self._log.info(
-                    "[GuidanceExecutor] static MINCO solve took %.2fs "
-                    "(%d waypoints, via_half_width=%.2f, "
-                    "attitude_resample_spacing_m=%s, wrench_safety_margin=%.2f)"
-                    % (traj.solve_wall_seconds, traj.num_waypoints,
-                       minco_via_half_width, minco_attitude_resample_spacing_m,
-                       minco_wrench_safety_margin)
-                )
-            except MincoInfeasibleError as exc:
-                self._log.warn(
-                    "[GuidanceExecutor] static MINCO trajectory infeasible "
-                    "(%s) -- falling back to the Hermite static path" % exc
-                )
-                traj = None
-
-        if traj is None:
-            segment_times = HeuristicSegmentTimeAllocator(
-                target_speed=self._target_speed, max_accel=self._max_accel
-            ).allocate(waypoints)
-            coeffs = _hermite.HermiteSplineTrajectoryGenerator().generate(
-                waypoints, segment_times
-            )
-            traj = Trajectory(
-                waypoints, segment_times, coeffs,
-                attitude_speed_threshold=self._attitude_speed_threshold,
-                forward_axis=forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"],
-                initial_q_des=q0, face_travel=face_travel,
-                max_angular_rate=self._max_angular_rate,
-            )
-
-        if mode == "replanning_minco_v3":
-            tracker = v3_tracker  # already constructed above
-        else:
-            tracker = StaticTrajectoryTracker(traj)
 
         if self._speed_path_pub is not None:
             self._publish_speed_path_preview(traj)
@@ -645,6 +512,7 @@ class GuidanceExecutor:
         status = self._run_trajectory(tracker, p_target, feedback_cb, is_cancel_requested)
         if status != STATUS_SUCCESS:
             return status
+        p_arrival = _goal_position(tracker, p_target)
 
         if align_at_arrival:
             current = self._tf.get_pose()
@@ -661,7 +529,7 @@ class GuidanceExecutor:
                     "[GuidanceExecutor] aligning to target attitude on arrival"
                 )
                 status = self._aligner.align_to(
-                    p_target, arrival_target_quat, is_cancel_requested
+                    p_arrival, arrival_target_quat, is_cancel_requested
                 )
                 if status != STATUS_SUCCESS:
                     return status
@@ -670,73 +538,9 @@ class GuidanceExecutor:
 
     def brake(self):
         """Stop along a JAXA ``stoppingProfile`` from the measured state, then
-        hold its end pose (JAXA ``Ctl::cancelTarget``, docs/
-        archive/achieved/2026-09-24_cancel_stopping_profile_implementation_and_sim_verification.md). Returns a ``STATUS_*``.
-
-        The hold/arrival point is the profile's own end pose, not JAXA's
-        ``r1``: ``r1`` omits the ``v0 * t_rot`` coast while rotation stops.
-        """
-        if self._allocator is None or self._mass is None or self._inertia is None:
-            self._log.warn("[GuidanceExecutor] brake: no allocator/mass/inertia, "
-                           "leaving the stop to control's hold fallback")
-            return STATUS_ABORTED
-        pose = self._tf.get_pose()
-        if pose is None or not self._tf_pose_fresh(pose[2]):
-            self._log.warn("[GuidanceExecutor] brake: no fresh TF pose, "
-                           "leaving the stop to control's hold fallback")
-            return STATUS_ABORTED
-        pos, quat, _stamp = pose
-        estimate = self._velocity_fn() if self._velocity_fn is not None else None
-        v0 = np.zeros(3) if estimate is None else np.asarray(estimate.vel, dtype=float)
-        gyro = (self._angular_velocity_fn() if self._angular_velocity_fn is not None
-                else None)
-        w0 = np.zeros(3) if gyro is None else np.asarray(gyro, dtype=float)
-        if estimate is None or gyro is None:
-            self._log.warn("[GuidanceExecutor] brake: velocity (%s) / gyro (%s) "
-                           "unavailable, treated as zero"
-                           % (estimate is not None, gyro is not None))
-
-        profile = StoppingProfile(pos, v0, quat, w0, self._allocator, self._mass,
-                                  self._inertia, **self._stopping_profile_kwargs)
-        p_end, _, _, q_end, _, _ = profile.sample(profile.duration)
-        self._log.info(
-            "[GuidanceExecutor] brake: |v0|=%.3fm/s |w0|=%.3frad/s a_max=%.4fm/s^2 "
-            "stop_dist=%.2fm duration=%.1fs"
-            % (np.linalg.norm(v0), np.linalg.norm(w0), profile.a_max,
-               np.linalg.norm(np.asarray(p_end) - np.asarray(pos)), profile.duration)
-        )
-
-        t_start = self._clock_seconds()
-        stay_since = None
-        while True:
-            now = self._clock_seconds()
-            elapsed = now - t_start
-            self._setpoint_pub.publish(*profile.sample(elapsed))
-            current = self._tf.get_pose()
-            if current is not None and self._tf_pose_fresh(current[2]):
-                near = (
-                    np.linalg.norm(np.asarray(current[0]) - p_end)
-                    < self._stopping_tolerance_pos
-                    and geodesic_angle(current[1], q_end) < self._stopping_tolerance_att
-                )
-                stay_since = (stay_since if stay_since is not None else now) if near else None
-            # JAXA's controller keeps tracking the profile after cancelTarget's
-            # wait loop exits, so never hand over to the hold mid-profile.
-            if (elapsed >= profile.duration and stay_since is not None
-                    and now - stay_since >= self._stopping_duration_goal):
-                status = STATUS_SUCCESS
-                break
-            if elapsed >= profile.duration + self._stopping_wait_cancel:
-                self._log.warn("[GuidanceExecutor] brake: not settled within "
-                               "duration+%.1fs, holding the stop point anyway"
-                               % self._stopping_wait_cancel)
-                status = STATUS_ABORTED
-                break
-            self._spin(self._dt)
-        self._checkpoint_pub.publish(p_end, q_end)
-        self._log.info("[GuidanceExecutor] brake: holding stop point after %.1fs"
-                       % (self._clock_seconds() - t_start))
-        return status
+        hold its end pose (:class:`~sobits_intball2_gnc.guidance.utils.
+        cancel_brake.CancelBrake`). Returns a ``STATUS_*``."""
+        return STATUS_SUCCESS if self._brake.run() else STATUS_ABORTED
 
     def _resolve_arrival_target_quat(self, q_target, camera):
         """Return the quaternion ``align_at_arrival`` should converge to.
@@ -850,7 +654,8 @@ class GuidanceExecutor:
                 )
 
             time_to_go = max(0.0, tracker.total_duration - elapsed)
-            p_to_go = (np.asarray(p_target, dtype=float) - np.asarray(p)).tolist()
+            p_goal = _goal_position(tracker, p_target)
+            p_to_go = (p_goal - np.asarray(p)).tolist()
             feedback_cb(time_to_go, p_to_go, q.tolist())
 
             if elapsed >= tracker.total_duration:
@@ -860,10 +665,7 @@ class GuidanceExecutor:
                 pose = self._tf.get_pose()
                 if pose is not None and self._tf_pose_fresh(pose[2]):
                     cur_pos, _quat, _stamp = pose
-                    pos_error = np.linalg.norm(
-                        np.asarray(p_target, dtype=float)
-                        - np.asarray(cur_pos, dtype=float)
-                    )
+                    pos_error = np.linalg.norm(p_goal - np.asarray(cur_pos, dtype=float))
                     if pos_error <= self._align_pos_tolerance_m:
                         if in_pos_tolerance_since is None:
                             in_pos_tolerance_since = now

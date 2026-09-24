@@ -10,6 +10,7 @@ via dependency injection, and serves it as the ``execute_fn`` behind
 Configuration comes from ``config/gnc_params.yaml`` (loaded by
 ``launch/guidance.launch.py``); a bare ``ros2 run`` uses in-code defaults.
 """
+import os
 import threading
 
 import numpy as np
@@ -20,6 +21,7 @@ from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from ament_index_python.packages import get_package_share_directory
 
 from sobits_intball2_gnc.common.ros.tf_client import TfClient
 from sobits_intball2_gnc.control.ros.imu_subscriber import ImuSubscriber
@@ -31,6 +33,13 @@ from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
 from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
     wrench_envelope_halfspaces,
 )
+from sobits_intball2_gnc.guidance.guidance_params import (
+    ATTITUDE_REFERENCE_MODES,
+    CAMERA_NAMES,
+    declare_guidance_params,
+    goal_execute_kwargs,
+)
+from sobits_intball2_gnc.guidance.local_planner.obstacle_map import ObstacleMap
 from sobits_intball2_gnc.guidance.ros.checkpoint_publisher import CheckpointPublisher
 from sobits_intball2_gnc.guidance.ros.ctl_command_action_server import (
     TERMINATE_ABORTED,
@@ -40,7 +49,12 @@ from sobits_intball2_gnc.guidance.ros.ctl_command_action_server import (
 from sobits_intball2_gnc.guidance.ros.multi_dof_joint_trajectory_publisher import (
     MultiDOFJointTrajectoryPublisher,
 )
+from sobits_intball2_gnc.guidance.ros.marker_array_publisher import MarkerArrayPublisher
+from sobits_intball2_gnc.guidance.ros.marker_array_subscriber import MarkerArraySubscriber
 from sobits_intball2_gnc.guidance.ros.speed_path_publisher import SpeedPathPublisher
+from sobits_intball2_gnc.guidance.trajectory_tracking.tracker_builder import (
+    TRAJECTORY_TRACKING_MODES,
+)
 from sobits_intball2_gnc.guidance.utils.guidance_executor import (
     STATUS_CANCELED,
     STATUS_SUCCESS,
@@ -57,121 +71,6 @@ TF_STARTUP_TIMEOUT = 5.0
 # corrupting goal feedback.
 GUIDANCE_LOCK_PATH = "/tmp/intball2_guidance_node.lock"
 
-_GUIDANCE_PARAM_DEFAULTS = {
-    "guidance.target_speed": 0.5,
-    "guidance.attitude_speed_threshold": 0.02,
-    "guidance.align_tolerance_deg": 3.0,
-    "guidance.align_timeout": 60.0,
-    "guidance.align_settle_time": 0.5,
-    "guidance.align_pos_tolerance_m": 0.05,
-    "guidance.align_pos_settle_time": 0.5,
-    "guidance.align_pos_timeout": 10.0,
-    "guidance.tf_staleness_timeout": 1.0,
-    "guidance.rate": 50.0,
-    "guidance.velocity_estimate_rate": 10.0,
-    "guidance.velocity_estimate_alpha": 0.3,
-    "guidance.camera_forward_axis.main": [1.0, 0.0, 0.0],
-    "guidance.camera_forward_axis.stereo": [0.0, 1.0, 0.0],
-    "guidance.attitude_reference_mode": "face_travel",
-    "guidance.pre_align": True,
-    "guidance.align_at_arrival": True,
-    "guidance.look_at_target_frame": "",
-    # Optional ordered interior relay points (docs/
-    # 2026-08-25_guidance_waypoint_insertion_curve_verification.md,
-    # generalized from a single point to a list 2026-08-31, docs/
-    # 2026-08-31_curve_aware_realtime_replanning_design_discussion.md): TF
-    # frame names (e.g. maps/iss_location.yaml entries), resolved in order
-    # via self._tf at goal receipt in _execute_fn, same Category B latching
-    # as the other per-goal options here. [] (default) means no via
-    # waypoints -- unchanged prior 2-waypoint behavior.
-    "guidance.via_waypoints": [""],
-    # "static_minco"/"replanning_minco_v3" only: MincoTrajectory's via-point
-    # free-variable box half-width [m] (docs/
-    # 2026-08-30_static_minco_face_travel_gap.md 追記3 -- was a hardcoded
-    # C++ constant in minco_solver.cpp, now tunable without a rebuild). 0.0
-    # pins every via waypoint exactly (TOPPRA-style hard pass-through) --
-    # default (2026-09-01, prior default was 0.3): via waypoints should be
-    # hit exactly unless a goal explicitly opts into slack. Same Category B
-    # per-goal latching as via_waypoints above.
-    "guidance.minco_via_half_width": 0.0,
-    # "static_minco"/"replanning_minco_v3" only:
-    # MincoTrajectory's attitude_resample_spacing_m (docs/
-    # 2026-08-30_static_minco_face_travel_gap.md 追記4). 0.0 means "off"
-    # (None -- attitude only seeded at the given waypoints, prior behavior);
-    # a positive value densifies face-travel attitude seeding every that
-    # many meters along each segment without changing the position path
-    # shape. Default 0.3 (2026-09-01, prior default was 0.0): attitude
-    # tracking observed to lag badly over long legs (e.g. nav_entry ->
-    # inspection_entry_1, ~4.7m) with seeding only at waypoints. Same
-    # Category B per-goal latching as via_waypoints above.
-    "guidance.minco_attitude_resample_spacing_m": 0.3,
-    "guidance.face_travel_camera": "main",
-    "guidance.align_at_arrival_camera": "main",
-    # "static" (default), "static_minco" or "replanning_minco_v3". Category
-    # B, like attitude_reference_mode -- latched at goal receipt in
-    # _execute_fn below, not applied mid-trajectory.
-    "guidance.trajectory_tracking_mode": "static",
-    # q_des rate limit (docs/archive/achieved/
-    # 2026-08-24_trajectory_state_carryover_design.md 3-4節). First-cut
-    # default, not yet tuned against real tracking performance.
-    "guidance.max_angular_rate_deg": 90.0,
-    # SLERP+trapezoid align ramp (docs/2026-08-27_align_slerp_trapezoid_
-    # next_steps.md): _align_to() feeds the checkpoint a moving intermediate
-    # target along this profile instead of stepping straight to the goal
-    # attitude, removing composite-axis overshoot (docs/
-    # 2026-08-27_composite_axis_overshoot_summary_and_plan.md). Read-only
-    # (see _STATIC_PARAMS below): only read at GuidanceExecutor construction,
-    # and align_angular_accel_deg specifically does not auto-track
-    # control_node gain changes -- re-derive by hand if those gains change.
-    "guidance.align_angular_speed_deg": 15.0,
-    "guidance.align_angular_accel_deg": 2.4,
-    "guidance.align_traj_publish_rate_hz": 20.0,
-    # static mode: shrinks wrench_envelope_halfspaces (see that function's
-    # docstring and docs/2026-08-28_toppra_static_path_attitude_overshoot_
-    # incident.md "追記（2026-08-28 その5/6）"). Only read once at
-    # wrench_envelope construction below -- static like the fan geometry it's
-    # paired with. static_minco/replanning_minco_v3 reuse this same value,
-    # forwarded to MincoTrajectory's wrench_safety_margin each goal (docs/
-    # 2026-08-30_static_minco_face_travel_gap.md 追記2) -- one physical
-    # meaning (feedback headroom against the fan envelope), one parameter,
-    # rather than a second minco-specific margin that could drift from this
-    # one.
-    "guidance.wrench_envelope_safety_margin": 0.7,
-    # Post-cancel brake (docs/archive/achieved/2026-09-24_cancel_stopping_profile_implementation_and_sim_verification.md),
-    # JAXA ctl.yaml values. eta reuses wrench_envelope_safety_margin.
-    "guidance.stopping.x_threshold": 0.05,
-    "guidance.stopping.theta_threshold": 0.017453292519943,
-    "guidance.stopping.f_max": 181.0032e-3,
-    "guidance.stopping.t_max": 8.1904e-3,
-    "guidance.stopping.tolerance_pos": 0.30,
-    "guidance.stopping.tolerance_att": 1.0,
-    "guidance.stopping.duration_goal": 3.0,
-    "guidance.stopping.wait_cancel": 10.0,
-    # "replanning_minco_v3" only: forwarded to
-    # GuidanceExecutor.execute()'s minco_freetime (see that method's
-    # docstring). False (default, unchanged prior behavior) uses this
-    # mode's configured target_speed/max_accel (plan_minco_heuristic_time)
-    # for the global build; True switches the global build to
-    # MincoTrajectory's free-time plan_minco path instead
-    # (docs/2026-09-20_minco_global_replan_freetime_switch_offline_
-    # investigation.md).
-    "guidance.minco_freetime": False,
-    # "replanning_minco_v3" only: forwarded to the tracker's
-    # local_replan_period/planning_horizon_m. Category B, latched per goal.
-    "guidance.minco_local_replan_period": 1.0,
-    "guidance.minco_planning_horizon_m": 4.0,
-    "guidance.minco_v3_face_travel": True,
-    "guidance.minco_local_max_vel": 0.2,
-    "guidance.minco_v3_async_replan": True,
-}
-
-_ATTITUDE_REFERENCE_MODES = frozenset({"fixed", "face_travel", "look_at"})
-_CAMERA_NAMES = frozenset({"main", "stereo"})
-_TRAJECTORY_TRACKING_MODES = frozenset(
-    {"static", "static_minco", "replanning_minco_v3"}
-)
-
-
 class GuidanceNode(Node):
     """Single orchestrator node: wire wrappers to logic and serve the action."""
 
@@ -187,30 +86,7 @@ class GuidanceNode(Node):
         )
 
         static_descriptor = ParameterDescriptor(read_only=True)
-        # Timer periods are only ever read at node construction (below), so
-        # changing them at runtime would silently have no effect -- read-only
-        # like guidance.rate (docs/guidance_velocity_estimator_design.md 5 節).
-        _STATIC_PARAMS = frozenset({
-            "guidance.rate", "guidance.velocity_estimate_rate",
-            # max_angular_rate_deg: no dynamic-reconfigure design has been
-            # done for it yet (docs/archive/achieved/
-            # 2026-08-24_trajectory_state_carryover_design.md only decided the
-            # value/semantics, not a Category-A wiring) -- read-only until
-            # that's explicitly designed.
-            "guidance.max_angular_rate_deg",
-            # Only read at GuidanceExecutor construction (see the ramp's own
-            # comment above); no Category-A wiring exists for these either.
-            "guidance.align_angular_speed_deg", "guidance.align_angular_accel_deg",
-            "guidance.align_traj_publish_rate_hz",
-            "guidance.wrench_envelope_safety_margin",
-            "guidance.stopping.x_threshold", "guidance.stopping.theta_threshold",
-            "guidance.stopping.f_max", "guidance.stopping.t_max",
-            "guidance.stopping.tolerance_pos", "guidance.stopping.tolerance_att",
-            "guidance.stopping.duration_goal", "guidance.stopping.wait_cancel",
-        })
-        for name, default in _GUIDANCE_PARAM_DEFAULTS.items():
-            descriptor = static_descriptor if name in _STATIC_PARAMS else None
-            self.declare_parameter(name, default, descriptor)
+        declare_guidance_params(self, static_descriptor)
         g = lambda name: self.get_parameter("guidance." + name).value  # noqa: E731
 
         # Same frame names as control.py's tf_correction section (shared TF
@@ -305,6 +181,10 @@ class GuidanceNode(Node):
         self._imu = ImuSubscriber(self)
         self._braking = False
 
+        self._obstacle_map = self._load_obstacle_map(
+            str(g("obstacle_map_file")), float(g("obstacle_grid_resolution")),
+            float(g("obstacle_grid_inflation")))
+
         self._executor_logic = GuidanceExecutor(
             self._tf, self._setpoint_pub, self._checkpoint_pub,
             clock_seconds_fn=lambda: self.get_clock().now().nanoseconds * 1e-9,
@@ -364,7 +244,16 @@ class GuidanceNode(Node):
             stopping_tolerance_att=float(g("stopping.tolerance_att")),
             stopping_duration_goal=float(g("stopping.duration_goal")),
             stopping_wait_cancel=float(g("stopping.wait_cancel")),
+            obstacle_map=self._obstacle_map,
         )
+        if self._obstacle_map is not None:
+            self._active_obstacle_pub = MarkerArrayPublisher(self, reference_frame=reference_frame)
+            self._obstacle_map.add_listener(
+                lambda _grid: self._active_obstacle_pub.publish(self._obstacle_map.boxes()))
+            self._active_obstacle_pub.publish(self._obstacle_map.boxes())
+            self._virtual_obstacle_sub = MarkerArraySubscriber(
+                self, self._on_virtual_obstacles, expected_frame=reference_frame,
+                callback_group=ReentrantCallbackGroup())
 
         self._action_server = CtlCommandActionServer(
             self, ACTION_NAME, self._execute_fn,
@@ -399,6 +288,28 @@ class GuidanceNode(Node):
         # construction, so it's read-only (declared with static_descriptor
         # above) rather than handled here.
         self.add_on_set_parameters_callback(self._on_set_parameters)
+
+    def _on_virtual_obstacles(self, clear, set_boxes, remove) -> None:
+        self._obstacle_map.apply(clear=clear, set_boxes=set_boxes, remove=remove)
+        self.get_logger().info(
+            "[GuidanceNode] %d virtual obstacle box(es) in the obstacle map"
+            % len(self._obstacle_map.boxes()))
+
+    def _load_obstacle_map(self, map_file, resolution, inflation):
+        if map_file and not os.path.isabs(map_file):
+            map_file = os.path.join(
+                get_package_share_directory("sobits_intball2_gnc"), "maps", map_file)
+        try:
+            obstacle_map = ObstacleMap(resolution, inflation, map_file or None)
+        except Exception as exc:  # noqa: BLE001 -- guidance must still serve goals without it
+            self.get_logger().error(
+                "[GuidanceNode] obstacle map '%s' failed to load (%r) -- obstacle "
+                "avoidance unavailable" % (map_file, exc))
+            return None
+        self.get_logger().info(
+            "[GuidanceNode] obstacle map: %d static points from '%s', resolution %.2fm, "
+            "inflation %.2fm" % (obstacle_map.static_point_count, map_file, resolution, inflation))
+        return obstacle_map
 
     def _on_velocity_timer(self) -> None:
         """Feed the latest TF pose into ``VelocityEstimator`` (docs/
@@ -448,26 +359,26 @@ class GuidanceNode(Node):
             elif p.name == "guidance.velocity_estimate_alpha":
                 self._vel_estimator.set_gains(alpha=float(p.value))
             elif p.name == "guidance.attitude_reference_mode":
-                if str(p.value) not in _ATTITUDE_REFERENCE_MODES:
+                if str(p.value) not in ATTITUDE_REFERENCE_MODES:
                     return SetParametersResult(
                         successful=False,
                         reason="guidance.attitude_reference_mode must be one "
-                        "of %s" % sorted(_ATTITUDE_REFERENCE_MODES),
+                        "of %s" % sorted(ATTITUDE_REFERENCE_MODES),
                     )
             elif p.name in ("guidance.face_travel_camera",
                              "guidance.align_at_arrival_camera"):
-                if str(p.value) not in _CAMERA_NAMES:
+                if str(p.value) not in CAMERA_NAMES:
                     return SetParametersResult(
                         successful=False,
                         reason="%s must be one of %s"
-                        % (p.name, sorted(_CAMERA_NAMES)),
+                        % (p.name, sorted(CAMERA_NAMES)),
                     )
             elif p.name == "guidance.trajectory_tracking_mode":
-                if str(p.value) not in _TRAJECTORY_TRACKING_MODES:
+                if str(p.value) not in TRAJECTORY_TRACKING_MODES:
                     return SetParametersResult(
                         successful=False,
                         reason="guidance.trajectory_tracking_mode must be "
-                        "one of %s" % sorted(_TRAJECTORY_TRACKING_MODES),
+                        "one of %s" % sorted(TRAJECTORY_TRACKING_MODES),
                     )
             # Any other declared parameter is Category B/C (latched or
             # static) -- accepted but intentionally not applied at runtime.
@@ -518,57 +429,10 @@ class GuidanceNode(Node):
             tr = t.transform.translation
             via_waypoints.append([tr.x, tr.y, tr.z])
 
-        minco_attitude_resample_spacing_m = float(
-            self.get_parameter("guidance.minco_attitude_resample_spacing_m").value
-        )
-        if minco_attitude_resample_spacing_m <= 0.0:
-            minco_attitude_resample_spacing_m = None
-
         status = self._executor_logic.execute(
             p_target, q_target, feedback_cb, is_cancel_requested,
-            via_waypoints=via_waypoints,
-            minco_via_half_width=float(
-                self.get_parameter("guidance.minco_via_half_width").value
-            ),
-            minco_attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
-            minco_wrench_safety_margin=float(
-                self.get_parameter("guidance.wrench_envelope_safety_margin").value
-            ),
-            face_travel=(mode == "face_travel"),
-            face_travel_camera=str(
-                self.get_parameter("guidance.face_travel_camera").value
-            ),
-            pre_align=bool(self.get_parameter("guidance.pre_align").value),
-            align_at_arrival=bool(
-                self.get_parameter("guidance.align_at_arrival").value
-            ),
-            look_at_target_frame=str(
-                self.get_parameter("guidance.look_at_target_frame").value
-            ),
-            align_at_arrival_camera=str(
-                self.get_parameter("guidance.align_at_arrival_camera").value
-            ),
-            trajectory_tracking_mode=str(
-                self.get_parameter("guidance.trajectory_tracking_mode").value
-            ),
-            minco_freetime=bool(
-                self.get_parameter("guidance.minco_freetime").value
-            ),
-            minco_local_replan_period=float(
-                self.get_parameter("guidance.minco_local_replan_period").value
-            ),
-            minco_planning_horizon_m=float(
-                self.get_parameter("guidance.minco_planning_horizon_m").value
-            ),
-            minco_v3_face_travel=bool(
-                self.get_parameter("guidance.minco_v3_face_travel").value
-            ),
-            minco_local_max_vel=float(
-                self.get_parameter("guidance.minco_local_max_vel").value
-            ),
-            minco_v3_async_replan=bool(
-                self.get_parameter("guidance.minco_v3_async_replan").value
-            ),
+            via_waypoints=via_waypoints, face_travel=(mode == "face_travel"),
+            **goal_execute_kwargs(self),
         )
         if status == STATUS_SUCCESS:
             return TERMINATE_SUCCESS
