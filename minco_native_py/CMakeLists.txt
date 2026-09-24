@@ -24,6 +24,7 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
 find_package(pybind11 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenMP REQUIRED)
+find_package(octomap REQUIRED)
 
 set(GCOPTER_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/gcopter/gcopter/include")
 
@@ -37,13 +38,14 @@ configure_file(
   @ONLY
 )
 
-pybind11_add_module(minco_native_py src/binding.cpp src/minco_solver.cpp)
+pybind11_add_module(minco_native_py src/binding.cpp src/minco_solver.cpp src/rebound.cpp src/octomap_io.cpp)
 target_include_directories(minco_native_py PRIVATE
   ${GCOPTER_INCLUDE_DIR}
   ${EIGEN3_INCLUDE_DIR}
   ${CMAKE_CURRENT_BINARY_DIR}/generated
+  ${OCTOMAP_INCLUDE_DIRS}
 )
-target_link_libraries(minco_native_py PRIVATE OpenMP::OpenMP_CXX)
+target_link_libraries(minco_native_py PRIVATE OpenMP::OpenMP_CXX ${OCTOMAP_LIBRARIES})
 
 ament_get_python_install_dir(PYTHON_INSTALL_DIR)
 # ament_python_install_package()相当のPYTHONPATH環境フックを、コンパイル済み

@@ -5,6 +5,7 @@
 
 #include "minco_solver.hpp"
 #include "minco_solver_config.hpp"
+#include "rebound.hpp"
 
 #include "gcopter/lbfgs.hpp"
 #include "gcopter/minco.hpp"
@@ -12,6 +13,10 @@
 #include <Eigen/Eigen>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <iterator>
+#include <limits>
 #include <fstream>
 #include <iostream>
 #include <mutex>
@@ -44,6 +49,12 @@ const double W_TIME = 1.0;
 const double SMOOTH_FACTOR = 1e-2;
 const double VIOLATION_TOLERANCE = 1e-3;
 const double INITIAL_SEGMENT_TIME = 15.0;
+// EGO-Planner v2 weight_sqrvariance/weight_time (1e4/10) scaled to W_TIME, over its
+// constraint_points_perPiece; without it, unboxed via points collapse onto the ends.
+const double W_SQR_VARIANCE = 1e3;
+// EGO-Planner v2 weight_obstacle(_soft)/weight_time (1e4, 5e3 over 10), same scaling.
+const double W_OBSTACLE = 1e3;
+const double W_OBSTACLE_SOFT = 5e2;
 const double weightSchedule[] = {1e2, 1e4, 1e6, 1e8, 1e10, 1e12, 1e14};
 // planMincoHeuristicTimeのanalytic stretchループ用。
 // 2026-09-18訂正: 元はFast-Planner fast_planner/bspline/src/
@@ -280,6 +291,161 @@ ForceFrame forceFrameFrom(const std::optional<std::vector<double>> &q0)
     return ff;
 }
 
+// via_half_width=inf leaves via points unboxed, as EGO-Planner v2 optimizes them directly.
+Vector3d viaFromParam(const Vector3d &given, const Vector3d &xi, double halfWidth)
+{
+    if (std::isinf(halfWidth))
+    {
+        return given + xi;
+    }
+    return given + halfWidth * xi.array().tanh().matrix();
+}
+
+Vector3d viaGradToParam(const Vector3d &gradQ, const Vector3d &xi, double halfWidth)
+{
+    if (std::isinf(halfWidth))
+    {
+        return gradQ;
+    }
+    return (gradQ.array() * halfWidth * (1.0 - xi.array().tanh().square())).matrix();
+}
+
+Matrix<double, 6, 1> polyBasis(double s, int derivative)
+{
+    const double s2 = s * s, s3 = s2 * s;
+    Matrix<double, 6, 1> beta;
+    if (derivative == 0)
+    {
+        beta << 1.0, s, s2, s3, s2 * s2, s2 * s3;
+    }
+    else
+    {
+        beta << 0.0, 1.0, 2.0 * s, 3.0 * s2, 4.0 * s3, 5.0 * s2 * s2;
+    }
+    return beta;
+}
+
+// Port of EGO-Planner v2 distanceSqrVarianceWithGradCost2p and its gradient loop in
+// addPVAJGradCost2CT: weight * mean of squared-squared distances between consecutive
+// constraint points. Adds the gradient into gdC/gdT, returns the cost.
+double addDistanceSqrVarianceCost(const MatrixX3d &coeffsPos, const VectorXd &T, int K,
+                                  double weight, MatrixX3d &gdC, VectorXd &gdT)
+{
+    const int C = CONSTRAINT_POINTS_PER_PIECE;
+    const int nDist = K * C;
+    Matrix3Xd ps(3, nDist + 1);
+    for (int i = 0; i < K; i++)
+    {
+        const Matrix<double, 6, 3> &c = coeffsPos.block<6, 3>(i * 6, 0);
+        for (int j = 0; j < C; j++)
+        {
+            ps.col(i * C + j) = c.transpose() * polyBasis(T(i) * j / C, 0);
+        }
+    }
+    ps.col(nDist) = coeffsPos.block<6, 3>((K - 1) * 6, 0).transpose() * polyBasis(T(K - 1), 0);
+
+    const Matrix3Xd dps = ps.rightCols(nDist) - ps.leftCols(nDist);
+    const VectorXd dsqrs = dps.colwise().squaredNorm().transpose();
+    Matrix3Xd gdp = Matrix3Xd::Zero(3, nDist + 1);
+    for (int k = 0; k <= nDist; k++)
+    {
+        if (k != 0)
+        {
+            gdp.col(k) += weight * (4.0 * dsqrs(k - 1) / nDist) * dps.col(k - 1);
+        }
+        if (k != nDist)
+        {
+            gdp.col(k) -= weight * (4.0 * dsqrs(k) / nDist) * dps.col(k);
+        }
+    }
+
+    for (int i = 0; i < K; i++)
+    {
+        const Matrix<double, 6, 3> &c = coeffsPos.block<6, 3>(i * 6, 0);
+        for (int j = 0; j <= C; j++)
+        {
+            const double alpha = static_cast<double>(j) / C;
+            const Matrix<double, 6, 1> beta0 = polyBasis(T(i) * alpha, 0);
+            const Vector3d vel = c.transpose() * polyBasis(T(i) * alpha, 1);
+            // Piece-boundary points are visited from both sides at half weight each.
+            const double omg = (j == 0 || j == C) ? 0.5 : 1.0;
+            const Vector3d g = gdp.col(i * C + j);
+            gdC.block<6, 3>(i * 6, 0) += omg * beta0 * g.transpose();
+            gdT(i) += omg * alpha * g.dot(vel);
+        }
+    }
+    return weight * dsqrs.squaredNorm() / nDist;
+}
+
+// Port of EGO-Planner v2 obstacleGradCostP: per rebound pair, a cubic penalty inside
+// clearance plus a pseudo-Huber one inside clearanceSoft.
+bool obstacleCostAt(const std::vector<ObstaclePair> &pairs, double clearance, double clearanceSoft,
+                    const Vector3d &p, Vector3d &gradp, double &costp)
+{
+    bool hit = false;
+    gradp.setZero();
+    costp = 0.0;
+    for (const ObstaclePair &pair : pairs)
+    {
+        const double dist = (p - pair.basePoint).dot(pair.direction);
+        const double distErr = clearance - dist;
+        const double distErrSoft = clearanceSoft - dist;
+        if (distErr > 0.0)
+        {
+            hit = true;
+            costp += W_OBSTACLE * std::pow(distErr, 3);
+            gradp += -W_OBSTACLE * 3.0 * distErr * distErr * pair.direction;
+        }
+        if (distErrSoft > 0.0)
+        {
+            hit = true;
+            const double rsqr = 0.05 * 0.05;
+            const double term = std::sqrt(1.0 + distErrSoft * distErrSoft / rsqr);
+            costp += W_OBSTACLE_SOFT * rsqr * (term - 1.0);
+            gradp += -W_OBSTACLE_SOFT * distErrSoft / term * pair.direction;
+        }
+    }
+    return hit;
+}
+
+// Constraint point ids run over K*CONSTRAINT_POINTS_PER_PIECE+1 points (piece boundaries
+// shared); like EGO-Planner v2, point 0 and points past lastId get no cost.
+double addObstacleCost(const MatrixX3d &coeffsPos, const VectorXd &T, int K,
+                       const std::vector<std::vector<ObstaclePair>> &pairsByPoint, int lastId,
+                       double clearance, double clearanceSoft, MatrixX3d &gdC, VectorXd &gdT)
+{
+    const int C = CONSTRAINT_POINTS_PER_PIECE;
+    double cost = 0.0;
+    for (int i = 0; i < K; i++)
+    {
+        const Matrix<double, 6, 3> &c = coeffsPos.block<6, 3>(i * 6, 0);
+        const double step = T(i) / C;
+        for (int j = 0; j <= C; j++)
+        {
+            const int id = i * C + j;
+            if (id == 0 || id > lastId || pairsByPoint[id].empty())
+            {
+                continue;
+            }
+            const double alpha = static_cast<double>(j) / C;
+            const Matrix<double, 6, 1> beta0 = polyBasis(T(i) * alpha, 0);
+            const Vector3d pos = c.transpose() * beta0;
+            const Vector3d vel = c.transpose() * polyBasis(T(i) * alpha, 1);
+            Vector3d gradp;
+            double costp;
+            if (!obstacleCostAt(pairsByPoint[id], clearance, clearanceSoft, pos, gradp, costp))
+            {
+                continue;
+            }
+            const double omg = (j == 0 || j == C) ? 0.5 : 1.0;
+            gdC.block<6, 3>(i * 6, 0) += omg * step * beta0 * gradp.transpose();
+            gdT(i) += omg * (costp / C + step * alpha * gradp.dot(vel));
+            cost += omg * step * costp;
+        }
+    }
+    return cost;
+}
+
 struct EvalContext
 {
     minco::MINCO_S3NU *posMinco;
@@ -293,6 +459,17 @@ struct EvalContext
     Matrix3Xd rotVia;                // 姿勢via点（固定、最適化しない）
     VectorXd fixedT;  // evaluateFixedT専用: 固定されたセグメント時間（evaluate()では未使用）
     double maxVel = -1.0;  // evaluate()専用: 位置速度の上限[m/s]、<=0で無効
+    double sqrVarianceWeight = 0.0;  // evaluate()専用: 0で無効
+    std::vector<std::vector<ObstaclePair>> obstaclePairs;  // evaluate()専用: 制約点ごと、空で無効
+    int obstacleLastId = 0;
+    double obstacleClearance = 0.0;
+    double obstacleClearanceSoft = 0.0;
+    // Rebound during optimization (EGO-Planner v2 roughlyCheckConstraintPoints), grid given only.
+    const OccupancyGrid *grid = nullptr;
+    bool obstacleTouchGoal = false;
+    std::vector<Vector3d> *viaGivenPtr = nullptr;
+    bool reboundRequested = false;
+    bool reboundError = false;
     ForceFrame forceFrame;
 };
 
@@ -302,14 +479,10 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
     const int K = ctx->K;
     const int numVia = ctx->numVia;
 
-    Matrix3Xd th(3, std::max(numVia, 0));
     Matrix3Xd qVia(3, std::max(numVia, 0));
     for (int i = 0; i < numVia; i++)
     {
-        const Vector3d xi = x.segment<3>(3 * i);
-        const Vector3d t = xi.array().tanh();
-        th.col(i) = t;
-        qVia.col(i) = ctx->viaGiven[i] + ctx->viaHalfWidth * t;
+        qVia.col(i) = viaFromParam(ctx->viaGiven[i], x.segment<3>(3 * i), ctx->viaHalfWidth);
     }
     const VectorXd tauVec = x.segment(3 * numVia, K);
 
@@ -417,6 +590,18 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
         }
     }
 
+    if (ctx->sqrVarianceWeight > 0.0)
+    {
+        penaltyCost += addDistanceSqrVarianceCost(coeffsPos, T, K, ctx->sqrVarianceWeight,
+                                                  gdC_penalty_pos, gdT_penalty);
+    }
+    if (!ctx->obstaclePairs.empty())
+    {
+        penaltyCost += addObstacleCost(coeffsPos, T, K, ctx->obstaclePairs, ctx->obstacleLastId,
+                                       ctx->obstacleClearance, ctx->obstacleClearanceSoft,
+                                       gdC_penalty_pos, gdT_penalty);
+    }
+
     const MatrixX3d gdC_total_pos = W_ENERGY * gdC_energy_pos + gdC_penalty_pos;
     const MatrixX3d gdC_total_rot = W_ENERGY * gdC_energy_rot + gdC_penalty_rot;
     VectorXd gdT_total = W_ENERGY * (gdT_energy_pos + gdT_energy_rot) + gdT_penalty;
@@ -434,8 +619,7 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
     g.resize(3 * numVia + K);
     for (int i = 0; i < numVia; i++)
     {
-        const Vector3d gradQ = gradByPointsPos.col(i);
-        g.segment<3>(3 * i) = gradQ.array() * ctx->viaHalfWidth * (1.0 - th.col(i).array().square());
+        g.segment<3>(3 * i) = viaGradToParam(gradByPointsPos.col(i), x.segment<3>(3 * i), ctx->viaHalfWidth);
     }
     VectorXd gradTau;
     backwardGradT(tauVec, gradByTimes, gradTau);
@@ -458,14 +642,10 @@ double evaluateFixedT(void *instance, const VectorXd &x, VectorXd &g)
     const int numVia = ctx->numVia;
     const VectorXd &T = ctx->fixedT;
 
-    Matrix3Xd th(3, std::max(numVia, 0));
     Matrix3Xd qVia(3, std::max(numVia, 0));
     for (int i = 0; i < numVia; i++)
     {
-        const Vector3d xi = x.segment<3>(3 * i);
-        const Vector3d t = xi.array().tanh();
-        th.col(i) = t;
-        qVia.col(i) = ctx->viaGiven[i] + ctx->viaHalfWidth * t;
+        qVia.col(i) = viaFromParam(ctx->viaGiven[i], x.segment<3>(3 * i), ctx->viaHalfWidth);
     }
 
     ctx->posMinco->setParameters(qVia, T);
@@ -553,8 +733,7 @@ double evaluateFixedT(void *instance, const VectorXd &x, VectorXd &g)
     g.resize(3 * numVia);
     for (int i = 0; i < numVia; i++)
     {
-        const Vector3d gradQ = gradByPointsPos.col(i);
-        g.segment<3>(3 * i) = gradQ.array() * ctx->viaHalfWidth * (1.0 - th.col(i).array().square());
+        g.segment<3>(3 * i) = viaGradToParam(gradByPointsPos.col(i), x.segment<3>(3 * i), ctx->viaHalfWidth);
     }
 
     return W_ENERGY * (energyPos + energyRot) + penaltyCost;
@@ -700,6 +879,46 @@ VectorXd heuristicSegmentTimes(const Vector3d &headPosVec, const Vector3d &headV
 
 }  // namespace
 
+namespace
+{
+
+Matrix3Xd viaPointsOf(const VectorXd &x, const std::vector<Vector3d> &viaGiven, double halfWidth)
+{
+    const int numVia = static_cast<int>(viaGiven.size());
+    Matrix3Xd qVia(3, std::max(numVia, 0));
+    for (int i = 0; i < numVia; i++)
+    {
+        qVia.col(i) = viaFromParam(viaGiven[i], x.segment<3>(3 * i), halfWidth);
+    }
+    return qVia;
+}
+
+// lbfgs progress callback: EGO-Planner v2 costFunctionCallback's roughlyCheckConstraintPoints
+// plus earlyExitCallback (cancel to restart after a rebound).
+int reboundProgress(void *instance, const VectorXd &x, const VectorXd &, const double, const double,
+                    const int k, const int)
+{
+    auto *ctx = static_cast<EvalContext *>(instance);
+    VectorXd T;
+    forwardT(x.segment(3 * ctx->numVia, ctx->K), T);
+    ctx->posMinco->setParameters(viaPointsOf(x, *ctx->viaGivenPtr, ctx->viaHalfWidth), T);
+    const Matrix3Xd cps = constraintPoints(ctx->posMinco->getCoeffs(), T);
+    if (!allowRebound(cps, k))
+    {
+        return 0;
+    }
+    const ReboundResult r = roughlyCheckConstraintPoints(*ctx->grid, cps, ctx->obstacleTouchGoal, ctx->obstaclePairs);
+    if (r == ReboundResult::ObstacleFree)
+    {
+        return 0;
+    }
+    ctx->reboundRequested = (r == ReboundResult::Finish);
+    ctx->reboundError = (r == ReboundResult::Error);
+    return 1;
+}
+
+}  // namespace
+
 PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       const std::vector<double> &v0,
                       const std::vector<double> &w0,
@@ -712,7 +931,12 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       const std::optional<std::vector<double>> &rot_a0,
                       const std::optional<std::vector<double>> &rot_v_tail,
                       double max_vel,
-                      const std::optional<std::vector<double>> &q0)
+                      const std::optional<std::vector<double>> &q0,
+                      const std::optional<std::vector<double>> &obstacle_pairs,
+                      bool obstacle_touch_goal,
+                      double obstacle_clearance,
+                      double obstacle_clearance_soft,
+                      const OccupancyGrid *grid)
 {
     PlanResult result;
 
@@ -816,6 +1040,16 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         ctx.wrenchSafetyMargin = wrench_safety_margin;
         ctx.penaltyWeight = weightSchedule[0];
         ctx.maxVel = max_vel;
+        ctx.sqrVarianceWeight = std::isinf(via_half_width) ? W_SQR_VARIANCE : 0.0;
+        if (obstacle_pairs.has_value() && !obstacle_pairs->empty())
+        {
+            const int nPoints = K * CONSTRAINT_POINTS_PER_PIECE + 1;
+            ctx.obstaclePairs = pairsFromFlat(*obstacle_pairs, nPoints);
+            // EGO-Planner v2 ConstraintPoints::two_thirds_id
+            ctx.obstacleLastId = obstacle_touch_goal ? nPoints - 1 : nPoints - 1 - (nPoints - 2) / 3;
+            ctx.obstacleClearance = obstacle_clearance;
+            ctx.obstacleClearanceSoft = obstacle_clearance_soft;
+        }
         ctx.forceFrame = forceFrameFrom(q0);
 
         VectorXd x = VectorXd::Zero(3 * numVia + K);
@@ -832,6 +1066,11 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
                 for (int d = 0; d < 3; d++)
                 {
                     const double qPrev = (*warm_start_qvia)[3 * i + d];
+                    if (std::isinf(via_half_width))
+                    {
+                        x(3 * i + d) = qPrev - viaGiven[i](d);
+                        continue;
+                    }
                     const double ratio = std::clamp(
                         (qPrev - viaGiven[i](d)) / via_half_width, -0.999, 0.999);
                     x(3 * i + d) = std::atanh(ratio);
@@ -867,25 +1106,113 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         // （main_attitude.cppのsolve()も同様、戻り値未使用）。最終的な実行可能性は
         // 全段終了後のmaxViolationで判定する。
         double fx = 0.0;
-        for (double w : weightSchedule)
+        bool obstacleFree = true;
+        if (grid == nullptr)
         {
-            ctx.penaltyWeight = w;
-            lbfgs::lbfgs_optimize(x, fx, evaluate, nullptr, nullptr, &ctx, param);
+            for (double w : weightSchedule)
+            {
+                ctx.penaltyWeight = w;
+                lbfgs::lbfgs_optimize(x, fx, evaluate, nullptr, nullptr, &ctx, param);
+            }
+        }
+        else
+        {
+            // EGO-Planner v2 reboundReplan + optimizeTrajectory: check the initial trajectory, then
+            // restart after each in-optimization rebound (<=20) or a failed fine check (<3).
+            // The penalty weight schedule restarts from its first stage after a fine check.
+            const int nPoints = K * CONSTRAINT_POINTS_PER_PIECE + 1;
+            if (static_cast<int>(ctx.obstaclePairs.size()) != nPoints)
+            {
+                ctx.obstaclePairs.assign(nPoints, {});
+            }
+            ctx.grid = grid;
+            ctx.obstacleTouchGoal = obstacle_touch_goal;
+            ctx.viaGivenPtr = &viaGiven;
+            ctx.obstacleLastId = obstacle_touch_goal ? nPoints - 1 : nPoints - 1 - (nPoints - 2) / 3;
+            ctx.obstacleClearance = obstacle_clearance;
+            ctx.obstacleClearanceSoft = obstacle_clearance_soft;
+            const double checkVel = max_vel > 0.0 ? max_vel : std::numeric_limits<double>::infinity();
+
+            auto fineCheck = [&]() {
+                VectorXd Tc;
+                forwardT(x.segment(3 * numVia, K), Tc);
+                posMinco.setParameters(viaPointsOf(x, viaGiven, via_half_width), Tc);
+                return finelyCheckAndSetConstraintPoints(*grid, posMinco.getCoeffs(), Tc, checkVel,
+                                                         obstacle_touch_goal, ctx.obstaclePairs);
+            };
+            ReboundResult check = fineCheck();
+            if (reboundTraceEnabled()) std::fprintf(stderr, "[trace] solve: initial fine check=%d\n", static_cast<int>(check));
+            obstacleFree = (check == ReboundResult::ObstacleFree);
+            int restartNums = 0, reboundTimes = 0;
+            bool stillUnsafe = false, forceReturn = false;
+            size_t stage = 0;
+            while (check != ReboundResult::Error)
+            {
+                forceReturn = false;
+                stillUnsafe = false;
+                for (; stage < std::size(weightSchedule); stage++)
+                {
+                    ctx.penaltyWeight = weightSchedule[stage];
+                    ctx.reboundRequested = false;
+                    const int lbfgsRet = lbfgs::lbfgs_optimize(x, fx, evaluate, nullptr, reboundProgress, &ctx, param);
+                    if (reboundTraceEnabled())
+                        std::fprintf(stderr, "[trace] solve: stage=%zu w=%.0e lbfgs=%d fx=%.4g rebound=%d error=%d\n", stage,
+                                     weightSchedule[stage], lbfgsRet, fx, ctx.reboundRequested ? 1 : 0, ctx.reboundError ? 1 : 0);
+                    if (ctx.reboundError)
+                    {
+                        break;
+                    }
+                    if (ctx.reboundRequested)
+                    {
+                        forceReturn = true;
+                        reboundTimes++;
+                        break;
+                    }
+                }
+                if (ctx.reboundError)
+                {
+                    obstacleFree = false;
+                    break;
+                }
+                if (!forceReturn)
+                {
+                    check = fineCheck();
+                    if (reboundTraceEnabled()) std::fprintf(stderr, "[trace] solve: fine check after stages=%d\n", static_cast<int>(check));
+                    obstacleFree = (check == ReboundResult::ObstacleFree);
+                    if (check == ReboundResult::Finish)
+                    {
+                        stillUnsafe = true;
+                        restartNums++;
+                        stage = 0;
+                    }
+                }
+                static const int maxRestarts = std::getenv("MINCO_DIAG_MAX_RESTARTS") ? std::atoi(std::getenv("MINCO_DIAG_MAX_RESTARTS")) : 3;
+                if (!((stillUnsafe && restartNums < maxRestarts) || (forceReturn && reboundTimes <= 20)))
+                {
+                    break;
+                }
+            }
+            if (check == ReboundResult::Error || forceReturn)
+            {
+                obstacleFree = false;
+            }
+            result.rebound_times = reboundTimes;
+            result.restart_times = restartNums;
+            if (reboundTraceEnabled())
+                std::fprintf(stderr, "[trace] solve: END check=%d rebounds=%d restarts=%d forceReturn=%d stillUnsafe=%d reboundError=%d obstacleFree=%d\n",
+                             static_cast<int>(check), reboundTimes, restartNums, forceReturn ? 1 : 0, stillUnsafe ? 1 : 0,
+                             ctx.reboundError ? 1 : 0, obstacleFree ? 1 : 0);
         }
 
-        Matrix3Xd qVia(3, std::max(numVia, 0));
-        for (int i = 0; i < numVia; i++)
-        {
-            const Vector3d xi = x.segment<3>(3 * i);
-            const Vector3d th = xi.array().tanh();
-            qVia.col(i) = viaGiven[i] + via_half_width * th;
-        }
+        const Matrix3Xd qVia = viaPointsOf(x, viaGiven, via_half_width);
         VectorXd T;
         forwardT(x.segment(3 * numVia, K), T);
         posMinco.setParameters(qVia, T);
         rotMinco.setParameters(rotVia, T);
 
         const double maxViol = maxViolation(posMinco, rotMinco, T, K, wrench_safety_margin, ctx.forceFrame);
+        if (reboundTraceEnabled() && grid != nullptr)
+            std::fprintf(stderr, "[trace] solve: maxViol=%.3g duration=%.2f\n", maxViol, T.sum());
 
         result.segment_times.resize(K);
         for (int i = 0; i < K; i++)
@@ -916,7 +1243,7 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         }
 
         result.duration = T.sum();
-        result.error_code = (maxViol <= VIOLATION_TOLERANCE) ? 0 : 1;
+        result.error_code = (maxViol > VIOLATION_TOLERANCE) ? 1 : (obstacleFree ? 0 : 2);
         result.success = (result.error_code == 0);
     }
     catch (const std::exception &e)
@@ -1061,8 +1388,7 @@ PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
             Matrix3Xd qVia(3, std::max(numVia, 0));
             for (int i = 0; i < numVia; i++)
             {
-                const Vector3d xi = x.segment<3>(3 * i);
-                qVia.col(i) = viaGiven[i] + via_half_width * xi.array().tanh().matrix();
+                qVia.col(i) = viaFromParam(viaGiven[i], x.segment<3>(3 * i), via_half_width);
             }
             posMinco.setParameters(qVia, T);
             rotMinco.setParameters(rotVia, T);
