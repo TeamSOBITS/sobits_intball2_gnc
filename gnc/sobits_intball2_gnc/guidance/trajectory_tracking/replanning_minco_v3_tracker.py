@@ -83,16 +83,15 @@ fallback rather than inventing new latch/hard-stop machinery):
   to fall back to): raises ``MincoInfeasibleError``, same as the global
   build failing -- the caller (``GuidanceExecutor``) already handles this
   uniformly (falls back to ``"static"``).
-- Once the local target reaches ``p_target`` (``touch_goal``), local
-  replanning stops and that last local trajectory plays out to its end,
-  which is also ``total_duration`` (EGO-Planner v2 ``EXEC_TRAJ``: done when
-  ``touch_the_goal`` and ``t_cur > duration``, reference time only). An
-  earlier distance-based freeze was harmful because its one frozen solve
-  started from a noisy *measured* velocity; replans now start from the
-  reference state, so re-solving toward the fixed goal adds nothing. The
-  previous ETA-only ``total_duration`` never ended the goal under a
-  steady-state TF offset (``docs/2026-09-23_replanning_minco_v3_fix_live_
-  sim_verification.md``).
+- Replans keep going after the local target reaches ``p_target``
+  (``touch_goal``) until the goal-touching local has played out, which is
+  also ``total_duration`` (EGO-Planner v2 ``EXEC_TRAJ``: replan once the
+  current local has run ``thresh_replan_time``, done when ``touch_the_goal``
+  and ``t_cur > duration``). Stopping at ``touch_goal`` left the rest of the
+  route unreplanned -- no reaction to obstacles there (``docs/2026-09-23_
+  replanning_minco_v3_remaining_tasks.md`` A1). The previous ETA-only
+  ``total_duration`` never ended the goal under a steady-state TF offset
+  (``docs/2026-09-23_replanning_minco_v3_fix_live_sim_verification.md``).
 
 No velocity estimator: replans start from the reference state, so measured
 pose is only used for the first plan, the TF-freshness latch and the ETA.
@@ -283,7 +282,8 @@ class ReplanningMincoV3Tracker:
             if not self._pending_thread.is_alive():
                 self._pending_thread = None
                 self._adopt_local(self._pending_result, self._pending_lag)
-        elif (not self._local_touches_goal
+        elif (not self._goal_local_played_out()
+                and self._local_elapsed >= self._local_replan_period
                 and self._since_replan_attempt >= self._local_replan_period):
             self._since_replan_attempt = 0.0
             p_ref, v_ref, a_ref, _q = self._local_trajectory.sample(self._local_elapsed)
@@ -303,6 +303,10 @@ class ReplanningMincoV3Tracker:
 
         self._last_output = (p_out, v_out, a_out, q_out)
         return self._last_output
+
+    def _goal_local_played_out(self):
+        return (self._local_touches_goal
+                and self._local_elapsed >= self._local_trajectory.global_total_duration)
 
     def _try_build_local(self, start_state):
         try:
