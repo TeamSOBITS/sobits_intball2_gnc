@@ -356,3 +356,21 @@ def test_async_replan_face_travel_reaches_target():
     assert replans >= 2
     assert tracker.last_fallback_reason is None
     assert np.allclose(p, FACE_TRAVEL_TARGET, atol=1e-2)
+
+
+def test_keeps_replanning_after_touch_goal_until_goal_local_plays_out():
+    tf = _IdealTrackingTf()
+    tracker = _make_tracker(tf, local_replan_period=1.0)
+    replans_after_touch = 0
+    t = 0.0
+    while t <= tracker.total_duration and t < T_CAP:
+        touched_before_tick = tracker._local_touches_goal
+        t += DT
+        tf.stamp = t
+        p, v, _a, _q = tracker.sample(t)
+        tf.advance(t, p)
+        replans_after_touch += touched_before_tick and tracker.last_replan_occurred
+    assert replans_after_touch >= 2
+    assert t < T_CAP
+    assert np.allclose(p, P_TARGET, atol=1e-3)
+    assert np.allclose(v, 0.0, atol=1e-3)
