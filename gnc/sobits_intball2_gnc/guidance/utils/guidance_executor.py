@@ -32,6 +32,8 @@ import time
 
 import numpy as np
 
+from sobits_intball2_gnc.common.utils.stopping_profile import StoppingProfile
+from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle
 from sobits_intball2_gnc.guidance.segment_time.heuristic_segment_time_allocator import (
     HeuristicSegmentTimeAllocator,
 )
@@ -101,9 +103,17 @@ class GuidanceExecutor:
             ``DEFAULT_CAMERA_FORWARD_AXIS``, TF-measured 2026-08-20).
         velocity_fn: optional callable returning the latest
             ``VelocityEstimator.get()`` result (``docs/
-            guidance_velocity_estimator_design.md``). Not yet consumed by
-            this class -- accepted for a future task (feeding v_now into
-            ``HeuristicSegmentTimeAllocator``).
+            guidance_velocity_estimator_design.md``); :meth:`brake`'s v0.
+        angular_velocity_fn: optional callable returning the latest
+            body-frame gyro ``[wx, wy, wz]`` or ``None``; :meth:`brake`'s w0.
+        allocator: ``ThrustAllocator`` configured like control's; required
+            by :meth:`brake`.
+        stopping_profile_kwargs: extra ``StoppingProfile`` keyword args
+            (``eta``, ``f_max``, ``x_threshold``, ``max_axis_force`` ...).
+        stopping_tolerance_pos/att, stopping_duration_goal,
+            stopping_wait_cancel: :meth:`brake`'s end conditions (JAXA
+            ``ctl.tolerance_pos_stop``/``tolerance_att_stop``/
+            ``duration_goal``/``wait_cancel``).
     """
 
     def __init__(self, tf_client, setpoint_publisher, checkpoint_publisher,
@@ -119,7 +129,11 @@ class GuidanceExecutor:
                  velocity_fn=None, max_angular_rate=None,
                  align_angular_speed_deg=None, align_angular_accel_deg=None,
                  align_traj_publish_rate_hz=20.0,
-                 wrench_envelope=None, mass=None, inertia=None):
+                 wrench_envelope=None, mass=None, inertia=None,
+                 angular_velocity_fn=None, allocator=None,
+                 stopping_profile_kwargs=None, stopping_tolerance_pos=0.30,
+                 stopping_tolerance_att=1.0, stopping_duration_goal=3.0,
+                 stopping_wait_cancel=10.0):
         self._tf = tf_client
         self._setpoint_pub = setpoint_publisher
         self._checkpoint_pub = checkpoint_publisher
@@ -163,16 +177,15 @@ class GuidanceExecutor:
         # Guidance-side TF velocity estimate (docs/
         # guidance_velocity_estimator_design.md), independent of
         # TrajectoryController's own estimator (one-way Guidance -> Control
-        # data flow, can't be reused -- see docs/
-        # guidance_realtime_replanning_design.md 3-3 節). `velocity_fn` is a
-        # callable returning the latest VelocityEstimator.get() result,
-        # fed by a low-rate timer in guidance.py running on a different
-        # thread than this class's own execute()/`_run_trajectory` loop --
-        # never call it from inside a tight/latency-sensitive path without
-        # accounting for that. Accepted here but not yet consumed: this is
-        # only the DI plumbing for the next task (passing v_now into
-        # HeuristicSegmentTimeAllocator).
+        # data flow). Fed by a low-rate timer on another thread.
         self._velocity_fn = velocity_fn
+        self._angular_velocity_fn = angular_velocity_fn
+        self._allocator = allocator
+        self._stopping_profile_kwargs = dict(stopping_profile_kwargs or {})
+        self._stopping_tolerance_pos = float(stopping_tolerance_pos)
+        self._stopping_tolerance_att = float(stopping_tolerance_att)
+        self._stopping_duration_goal = float(stopping_duration_goal)
+        self._stopping_wait_cancel = float(stopping_wait_cancel)
         self._dt = 1.0 / float(rate)
         # q_des rate limit (docs/archive/achieved/
         # 2026-08-24_trajectory_state_carryover_design.md 3-4節): always
@@ -648,6 +661,76 @@ class GuidanceExecutor:
                     return status
 
         return STATUS_SUCCESS
+
+    def brake(self):
+        """Stop along a JAXA ``stoppingProfile`` from the measured state, then
+        hold its end pose (JAXA ``Ctl::cancelTarget``, docs/
+        archive/achieved/2026-09-24_cancel_stopping_profile_implementation_and_sim_verification.md). Returns a ``STATUS_*``.
+
+        The hold/arrival point is the profile's own end pose, not JAXA's
+        ``r1``: ``r1`` omits the ``v0 * t_rot`` coast while rotation stops.
+        """
+        if self._allocator is None or self._mass is None or self._inertia is None:
+            self._log.warn("[GuidanceExecutor] brake: no allocator/mass/inertia, "
+                           "leaving the stop to control's hold fallback")
+            return STATUS_ABORTED
+        pose = self._tf.get_pose()
+        if pose is None or not self._tf_pose_fresh(pose[2]):
+            self._log.warn("[GuidanceExecutor] brake: no fresh TF pose, "
+                           "leaving the stop to control's hold fallback")
+            return STATUS_ABORTED
+        pos, quat, _stamp = pose
+        estimate = self._velocity_fn() if self._velocity_fn is not None else None
+        v0 = np.zeros(3) if estimate is None else np.asarray(estimate.vel, dtype=float)
+        gyro = (self._angular_velocity_fn() if self._angular_velocity_fn is not None
+                else None)
+        w0 = np.zeros(3) if gyro is None else np.asarray(gyro, dtype=float)
+        if estimate is None or gyro is None:
+            self._log.warn("[GuidanceExecutor] brake: velocity (%s) / gyro (%s) "
+                           "unavailable, treated as zero"
+                           % (estimate is not None, gyro is not None))
+
+        profile = StoppingProfile(pos, v0, quat, w0, self._allocator, self._mass,
+                                  self._inertia, **self._stopping_profile_kwargs)
+        p_end, _, _, q_end, _, _ = profile.sample(profile.duration)
+        self._log.info(
+            "[GuidanceExecutor] brake: |v0|=%.3fm/s |w0|=%.3frad/s a_max=%.4fm/s^2 "
+            "stop_dist=%.2fm duration=%.1fs"
+            % (np.linalg.norm(v0), np.linalg.norm(w0), profile.a_max,
+               np.linalg.norm(np.asarray(p_end) - np.asarray(pos)), profile.duration)
+        )
+
+        t_start = self._clock_seconds()
+        stay_since = None
+        while True:
+            now = self._clock_seconds()
+            elapsed = now - t_start
+            self._setpoint_pub.publish(*profile.sample(elapsed))
+            current = self._tf.get_pose()
+            if current is not None and self._tf_pose_fresh(current[2]):
+                near = (
+                    np.linalg.norm(np.asarray(current[0]) - p_end)
+                    < self._stopping_tolerance_pos
+                    and geodesic_angle(current[1], q_end) < self._stopping_tolerance_att
+                )
+                stay_since = (stay_since if stay_since is not None else now) if near else None
+            # JAXA's controller keeps tracking the profile after cancelTarget's
+            # wait loop exits, so never hand over to the hold mid-profile.
+            if (elapsed >= profile.duration and stay_since is not None
+                    and now - stay_since >= self._stopping_duration_goal):
+                status = STATUS_SUCCESS
+                break
+            if elapsed >= profile.duration + self._stopping_wait_cancel:
+                self._log.warn("[GuidanceExecutor] brake: not settled within "
+                               "duration+%.1fs, holding the stop point anyway"
+                               % self._stopping_wait_cancel)
+                status = STATUS_ABORTED
+                break
+            self._spin(self._dt)
+        self._checkpoint_pub.publish(p_end, q_end)
+        self._log.info("[GuidanceExecutor] brake: holding stop point after %.1fs"
+                       % (self._clock_seconds() - t_start))
+        return status
 
     def _resolve_arrival_target_quat(self, q_target, camera):
         """Return the quaternion ``align_at_arrival`` should converge to.

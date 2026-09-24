@@ -57,8 +57,10 @@ guidance/
     ├── quintic_hermite.py                    # 両端の位置/速度/加速度から5次多項式を解析的に解く（現在未使用）
     ├── wrench_envelope_constraint.py         # TOPP-RA用の経路非依存wrench包絡域制約（ToppraTrajectoryが使用）
     └── guidance_executor.py                  # GuidanceExecutor: 1件のCtlCommand goalを
-                                               # pre-align→軌道追従→arrival-alignで駆動（cancel対応）
+                                               # pre-align→軌道追従→arrival-alignで駆動、cancel後はbrake()で制動
 ```
+
+cancel後の制動プロファイルは`guidance/`の外、`common/utils/stopping_profile.py`（ROS非依存、JAXA `ctl_only`の`stoppingProfile()`の移植）にある。将来Control側からも使うため共通の場所に置いている。
 
 [↑ 目次に戻る](#目次)
 
@@ -102,13 +104,14 @@ ros2 action send_goal /gnc/move_to ib2_msgs/action/CtlCommand \
     type: {type: 40}}" --feedback
 ```
 
-`--feedback`付きで`Ctrl-C`するとgoalがキャンセルされます。Control側は`trajectory_controller.timeout`（既定0.2秒）後にその場で静止保持に切り替わります（ファンは止まりません）。
+`--feedback`付きで`Ctrl-C`するとgoalがキャンセルされます。結果（canceled）はすぐ返り、そのあとGuidanceが現在の速度・角速度から止まれる地点を計算して減速し、止まった地点で静止保持します（下の「実行の流れ」4）。制動中に送ったgoalは拒否されます。
 
 ### 3. 結果を確かめる
 
 ```sh
 python3 gnc/test/manual/get_pose.py                          # 今の位置・姿勢（iss_body <- body）
 python3 gnc/test/manual/move_to_full_analysis.py nav_entry   # goalを送り、追従誤差・duty飽和・wrenchをまとめて表示
+python3 gnc/test/manual/move_to_cancel_brake_test.py inspection_entry_2   # 途中でcancelし、止まり方（行き過ぎ・戻り・静定時間）を表示
 ```
 
 `move_to_full_analysis.py`は`move_to_client`の代わりにgoalを送り、走行中の記録からレポートとCSVを出します（詳細: `gnc/test/manual/README.md`）。
@@ -151,6 +154,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
    - `replanning_minco_v3`: ゴールまでのglobal軌道を一度だけ作り、そこから先読み距離先までのlocal軌道を1秒ごとに作り直す（EGO-Planner v2と同じ構成）
    - 計画時間が過ぎても、位置誤差が`align_pos_tolerance_m`以下に`align_pos_settle_time`秒続くまで待つ（最大`align_pos_timeout`秒）
 3. **到着時の姿勢合わせ**（`align_at_arrival`）: 目標姿勢へ合わせる。`/gnc/checkpoints`で静止保持、最大`align_timeout`秒
+4. **cancelされたとき**（`GuidanceExecutor.brake()`、上のどの段階でも）: 結果を返したあと別スレッドで実行する。JAXA `ctl_only`と同じく、先に回転を止め（その間の並進は等速）、次に並進を一定の減速度で止める軌道を`/gnc/trajectory_setpoint`へ出す。減速度はファン1基あたり`wrench_envelope_safety_margin`倍までの推力で出せる値で、さらに各軸`hover_control.max_force`以下に抑える。軌道を最後まで出し、停止点から`stopping.tolerance_pos`・`stopping.tolerance_att`以内に`stopping.duration_goal`秒いたら（最大は軌道時間＋`stopping.wait_cancel`秒）、停止点を`/gnc/checkpoints`で静止保持にする。停止距離は速度の2乗に比例する（0.5 m/sから3〜6 m）。検証結果: `docs/archive/achieved/2026-09-24_cancel_stopping_profile_implementation_and_sim_verification.md`
 
 `CtlCommand.action`にはオプションを渡すフィールドが無いため、goalごとの設定はすべてROSパラメータで渡す。
 
@@ -164,6 +168,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | トピック名 | 型 | 説明 |
 |---|---|---|
 | `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | `iss_body <- body`のTF（`TfClient`経由、到着判定・整列判定に使用） |
+| `/imu/imu` | `ib2_msgs/IMU` | 角速度（cancel後の制動の初期角速度に使用） |
 
 ### 出力トピック
 
@@ -247,6 +252,12 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `guidance.wrench_envelope_safety_margin` | 達成可能なwrenchの範囲をこの係数で縮め、フィードバックの余力を残す（全モード共通） | `0.7` |
 | `guidance.camera_forward_axis.main` | メインカメラの前方軸（機体座標系） | `[1.0, 0.0, 0.0]` |
 | `guidance.camera_forward_axis.stereo` | ステレオカメラの前方軸（機体座標系） | `[0.0, 1.0, 0.0]` |
+| `guidance.stopping.x_threshold` | cancel後の制動: 停止距離がこれ未満なら即その場で静止保持[m] | `0.05` |
+| `guidance.stopping.theta_threshold` | 同、回転量がこれ未満なら即停止[rad] | `0.01745` |
+| `guidance.stopping.f_max`・`t_max` | 最大減速度を探すときの基準の力[N]・トルク[Nm]（結果は変わらない） | `0.181`・`0.0081904` |
+| `guidance.stopping.tolerance_pos`・`tolerance_att` | 制動終了とみなす停止点からの距離[m]・角度[rad] | `0.30`・`1.0` |
+| `guidance.stopping.duration_goal` | 上の範囲にこの秒数いたら制動終了[s] | `3.0` |
+| `guidance.stopping.wait_cancel` | 軌道時間＋この秒数で打ち切って静止保持[s] | `10.0` |
 
 ### Control側と共有（起動時のみ、`gnc_params.yaml`の各セクションと同じ値を使う）
 
@@ -255,9 +266,10 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `tf_correction.reference_frame` | 自己位置の親フレーム | `iss_body` |
 | `tf_correction.target_frame` | 機体フレーム | `body` |
 | `trajectory_controller.max_force` | 加速度上限の算出に使う力[N]（軸別、最も厳しい軸の値を使う） | `[0.181, 0.0996, 0.122]` |
-| `trajectory_controller.mass` | 加速度上限（区間時間配分・MINCOのheuristic-time）とTOPP-RAの質量[kg]。**コードの既定値は4.5なので、`--params-file`なしで起動すると実質量3.216と食い違う** | `4.5` / `3.216` |
+| `trajectory_controller.mass` | 加速度上限（区間時間配分・MINCOのheuristic-time）・TOPP-RA・cancel後の制動の質量[kg] | `3.216` |
 | `trajectory_controller.inertia` | TOPP-RAの慣性[kg·m²]（等方） | `0.0136` |
-| `thrust_allocator.*` | ファンの配置・推力上限（`kj`・`fj_max`・`cg`・`fan_positions`・`fan_vectors`など）。wrenchの範囲の算出に使う | `gnc_params.yaml`の`thrust_allocator`セクション |
+| `thrust_allocator.*` | ファンの配置・推力上限（`kj`・`fj_max`・`cg`・`fan_positions`・`fan_vectors`など）。wrenchの範囲の算出と、cancel後の制動の最大減速度の算出に使う | `gnc_params.yaml`の`thrust_allocator`セクション |
+| `hover_control.max_force` | Control側の出力の各軸上限[N]。cancel後の制動の減速度をこれ以下に抑える | `0.1` |
 
 `minco_solver.cpp`（MINCO）の質量・慣性はC++の定数（3.216 kg・0.0136 kg·m²）で、上の`trajectory_controller.*`の影響は受けない。
 

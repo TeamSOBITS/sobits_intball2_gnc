@@ -164,6 +164,17 @@
       # tracking residual immediately saturates fans (docs/2026-08-28_toppra_
       # static_path_attitude_overshoot_incident.md "追記（2026-08-28 その5/6）").
       wrench_envelope_safety_margin: 0.7
+      # Post-cancel brake, ported from JAXA ctl_only stoppingProfile (docs/archive/achieved/2026-09-24_cancel_stopping_profile_implementation_and_sim_verification.md).
+      # Values are JAXA ctl.yaml's. eta = wrench_envelope_safety_margin; per-axis cap = hover_control.max_force.
+      stopping:
+        x_threshold: 0.05                   # [m] stop distance below this -> hold stop point at once
+        theta_threshold: 0.017453292519943  # [rad] same for rotation
+        f_max: 181.0032e-3                  # [N] reference force for the effective-max search (result-invariant)
+        t_max: 8.1904e-3                    # [Nm] same for torque
+        tolerance_pos: 0.30                 # [m] brake ends once within this of the stop point ...
+        tolerance_att: 1.0                  # [rad] ... and this of the stop attitude ...
+        duration_goal: 3.0                  # [s] ... for this long
+        wait_cancel: 10.0                   # [s] or at profile duration + this
 
     control:
       # Period of the periodic "who owns the fans" status log [s]. 0.0 disables.
