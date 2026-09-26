@@ -12,8 +12,7 @@ export PYTHONPATH="/root/colcon_ws/src/sobits_intball2_gnc:$PYTHONPATH"
 python3 test/manual/send_curve_via_naventry.py near_dock
 ```
 
-Guidance (`guidance/guidance.py`) is now implemented
-(`docs/guidance_node_implementation_plan.md`): for a plain move-to-target
+Guidance (`guidance/guidance.py`) is now implemented: for a plain move-to-target
 (straight line, current pose -> one target), use
 `guidance/ros/move_to_client.py` against a running `guidance` node instead of
 a manual script -- it resolves the target from TF by name and sends a real
@@ -23,8 +22,7 @@ hand-computed stand-in.
 
 The scripts below remain because they exercise things Guidance doesn't do
 yet: a controlled Bezier curve through an explicit intermediate waypoint
-(Guidance only ever plans current-pose -> single target, see
-`docs/guidance_node_implementation_plan.md` decision 1), a hairpin maneuver,
+(Guidance only ever plans current-pose -> single target), a hairpin maneuver,
 or direct multi-point checkpoint chaining.
 
 (The former `send_to_nav_entry.py`, a single hardcoded checkpoint, was
@@ -53,10 +51,10 @@ of running a separate trajectory-setpoint script alongside it.
 | `send_curve_via_naventry.py` | `/gnc/trajectory_setpoint` | Quadratic Bezier curve from the current pose, through a named waypoint (default `nav_entry`, exactly at the curve's midpoint), to a named target -- both resolved live via TF. Replaces the former per-destination/per-mode `send_curve_via_naventry_to_{near_dock,above_dock2}[_facing_direction].py` scripts: `python3 send_curve_via_naventry.py near_dock [--waypoint nav_entry] [--facing-direction] [--path-only]`. `--path-only` publishes the RViz preview path (`/gnc/trajectory_path`) without ever sending a setpoint -- use this to check a path visually before letting the vehicle move |
 | `send_hairpin_naventry.py` | `/gnc/trajectory_setpoint` | Sharper (~144.7 deg) `near_dock`<->`above_dock` hairpin turn via a scaled-up `nav_entry` bulge, facing direction of travel. Replaces the former `send_hairpin_naventry_facing_direction.py` and `preview_hairpin_naventry.py`: `python3 send_hairpin_naventry.py [--bulge-scale 1.5] [--reverse] [--path-only]`. `--path-only` logs the turn angle/leg lengths and publishes the RViz preview path without sending a setpoint |
 | `get_pose.py` | (read-only, no publish) | Prints the current body pose (pos/quat/RPY) from TF once and exits -- a quick substitute for repeatedly typing `ros2 run tf2_ros tf2_echo`: `python3 get_pose.py [--reference-frame iss_body] [--target-frame body] [--timeout 5.0]` |
-| `diagnose_align_gains.py` | `/gnc/checkpoints`, `control_node` params | Sets `tf_correction`'s attitude gains via `SetParameters`, publishes a single angle-offset checkpoint, and logs the quaternion error/sign/`/ctl/duty` saturation/`/imu/imu` gyro trace to CSV for gain-tuning investigation. Restores the current baseline gains on exit (or with `--restore`): `python3 diagnose_align_gains.py --axis z --offset-deg 180 --kd-override 0.4635 0.4077 0.264 --max-torque 0.3 --out-csv /tmp/trace.csv`. See `docs/archive/achieved/2026-08-21_tf_correction_align_optimization.md` |
-| `measure_attitude_tracking_error.py` | (read-only, no publish) | Logs the geodesic tracking error (TF actual attitude vs `/gnc/trajectory_setpoint`'s `q_des`) at a fixed rate while a *separate* trajectory-setpoint-publishing script (or `move_to`) runs, and derives a theory-based `kp_att` gain recommendation from the peak angular acceleration of `q_des(t)`: `python3 measure_attitude_tracking_error.py`. See `docs/trajectory_force_duration_investigation.md` 6-8 |
-| `log_pose_drift.py` | (read-only, no publish) | Logs TF pose (position mm + raw quaternion, no RPY) to CSV on a sim-clock timer until Ctrl-C or `--duration` elapses -- for measuring `hover_control.mode` drift (`imu` vs `tf_imu`) against TF ground truth: `python3 log_pose_drift.py --output /tmp/imu_drift.csv --duration 60 --rate 50 --label imu`. Does not touch `hover_control.mode` itself -- switching modes needs a `control_node` restart. See `docs/imu_mode_drift_measurement_plan.md` |
-| `analyze_pose_drift.py` | (no ROS, pure CSV post-processing) | Computes net position drift distance (mm) and attitude drift (quaternion geodesic angle, deg) between two `t_sim` timestamps in a `log_pose_drift.py` CSV -- pick `--start-t` past any warm-up transient (e.g. the acc-bias EMA settling in `imu` mode): `python3 analyze_pose_drift.py docs/results/imu_drift_60s.csv --start-t 5.0 --end-t 60.0`. See `docs/imu_mode_drift_results.md` |
+| `diagnose_align_gains.py` | `/gnc/checkpoints`, `control_node` params | Sets `tf_correction`'s attitude gains via `SetParameters`, publishes a single angle-offset checkpoint, and logs the quaternion error/sign/`/ctl/duty` saturation/`/imu/imu` gyro trace to CSV for gain-tuning investigation. Restores the current baseline gains on exit (or with `--restore`): `python3 diagnose_align_gains.py --axis z --offset-deg 180 --kd-override 0.4635 0.4077 0.264 --max-torque 0.3 --out-csv /tmp/trace.csv`. |
+| `measure_attitude_tracking_error.py` | (read-only, no publish) | Logs the geodesic tracking error (TF actual attitude vs `/gnc/trajectory_setpoint`'s `q_des`) at a fixed rate while a *separate* trajectory-setpoint-publishing script (or `move_to`) runs, and derives a theory-based `kp_att` gain recommendation from the peak angular acceleration of `q_des(t)`: `python3 measure_attitude_tracking_error.py`. |
+| `log_pose_drift.py` | (read-only, no publish) | Logs TF pose (position mm + raw quaternion, no RPY) to CSV on a sim-clock timer until Ctrl-C or `--duration` elapses -- for measuring `hover_control.mode` drift (`imu` vs `tf_imu`) against TF ground truth: `python3 log_pose_drift.py --output /tmp/imu_drift.csv --duration 60 --rate 50 --label imu`. Does not touch `hover_control.mode` itself -- switching modes needs a `control_node` restart. |
+| `analyze_pose_drift.py` | (no ROS, pure CSV post-processing) | Computes net position drift distance (mm) and attitude drift (quaternion geodesic angle, deg) between two `t_sim` timestamps in a `log_pose_drift.py` CSV -- pick `--start-t` past any warm-up transient (e.g. the acc-bias EMA settling in `imu` mode): `python3 analyze_pose_drift.py /tmp/imu_drift.csv --start-t 5.0 --end-t 60.0` |
 
 ## Common pattern
 

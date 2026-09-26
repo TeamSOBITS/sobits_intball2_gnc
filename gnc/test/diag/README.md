@@ -1,7 +1,6 @@
 # 障害物回避のsolveの診断
 
 `replanning_minco_v3`の障害物込みのsolve（`minco_native_py.plan_minco(grid=...)`）が失敗する理由を追うための道具。
-経緯と結果は`docs/2026-09-24_obstacle_avoidance_jem_map_check.md`（4〜5節）。
 
 流れ: 段階5のJEMの場面（`../experiment_obstacle_stage5_emergency_stop.py`）を回して`plan_minco`の引数を保存し、
 保存した引数だけでsolveを何度でも再現する（同じ引数なら毎回同じ結果）。場面を回すのは保存のときだけ。

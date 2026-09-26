@@ -1,16 +1,83 @@
 # Control
 
-目標軌道を追従する force/torque を計算し、8基のファンへ配分するモジュールです。IMU姿勢制御をベースに、必要に応じてTF補正・経路チェックポイント・軌道追従を重ねます。
+guidance_nodeから受け取った目標（軌道のsetpoint、止まる場所のcheckpoint）を追従するforce/torqueを計算し、8基のファンへ配分するモジュールです。IMUによる姿勢制御をベースに、TFの自己位置で補正します。
 
 ## 目次
 
+- [起動](#launch)
+- [入出力](#io)
+- [デバッグ用](#debug)
 - [構成](#構成)
-- [ホバリング制御（起動方法）](#hover-control)
-- [ファン直接制御](#fan-direct-control)
-- [経路チェックポイントIF](#checkpoint-if)
-- [軌道追従IF](#trajectory-if)
-- [トピック](#topics)
 - [パラメータ](#parameters)
+
+<a id="launch"></a>
+## 起動
+
+```sh
+ros2 launch sobits_intball2_gnc control.launch.py
+```
+
+`control_node`だけを起動し、[config/gnc_params.yaml](../../config/gnc_params.yaml)を読みます（別のファイルは`params_file:=<path>`）。
+何も届いていない間は、起動した位置・姿勢でホバリングします。切り替えはyamlで行います（どちらも起動時のみ）:
+
+| パラメータ | 値 |
+|---|---|
+| `hover_control.mode` | `tf_imu`（既定、TFで補正）/ `imu`（IMUだけ。絶対参照がないので位置・姿勢はゆっくりドリフトする） |
+| `control.thrust_allocation` | `builtin`（既定、このノードが推力配分して`/ctl/duty`を出す）/ `jaxa_fsm`（`/ctl/wrench`を出し、推力配分はJAXAの`fsm`に任せる） |
+
+- TF（`iss_body`<-`body`）はシミュレータ限定のオラクルで、実機にはない。TFが`tf_correction.timeout`秒止まるとIMUだけのホバリングに落ち、戻ると再び補正する
+- `jaxa_fsm`はJAXAの`ctl_only`がSTAND_BY（NAV_OFF）のときだけ`/ctl/wrench`を出す（下の[出力](#io)）
+
+[↑ 目次に戻る](#目次)
+
+<a id="io"></a>
+## 入出力
+
+### 入力
+
+| トピック名 | 型 | 送り元 | 説明 |
+|---|---|---|---|
+| `/imu/imu` | `ib2_msgs/IMU` | シム | 角速度・加速度 |
+| `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | シム | `iss_body <- body`の自己位置（`TfClient`） |
+| `/gnc/trajectory_setpoint` | `trajectory_msgs/MultiDOFJointTrajectory` | guidance_node | 移動中の目標（位置・速度・加速度・姿勢・角速度）。届いている間はcheckpointより優先し、`trajectory_controller.timeout`秒途切れるとcheckpointの保持に戻る |
+| `/gnc/checkpoints` | `geometry_msgs/PoseArray` | guidance_node | 止まる場所（frame_id: `iss_body`）。先頭のポーズを保持する。空配列で今の位置を保持し直す |
+| `/ctl/status` | `ib2_msgs/CtlStatus` | JAXAの`ctl_only` | `jaxa_fsm`のときだけ。`ctl_only`が止まっているかの確認 |
+
+### 出力
+
+| トピック名 | 型 | 説明 |
+|---|---|---|
+| `/ctl/duty` | `std_msgs/Float64MultiArray` | 8基のファンへのduty（`builtin`のときだけ） |
+| `/ctl/wrench` | `geometry_msgs/WrenchStamped` | 推力配分に渡す合計のforce/torque（`jaxa_fsm`のときだけ）。bridgeでJAXAの`fsm`に届く |
+| `/ctl/wrench_correction` | `geometry_msgs/WrenchStamped` | 診断用: 制御則が要求する補正force/torque（上限で切る前） |
+| `/ctl/wrench_total` | `geometry_msgs/WrenchStamped` | 診断用: 推力配分に渡す合計のforce/torque |
+| `/ctl/wrench_achieved` | `geometry_msgs/WrenchStamped` | 診断用: dutyで実際に出せるforce/torque（`builtin`のときだけ） |
+
+JAXAの`fsm`はNAV_OFFでも止まらず、`/ctl/wrench`が届けば`/ctl/duty`を出す。そのため`builtin`では`/ctl/wrench`を出さず、
+`jaxa_fsm`でも`/ctl/status`が3秒以内に届いていて`ctl_only`が自分のwrenchを出していない状態のときだけ出す。
+
+[↑ 目次に戻る](#目次)
+
+<a id="debug"></a>
+## デバッグ用
+
+普段は使わない。
+
+```sh
+# 止まる場所を手で送る（普段はguidance_nodeが送る）
+ros2 topic pub --once /gnc/checkpoints geometry_msgs/msg/PoseArray \
+  "{header: {frame_id: iss_body}, poses: [{position: {x: 0.5, y: 0.0, z: 0.0}, orientation: {w: 1.0}}]}"
+
+# checkpoint配列を1つ先へ進める
+ros2 service call /gnc/advance_checkpoint std_srvs/srv/Trigger
+
+# control_nodeを止めた状態で、ファンを直接回す（NAV_OFFで）
+ros2 run sobits_intball2_gnc fan_duty_publisher --help
+```
+
+`gnc/test/manual/`の検証スクリプトは[gnc/test/manual/README.md](../../test/manual/README.md)を参照。
+
+[↑ 目次に戻る](#目次)
 
 <a id="構成"></a>
 ## 構成
@@ -20,12 +87,13 @@ control/
 ├── control.py    # 統括ノード（唯一の rclpy ノード）。ros/のI/OラッパとutilsのROS非依存ロジックをDIで束ね、
 │                 # IMU(+TFポーズ) -> HoverController -> ThrustAllocator -> FanDutyPublisher の制御ループを回す
 ├── ros/          # ROS 入出力ラッパ（Nodeは継承せず、渡されたnodeにpub/subをぶら下げるだけ）
+│   ├── ctl_status_subscriber.py                   # /ctl/status（JAXA ctl_onlyの状態）購読。jaxa_fsm時の安全確認用
 │   ├── fan_duty_publisher.py                      # /ctl/duty へ8基分のduty配列をpublish。負推力は出せないため[0,1]にクランプ
 │   ├── imu_subscriber.py                          # /imu/imu（ib2_msgs/IMU）を購読し最新のジャイロ・加速度を保持
-│   ├── pose_array_subscriber.py                   # /gnc/checkpoints（経路チェックポイント配列）購読
+│   ├── pose_array_subscriber.py                   # /gnc/checkpoints（止まる場所の配列）購読
 │   ├── multi_dof_joint_trajectory_subscriber.py   # /gnc/trajectory_setpoint（軌道追従の目標点）購読
-│   └── wrench_publisher.py                        # /ctl/wrench・/ctl/wrench_total・/ctl/wrench_achieved へ
-│                                                   # 要求/合成/実現wrenchをpublish（可観測性強化用）
+│   └── wrench_publisher.py                        # /ctl/wrench_correction・/ctl/wrench_total・/ctl/wrench_achieved へ
+│                                                   # 要求/合成/実現wrenchをpublish（可観測性強化用）。jaxa_fsm時は/ctl/wrenchも
 └── utils/        # ROS非依存のロジック（単体テスト可能）
     ├── quat_math.py                        # クォータニオン/ベクトルの純粋関数群（回転・誤差角度など）
     ├── pose_control_law.py                 # (target, current) -> (force, torque)の純粋な誤差則。PoseCorrector等から再利用される
@@ -38,90 +106,8 @@ control/
     └── singleton_lock.py                   # flockによるcontrol_nodeの多重起動防止
 ```
 
-TF自己位置取得（`TfClient`）は`control/`と`guidance/`で共有するため`common/ros/tf_client.py`にあります。`common/ros/pose_relay_client.py`は同じ`iss_body <- body`フィードバックを、ブリッジ負荷対策として専用の間引きトピック経由で取得する`TfClient`互換の代替実装（`control.py`のみで使用、`docs/recording_cpu_load_control_degradation.md`参照）。
-
-[↑ 目次に戻る](#目次)
-
-<a id="hover-control"></a>
-## ホバリング制御（起動方法）
-
-```sh
-# パラメータファイルを与えて起動（TF補正が有効）
-ros2 run sobits_intball2_gnc control --ros-args \
-  --params-file $(ros2 pkg prefix sobits_intball2_gnc)/share/sobits_intball2_gnc/config/gnc_params.yaml
-
-# パラメータファイルなしで起動（純IMUホバリング）
-ros2 run sobits_intball2_gnc control
-```
-
-- モードは`config/gnc_params.yaml`の`hover_control.mode`で切替（`imu`=純IMU / `tf_imu`=TF補正あり、既定）。
-- IMUのみの場合は絶対参照がなく、姿勢・位置はゆっくりドリフトします。TF補正はこのドリフトを抑えます。
-- TFの配信が`timeout`秒止まると自動的に純IMUホバリングへ縮退し、復帰すると再度捕捉します。
-- TF（`iss_body`<-`body`）はシミュレータ限定のオラクルで、実機には存在しません。
-
-[↑ 目次に戻る](#目次)
-
-<a id="fan-direct-control"></a>
-## ファン直接制御
-
-Navigation OFFの状態で、`/ctl/duty`へ直接publishして8基のファンを個別に駆動できます。
-
-```sh
-ros2 run sobits_intball2_gnc fan_duty_publisher --help
-```
-
-[↑ 目次に戻る](#目次)
-
-<a id="checkpoint-if"></a>
-## 経路チェックポイントIF
-
-`/gnc/checkpoints`（`geometry_msgs/PoseArray`、frame_idは`iss_body`）に配列をpublishすると、先頭のポーズが保持目標になります。空配列で現在位置を再捕捉します。
-
-```sh
-ros2 topic pub --once /gnc/checkpoints geometry_msgs/msg/PoseArray \
-  "{header: {frame_id: iss_body}, poses: [{position: {x: 0.5, y: 0.0, z: 0.0}, orientation: {w: 1.0}}]}"
-```
-
-[↑ 目次に戻る](#目次)
-
-<a id="trajectory-if"></a>
-## 軌道追従IF
-
-`/gnc/trajectory_setpoint`（`trajectory_msgs/MultiDOFJointTrajectory`）に目標位置・速度・加速度をpublishすると、`TrajectoryController`がフィードフォワード＋フィードバックで追従します。前提は`hover_control.mode: tf_imu`。
-
-setpointが届いている間はcheckpointホールドより優先され、途切れると自動的にcheckpointホールドへ戻ります。
-
-Guidanceは未実装のため、現状は`test/manual/`のスタンドインスクリプト（`send_trajectory.py`等）で動作確認します（詳細: `test/manual/README.md`）。
-
-[↑ 目次に戻る](#目次)
-
-<a id="topics"></a>
-## トピック
-
-### 入力トピック
-
-| トピック名 | 型 | 説明 |
-|---|---|---|
-| `/imu/imu` | `sensor_msgs/Imu` | IMUの角速度・加速度（純IMUホバリング則の入力） |
-| `/gnc/body_pose_raw` | `geometry_msgs/TransformStamped` | `iss_body <- body`の自己位置（ブリッジ間引き経路、`control.py`専用の`PoseRelayClient`用） |
-| `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | `iss_body <- body`のTF（シミュレータ限定オラクル、`TfClient`経由でTF補正に使用） |
-| `/gnc/checkpoints` | `geometry_msgs/PoseArray` | 経路チェックポイント配列（frame_id: `iss_body`）。先頭ポーズが保持目標 |
-| `/gnc/trajectory_setpoint` | `trajectory_msgs/MultiDOFJointTrajectory` | 軌道追従の目標位置・速度・加速度 |
-
-### 出力トピック
-
-| トピック名 | 型 | 説明 |
-|---|---|---|
-| `/ctl/duty` | `std_msgs/Float64MultiArray` | 8基のファンへのduty配分 |
-| `/ctl/wrench` | `geometry_msgs/WrenchStamped` | 制御則が要求するforce/torque |
-| `/ctl/wrench_total` | `geometry_msgs/WrenchStamped` | 配分前の合成force/torque |
-| `/ctl/wrench_achieved` | `geometry_msgs/WrenchStamped` | duty配分後に実際に実現されるforce/torque |
-
-### サービス
-
-| サービス名 | 型 | 説明 |
-|---|---|---|
-| `/gnc/advance_checkpoint` | `std_srvs/Trigger` | チェックポイント配列を手動で1つ先へ進める |
+TF自己位置取得（`TfClient`）は`control/`と`guidance/`で共有するため`common/ros/tf_client.py`にあります。
+`common/ros/pose_relay_client.py`（間引きトピック`/gnc/body_pose_raw`経由の`TfClient`互換の代替）は現在どのノードからも使われていません。
 
 [↑ 目次に戻る](#目次)
 
@@ -129,8 +115,6 @@ Guidanceは未実装のため、現状は`test/manual/`のスタンドインス�
 ## パラメータ
 
 パラメータは全て[config/gnc_params.yaml](../../config/gnc_params.yaml)で管理します。
-
-分類の考え方（固定/動的）の詳細は[docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md](../../../docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md)を参照。
 
 ### 固定パラメータ（起動時のみ、実行中は変更不可）
 
@@ -152,6 +136,7 @@ Guidanceは未実装のため、現状は`test/manual/`のスタンドインス�
 | `thrust_allocator.fan_positions` | 8ファンの搭載位置（機体座標系）[m] | `config/gnc_params.yaml`参照 |
 | `thrust_allocator.fan_vectors` | 8ファンの推力方向単位ベクトル | `config/gnc_params.yaml`参照 |
 | `control.status_log_period` | ステータスログの出力間隔 [s]（0で無効） | `2.0` |
+| `control.thrust_allocation` | 推力配分をどこでするか。`builtin`（このノード）/ `jaxa_fsm`（`/ctl/wrench`を出してJAXAの`fsm`に任せる） | `builtin` |
 
 ### 動的パラメータ（`ros2 param set`で実行中に変更可能）
 
@@ -194,13 +179,13 @@ Guidanceは未実装のため、現状は`test/manual/`のスタンドインス�
 | `thrust_allocator.minimax_objective` | L2最小二乗の代わりにミニマックス目的関数を使用 | `true` |
 
 `thrust_allocator.torque_axis_balance`は**非推奨**: duty飽和緩和を狙って`true`でsim検証したが、
-同一ルート・同一条件（`docs/2026-08-28_toppra_static_path_attitude_overshoot_incident.md`その6）で
+同一ルート・同一条件で
 duty≥0.95飽和頻度は`false`と同等（48%→48.3%、改善なし）、`t_des`最大は悪化（0.30Nm→0.35Nm）、
-所要時間も悪化（約51〜54秒→約62秒）した。有効化する前に上記ドキュメントを参照すること。
+所要時間も悪化（約51〜54秒→約62秒）した。
 
 `thrust_allocator.minimax_objective`は要求ピーク値（`t_des`/`f_des`最大）を下げる効果があり
-（同ドキュメントその6: `t_des`最大0.30Nm→0.22Nm）、`wrench_envelope_safety_margin`（guidance側）
-との併用でduty飽和頻度を最も改善できた（同その7）ためデフォルト`true`に変更済み。
+（`t_des`最大0.30Nm→0.22Nm）、`wrench_envelope_safety_margin`（guidance側）
+との併用でduty飽和頻度を最も改善できたためデフォルト`true`に変更済み。
 
 `translation_direction_control.*`（`force_magnitude`/`max_force`/`control_rate`）は`TranslationDirectionController`が宣言・保持するパラメータだが、現状どのノードにも配線されていないため上表からは省略。
 
