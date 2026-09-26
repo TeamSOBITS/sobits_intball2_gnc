@@ -79,18 +79,18 @@ cancel後の制動プロファイルは`guidance/`の外、`common/utils/stoppin
 
 ### 1. 起動
 
-3つを別々に起動します。起動前に`ros2 node list`で、既に動いているノードがないか確認してください（多重起動すると機体が暴れます）。
+2つを別々に起動します。起動前に`ros2 node list`で、既に動いているノードがないか確認してください（多重起動すると機体が暴れます）。
 
 ```sh
 export ROS_DOMAIN_ID=54   # 環境に合わせて設定
 source /root/colcon_ws/install/setup.bash
 
-ros2 launch sobits_intball2_gnc gnc_bringup.launch.py        # TF・機体モデル・RViz・名前付き地点のTF配信
-ros2 launch sobits_intball2_gnc control.launch.py      # control_node（gnc_params.yamlを読む）
-ros2 launch sobits_intball2_gnc guidance.launch.py          # guidance_node（gnc_params.yamlを読む）
+ros2 launch sobits_intball2_gnc gnc_bringup.launch.py   # control_node・TF・機体モデル・RViz・名前付き地点のTF配信
+ros2 launch sobits_intball2_gnc guidance.launch.py      # guidance_node（gnc_params.yamlを読む）
 ```
 
-`guidance_node`は上の2つのlaunchには含まれず、`guidance.launch.py`で単独起動します。`ros2 run sobits_intball2_gnc guidance`で直接起動すると`gnc_params.yaml`が読まれず、コード内の既定値で動くので使わないでください。
+`control_node`を別に起動する場合（sim/bridgeの再起動前に`control_node`だけ止めたいときなど）は、`gnc_bringup.launch.py use_control:=false`と`control.launch.py`を起動します。
+`guidance_node`は`gnc_bringup.launch.py`には含まれず、`guidance.launch.py`で単独起動します。`ros2 run sobits_intball2_gnc guidance`で直接起動すると`gnc_params.yaml`が読まれず、コード内の既定値で動くので使わないでください。
 
 ### 2. goalを送る
 

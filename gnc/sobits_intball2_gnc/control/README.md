@@ -18,6 +18,7 @@ ros2 launch sobits_intball2_gnc control.launch.py
 ```
 
 `control_node`だけを起動し、[config/gnc_params.yaml](../../config/gnc_params.yaml)を読みます（別のファイルは`params_file:=<path>`）。
+`gnc_bringup.launch.py`もこのlaunchをincludeしているので、普段はそちらで起動します（`use_control:=false`で外せる）。
 何も届いていない間は、起動した位置・姿勢でホバリングします。切り替えはyamlで行います（どちらも起動時のみ）:
 
 | パラメータ | 値 |
