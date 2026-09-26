@@ -1,9 +1,15 @@
 """Unit tests for TrajectoryController (plain-value, no ROS)."""
 import math
 
+import numpy as np
+from scipy.spatial.transform import Rotation
+
 from sobits_intball2_gnc.control.utils.trajectory_controller import TrajectoryController
 
 IDENTITY_QUAT = [0.0, 0.0, 0.0, 1.0]
+# Not identity / pure yaw / 180deg, so q vs conj(q) and multiplication order matter.
+BODY = Rotation.from_euler("ZYX", [90.0, 0.0, 25.0], degrees=True)
+DESIRED = Rotation.from_euler("ZYX", [30.0, -15.0, 10.0], degrees=True)
 
 
 def test_feedforward_force_matches_mass_times_acceleration():
@@ -17,6 +23,29 @@ def test_feedforward_force_matches_mass_times_acceleration():
     assert math.isclose(force[0], 1.0, abs_tol=1e-9)  # m * a_des = 2.0 * 0.5
     assert math.isclose(force[1], 0.0, abs_tol=1e-9)
     assert math.isclose(force[2], 0.0, abs_tol=1e-9)
+
+
+def test_feedforward_force_is_rotated_into_non_symmetric_body_frame():
+    ctrl = TrajectoryController(mass=2.0, kp_pos=[0, 0, 0], kd_pos=[0, 0, 0],
+                                 vel_filter_alpha=1.0, max_force=100.0)
+    a_des = np.array([0.3, -0.1, 0.2])
+    force = ctrl.compute(
+        stamp=0.0, pos_now=[1.0, 2.0, 3.0], quat_now=BODY.as_quat(),
+        p_des=[1.0, 2.0, 3.0], v_des=[0.0, 0.0, 0.0], a_des=a_des,
+    )
+    assert np.allclose(force, BODY.inv().apply(2.0 * a_des), atol=1e-12)
+
+
+def test_feedback_and_feedforward_share_the_non_symmetric_body_frame():
+    ctrl = TrajectoryController(mass=2.0, kp_pos=[0.635] * 3, kd_pos=[0, 0, 0],
+                                 vel_filter_alpha=1.0, max_force=100.0)
+    p_err, a_des = np.array([0.2, -0.1, 0.05]), np.array([0.0, 0.05, -0.02])
+    force = ctrl.compute(
+        stamp=0.0, pos_now=[0.0, 0.0, 0.0], quat_now=BODY.as_quat(),
+        p_des=p_err, v_des=[0.0, 0.0, 0.0], a_des=a_des,
+    )
+    expected = BODY.inv().apply(0.635 * p_err + 2.0 * a_des)
+    assert np.allclose(force, expected, atol=1e-12)
 
 
 def test_position_error_produces_feedback_force_toward_target():
@@ -273,3 +302,27 @@ def test_attitude_feedforward_cuts_closed_loop_tracking_lag():
     with_ff = _closed_loop_max_yaw_error_deg(attitude_feedforward=True)
     assert pd_only > 1.0
     assert with_ff < 0.05 * pd_only
+
+
+def test_attitude_torque_opposes_body_frame_offset_from_non_identity_q_des():
+    ctrl = TrajectoryController(kp_att=[3.0] * 3, kd_att=[0, 0, 0],
+                                att_filter_alpha=1.0, max_torque=100.0)
+    offset_rotvec_body = np.radians(20.0) * np.array([0.6, -0.48, 0.64])
+    current = DESIRED * Rotation.from_rotvec(offset_rotvec_body)
+    torque = ctrl.compute_attitude(stamp=0.0, quat_now=current.as_quat(),
+                                   q_des=DESIRED.as_quat())
+    angle = np.linalg.norm(offset_rotvec_body)
+    expected = -3.0 * np.sin(0.5 * angle) * offset_rotvec_body / angle
+    assert np.allclose(torque, expected, atol=1e-12)
+
+
+def test_attitude_feedforward_rotates_alpha_from_non_identity_q_des_into_body():
+    ctrl = TrajectoryController(kp_att=[0, 0, 0], kd_att=[0, 0, 0],
+                                max_torque=100.0, inertia=2.0,
+                                attitude_feedforward=True)
+    offset = Rotation.from_rotvec(np.radians(40.0) * np.array([0.0, 0.6, 0.8]))
+    current = DESIRED * offset
+    alpha_des = np.array([1.0, -0.5, 0.25])
+    torque = ctrl.compute_attitude(stamp=0.0, quat_now=current.as_quat(),
+                                   q_des=DESIRED.as_quat(), alpha_des=alpha_des)
+    assert np.allclose(torque, 2.0 * offset.inv().apply(alpha_des), atol=1e-12)

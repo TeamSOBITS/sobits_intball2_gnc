@@ -93,6 +93,25 @@ def test_zero_dt_is_ignored_like_a_stale_gap():
     assert np.allclose(est.get().vel, [0.0, 0.0, 0.0])
 
 
+def test_repeated_stamp_holds_a_nonzero_velocity():
+    est = VelocityEstimator(alpha=1.0)
+    est.update([0.0, 0.0, 0.0], stamp=5.0)
+    est.update([0.2, -0.1, 0.0], stamp=6.0)
+    est.update([0.2, -0.1, 0.0], stamp=6.0)
+    assert np.allclose(est.get().vel, [0.2, -0.1, 0.0])
+
+
+def test_tf_slower_than_update_rate_does_not_bias_velocity_low():
+    # The 10 Hz timer sees repeated stamps whenever TF drops below 10 Hz
+    # (bridge under CPU load); treating those as zero velocity biases v low.
+    est = VelocityEstimator(alpha=0.3)
+    v, tf_dt = 0.2, 0.25
+    for tick in range(200):
+        stamp = (tick * 0.1 // tf_dt) * tf_dt
+        est.update([v * stamp, 0.0, 0.0], stamp=stamp)
+    assert np.isclose(est.get().vel[0], v, rtol=1e-3)
+
+
 def test_set_gains_updates_alpha_and_max_dt():
     est = VelocityEstimator(alpha=0.3, max_dt=1.0)
     est.set_gains(alpha=1.0, max_dt=2.0)

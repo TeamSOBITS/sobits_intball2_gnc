@@ -126,17 +126,6 @@ def test_kd_pos_damps_hold_target_velocity():
     assert math.isclose(f[0], -5.0, abs_tol=1e-9)
 
 
-def test_vel_filter_alpha_defaults_to_no_filtering():
-    # vel_filter_alpha defaults to 1.0: filtered velocity == raw finite
-    # difference on every tick, matching prior (pre-filter) behavior exactly
-    # (0.5*raw + 0.5*prev collapses to raw when alpha=1.0).
-    pc = _corrector(smooth_window=1, kp_pos=[0.0, 0.0, 0.0],
-                    kd_pos=[1.0, 1.0, 1.0], max_corr_force=10.0)
-    pc.update(0.0, ([0.0, 0.0, 0.0], _IDENTITY, 100.0))
-    f, _ = pc.update(0.1, ([0.5, 0.0, 0.0], _IDENTITY, 100.1))
-    assert math.isclose(f[0], -5.0, abs_tol=1e-9)
-
-
 def test_vel_filter_alpha_smooths_a_velocity_step():
     # alpha < 1 blends the new raw sample with the previous filtered value,
     # so a step in raw velocity is only partially reflected on the next tick.

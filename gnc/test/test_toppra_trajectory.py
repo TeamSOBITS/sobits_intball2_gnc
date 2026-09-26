@@ -4,6 +4,7 @@ import pytest
 import toppra as ta
 import toppra.algorithm as algo
 import toppra.constraint as constraint
+from scipy.spatial.transform import Rotation
 
 from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle, quat_rotate
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
@@ -195,6 +196,23 @@ def test_does_not_prematurely_rotate_before_a_corner():
         # per joint, so its resampled v/q at a given t deviate slightly from
         # the exact per-sample values this class computed them from.
         assert np.allclose(facing, v_dir, atol=0.02)
+
+
+def test_faces_travel_through_a_corner_from_a_rolled_non_identity_q0():
+    # From an identity q0, q0*exp(r) and exp(r)*q0 coincide; a yawed+rolled q0
+    # separates them (~30deg facing error when reversed).
+    q0 = Rotation.from_euler("ZYX", [90.0, 0.0, 25.0], degrees=True).as_quat()
+    waypoints = [[0.0, 0.0, 0.0], [0.0, 3.0, 0.0], [-3.0, 3.0, 0.0]]
+    traj, _q0 = _build(waypoints, q0=q0)
+    for t in np.linspace(0.0, traj.global_total_duration, 200):
+        _p, v, _a, q = traj.sample(t)
+        speed = np.linalg.norm(v)
+        # Near-rest samples: the refit spline's tangent direction is noise.
+        if speed < 0.05:
+            continue
+        facing = quat_rotate(q, np.array(FORWARD))
+        angle = np.degrees(np.arccos(np.clip(facing @ (v / speed), -1.0, 1.0)))
+        assert angle < 3.0
 
 
 def test_raises_when_toppra_reports_infeasible(monkeypatch):

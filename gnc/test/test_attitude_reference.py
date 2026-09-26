@@ -171,3 +171,13 @@ def test_compute_camera_relative_quat_points_to_axis_at_what_from_axis_would_see
     assert np.allclose(rotated, expected, atol=1e-9)
 
 
+def test_compute_camera_relative_quat_with_non_yaw_target():
+    # A pure-yaw target commutes with the main->stereo offset (also a yaw), hiding
+    # a reversed multiplication order.
+    q_target = np.array([0.2, -0.3, 0.1, np.sqrt(1 - 0.2**2 - 0.3**2 - 0.1**2)])
+    q = compute_camera_relative_quat(q_target, FORWARD, STEREO)
+    rotated = quat_rotate(q, np.array(STEREO))
+    expected = quat_rotate(q_target, np.array(FORWARD))
+    assert np.allclose(rotated, expected, atol=1e-9)
+
+

@@ -267,7 +267,7 @@ def test_execute_face_travel_false_never_touches_checkpoints():
         assert np.allclose(q, [0.0, 0.0, 0.0, 1.0])
 
 
-def test_execute_face_travel_true_publishes_setpoints_and_reaches_target():
+def test_execute_face_travel_straight_leg_keeps_facing_travel_and_reaches_target():
     setpoint_pub = FakeSetpointPublisher()
     logger = FakeLogger()
     # index 0: execute()'s initial (p0, q0) fetch. Indices 1+: _run_trajectory's
@@ -294,6 +294,8 @@ def test_execute_face_travel_true_publishes_setpoints_and_reaches_target():
     final_p, final_v, _a, _q = setpoint_pub.calls[-1]
     assert np.allclose(final_p, [1.0, 0.0, 0.0], atol=1e-6)
     assert np.allclose(final_v, [0.0, 0.0, 0.0], atol=1e-6)
+    for _p, _v, _a, q in setpoint_pub.calls:
+        assert np.degrees(geodesic_angle(q, [0.0, 0.0, 0.0, 1.0])) < 1.0
 
 
 def test_run_trajectory_times_out_and_proceeds_when_position_never_converges():
@@ -396,6 +398,65 @@ def test_run_trajectory_ignores_a_transient_position_pass_through():
     )
     assert status == STATUS_SUCCESS
     assert any("did not converge" in w for w in logger.warnings)
+
+
+def test_run_trajectory_restarts_settle_time_after_leaving_tolerance():
+    """In -> out -> back in: settle time counts from re-entry, not the first entry."""
+    clock_seconds_fn, spin_fn = _make_clock(dt_per_spin=0.2)
+    tf = ScriptedPosTf(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.9, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        [0.0, 0.0, 0.0, 1.0],
+    )
+    poll_times = []
+    get_pose = tf.get_pose
+
+    def timed_get_pose():
+        poll_times.append(clock_seconds_fn())
+        return get_pose()
+
+    tf.get_pose = timed_get_pose
+    logger = FakeLogger()
+    executor = _make_executor(
+        tf, FakeSetpointPublisher(), FakeCheckpointPublisher(), clock_seconds_fn, spin_fn,
+        logger, target_speed=1000.0, align_pos_tolerance_m=0.05,
+        align_pos_settle_time=0.5, align_pos_timeout=5.0,
+    )
+    status = executor.execute(
+        [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=False,
+    )
+    assert status == STATUS_SUCCESS
+    assert not any("did not converge" in w for w in logger.warnings)
+    reentry_time = poll_times[3]
+    assert poll_times[-1] - reentry_time >= 0.5 - 1e-9
+
+
+def test_execute_seeds_face_travel_from_the_attitude_pre_align_reached():
+    """docs/guidance_attitude_saturation_investigation.md 7: seeding the
+    trajectory with the pre-pre_align attitude made the first in-flight q_des
+    ~127 deg off the already-aligned vehicle."""
+    q_start = [0.0, 0.0, 0.0, 1.0]  # facing +X
+    q_aligned = [0.0, 0.0, np.sqrt(0.5), np.sqrt(0.5)]  # facing +Y, the first leg
+    setpoint_pub = FakeSetpointPublisher()
+    checkpoint_pub = FakeCheckpointPublisher()
+    logger = FakeLogger()
+    executor = _make_executor(
+        ScriptedTf([0.0, 0.0, 0.0], [q_start, q_aligned]), setpoint_pub, checkpoint_pub,
+        *_make_clock(dt_per_spin=0.1), logger, target_speed=1.0,
+        align_tolerance_deg=3.0, align_settle_time=0.2, align_timeout=5.0,
+        align_pos_timeout=0.1,
+    )
+    executor.execute(
+        [0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=True, align_at_arrival=False,
+    )
+    assert len(checkpoint_pub.published) == 1
+    assert not any("timed out" in w for w in logger.warnings)
+    assert setpoint_pub.calls
+    for _p, _v, _a, q in setpoint_pub.calls:
+        assert np.degrees(geodesic_angle(q, q_aligned)) < 1.0
 
 
 def test_execute_cancels_mid_trajectory():
@@ -791,8 +852,9 @@ def test_execute_replan_minco_mode_reaches_target():
     )
     assert status == STATUS_SUCCESS
     assert not any("falling back to 'static_toppra'" in w for w in logger.warnings)
+    assert not any("did not converge" in w for w in logger.warnings)
     final_p, _v, _a, _q = setpoint_pub.calls[-1]
-    assert np.allclose(final_p, [2.0, 0.0, 0.0], atol=0.15)
+    assert np.allclose(final_p, [2.0, 0.0, 0.0], atol=1e-3)
 
 
 def test_execute_replan_minco_mode_terminates_with_steady_state_offset():
@@ -915,6 +977,98 @@ def test_execute_replan_minco_mode_passes_local_replan_params_to_the_tracker(mon
     assert captured == {"local_replan_period": 0.5, "planning_horizon_m": 1.5}
 
 
+def test_execute_replan_minco_mode_passes_face_travel_speed_cap_and_async_to_the_tracker(
+        monkeypatch):
+    pytest.importorskip("minco_native_py")
+    import sobits_intball2_gnc.guidance.executor.tracker_builder as ge_module
+
+    captured = []
+    real_tracker_cls = ge_module.ReplanMincoTracker
+
+    class SpyTracker(real_tracker_cls):
+        def __init__(self, *args, **kwargs):
+            captured.append({key: kwargs.get(key) for key in
+                             ("face_travel", "async_replan", "local_max_vel")})
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(ge_module, "ReplanMincoTracker", SpyTracker)
+
+    executor = _make_executor(
+        FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
+        FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05), FakeLogger(),
+        target_speed=1.0, max_accel=0.02,
+    )
+    for face_travel in (True, False):
+        executor.execute(
+            [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+            feedback_cb=lambda *a: None, is_cancel_requested=lambda: True,
+            face_travel=face_travel, align_at_arrival=False,
+            trajectory_tracking_mode="replan_minco",
+            minco_replan_face_travel=True, minco_local_max_vel=0.15,
+            minco_async_replan=True,
+        )
+    # face_travel is the goal's attitude mode ANDed with the replan_minco switch.
+    assert captured == [
+        {"face_travel": True, "async_replan": True, "local_max_vel": 0.15},
+        {"face_travel": False, "async_replan": True, "local_max_vel": 0.15},
+    ]
+
+
+def test_execute_replan_minco_with_production_settings_faces_travel_under_speed_cap(
+        monkeypatch):
+    """config/gnc_params.yaml's replan_minco settings, through a corner longer
+    than the 4 m horizon so it replans."""
+    pytest.importorskip("minco_native_py")
+    import threading
+
+    import sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker as tracker_module
+
+    class ZeroSimTimeSolveThread(threading.Thread):
+        # A real solve's wall time maps to an arbitrary amount of this fake clock.
+        def start(self):
+            super().start()
+            self.join()
+
+    monkeypatch.setattr(tracker_module.threading, "Thread", ZeroSimTimeSolveThread)
+
+    setpoint_pub = FakeSetpointPublisher()
+    speed_path_pub = FakeSpeedPathPublisher()
+    logger = FakeLogger()
+    tf = SetpointFollowingTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], setpoint_pub)
+    clock_seconds_fn, spin_fn = _make_clock(dt_per_spin=0.02)
+    executor = _make_executor(
+        tf, setpoint_pub, FakeCheckpointPublisher(), clock_seconds_fn, spin_fn, logger,
+        target_speed=0.5, max_accel=min(0.181, 0.0996, 0.122) / 3.216,
+        align_pos_tolerance_m=0.05, align_pos_settle_time=0.5, align_pos_timeout=10.0,
+        velocity_fn=None, speed_path_publisher=speed_path_pub,
+    )
+    target, via = [3.0, 3.0, 0.0], [[3.0, 0.0, 0.0]]
+    status = executor.execute(
+        target, [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None,
+        is_cancel_requested=lambda: clock_seconds_fn() > 300.0,
+        face_travel=True, align_at_arrival=False, via_waypoints=via,
+        trajectory_tracking_mode="replan_minco",
+        minco_via_half_width=0.0, minco_attitude_resample_spacing_m=0.3,
+        minco_wrench_safety_margin=0.7, minco_local_replan_period=1.0,
+        minco_planning_horizon_m=4.0, minco_replan_face_travel=True,
+        minco_local_max_vel=0.15, minco_async_replan=True,
+    )
+    assert status == STATUS_SUCCESS
+    assert logger.warnings == []
+    assert len(speed_path_pub.calls) > 1
+    assert np.allclose(setpoint_pub.calls[-1][0], target, atol=1e-3)
+    speeds = [np.linalg.norm(v) for _p, v, _a, _q in setpoint_pub.calls]
+    assert max(speeds) < 0.15 * 1.03
+    facing_errors_deg = [
+        np.degrees(geodesic_angle(q, compute_q_des(v, q, 0.0)))
+        for _p, v, _a, q in setpoint_pub.calls if np.linalg.norm(v) > 0.05
+    ]
+    # ~15 deg at departure: pre_align faces the first leg, but the 4 m local already
+    # cuts the corner (docs/2026-09-23_replanning_minco_v3_remaining_tasks.md 4).
+    assert facing_errors_deg and max(facing_errors_deg) < 20.0
+
+
 def test_execute_replan_minco_mode_falls_back_to_static_on_non_positive_horizon():
     pytest.importorskip("minco_native_py")
     logger = FakeLogger()
@@ -945,9 +1099,10 @@ def test_execute_replan_minco_mode_republishes_speed_path_preview_on_replan():
     setpoint_pub = FakeSetpointPublisher()
     speed_path_pub = FakeSpeedPathPublisher()
     tf = SetpointFollowingTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], setpoint_pub)
+    logger = FakeLogger()
     executor = _make_executor(
         tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05),
-        FakeLogger(), target_speed=1.0, max_accel=0.02,
+        logger, target_speed=1.0, max_accel=0.02,
         align_pos_tolerance_m=0.05, align_pos_settle_time=1.5, align_pos_timeout=8.0,
         speed_path_publisher=speed_path_pub,
     )
@@ -958,6 +1113,7 @@ def test_execute_replan_minco_mode_republishes_speed_path_preview_on_replan():
         trajectory_tracking_mode="replan_minco",
     )
     assert status == STATUS_SUCCESS
+    assert not any("did not converge" in w for w in logger.warnings)
     # 1 initial goal-start preview + at least one more from an actual re-plan.
     assert len(speed_path_pub.calls) > 1
 
@@ -1039,6 +1195,39 @@ def test_execute_static_mode_fails_planning_when_toppra_is_infeasible(monkeypatc
     )
     assert _execute_planning(executor) == STATUS_PLANNING_FAILED
     assert any("TOPP-RA" in e for e in logger.errors)
+
+
+def test_execute_static_minco_with_production_settings_pins_via_and_faces_travel():
+    pytest.importorskip("minco_native_py")
+    setpoint_pub = FakeSetpointPublisher()
+    logger = FakeLogger()
+    tf = SetpointFollowingTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], setpoint_pub)
+    clock_seconds_fn, spin_fn = _make_clock(dt_per_spin=0.02)
+    executor = _make_executor(
+        tf, setpoint_pub, FakeCheckpointPublisher(), clock_seconds_fn, spin_fn, logger,
+        target_speed=0.5, align_pos_tolerance_m=0.05, align_pos_settle_time=0.5,
+        align_pos_timeout=10.0,
+    )
+    target, via = [1.5, 1.5, 0.0], [1.5, 0.0, 0.0]
+    status = executor.execute(
+        target, [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None,
+        is_cancel_requested=lambda: clock_seconds_fn() > 300.0,
+        face_travel=True, align_at_arrival=False, via_waypoints=[via],
+        trajectory_tracking_mode="static_minco", minco_via_half_width=0.0,
+        minco_attitude_resample_spacing_m=0.3, minco_wrench_safety_margin=0.7,
+    )
+    assert status == STATUS_SUCCESS
+    assert logger.warnings == []
+    positions = np.array([p for p, _v, _a, _q in setpoint_pub.calls])
+    assert np.min(np.linalg.norm(positions - via, axis=1)) < 0.01
+    assert np.allclose(positions[-1], target, atol=1e-3)
+    # Slower than this, the body is still turning in place at the pinned corner.
+    facing_errors_deg = [
+        np.degrees(geodesic_angle(q, compute_q_des(v, q, 0.0)))
+        for _p, v, _a, q in setpoint_pub.calls if np.linalg.norm(v) > 0.1
+    ]
+    assert facing_errors_deg and max(facing_errors_deg) < 5.0
 
 
 def test_execute_static_minco_mode_fails_planning_when_infeasible(monkeypatch):

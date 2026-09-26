@@ -3,6 +3,7 @@ import math
 
 import numpy as np
 import pytest
+from scipy.spatial.transform import Rotation
 
 from sobits_intball2_gnc.common.utils.stopping_profile import (
     StoppingProfile,
@@ -132,6 +133,27 @@ def test_decel_direction_uses_final_attitude(allocator):
     rotated = _profile(allocator, [0.2, 0.0, 0.0], q0=q_yaw90)
     aligned = _profile(allocator, [0.0, 0.2, 0.0])
     assert rotated.a_max == pytest.approx(aligned.a_max, rel=1e-3)
+
+
+def test_decel_uses_post_rotation_attitude_for_oblique_travel_while_rotating(allocator):
+    # Tumbling at ~15 deg/s (the align cruise rate) turns the body ~10 deg before
+    # translation brakes; q0 is rolled/pitched so neither q vs conj(q) nor q0 vs q1
+    # coincide as they do for a pure yaw at rest.
+    q0 = Rotation.from_euler("ZYX", [30.0, 20.0, -40.0], degrees=True)
+    v0, w0 = np.array([0.1, 0.08, -0.1]), np.array([0.1, -0.15, 0.2])
+    prof = _profile(allocator, v0, w0=w0, q0=q0.as_quat())
+    w = np.linalg.norm(w0)
+    q1 = q0 * Rotation.from_rotvec(w0 / w * w ** 2 / (2.0 * prof.wd_max))
+    decel_dir_body = q1.inv().apply(v0 / np.linalg.norm(v0))
+    assert prof.a_max * MASS == pytest.approx(
+        _envelope_max_force(allocator, decel_dir_body, ETA), rel=1e-3)
+
+
+def test_max_axis_force_caps_the_dominant_axis_of_oblique_decel(allocator):
+    d = np.array([1.0, 0.1, 0.0]) / np.linalg.norm([1.0, 0.1, 0.0])
+    capped = StoppingProfile([0, 0, 0], 0.2 * d, IDENTITY, [0, 0, 0],
+                             allocator, MASS, INERTIA, ETA, max_axis_force=0.1)
+    assert capped.a_max * MASS * d[0] == pytest.approx(0.1, rel=1e-9)
 
 
 def test_profile_does_not_alias_caller_state(allocator):
