@@ -41,19 +41,24 @@ class FanDutyPublisher:
         node: The rclpy Node that owns this publisher.
         qos_profile: QoS for the publisher (default: best-effort, see
             ``DEFAULT_QOS``).
+        active: ``False`` keeps the duty array but never creates the
+            ``/ctl/duty`` publisher (another node owns the fans).
     """
 
-    def __init__(self, node: Node, qos_profile: QoSProfile = DEFAULT_QOS) -> None:
+    def __init__(self, node: Node, qos_profile: QoSProfile = DEFAULT_QOS,
+                 active: bool = True) -> None:
         self._node = node
         self.declare_parameters(node)
         self._kj = float(node.get_parameter("thrust_allocator.kj").value)
         self._fan_count = int(node.get_parameter("fan_duty_publisher.fan_count").value)
         self._duties = [0.0] * self._fan_count
         self._publish_count = 0
-        self._pub = node.create_publisher(Float64MultiArray, DUTY_TOPIC, qos_profile)
+        self._pub = (node.create_publisher(Float64MultiArray, DUTY_TOPIC, qos_profile)
+                     if active else None)
         node.get_logger().info(
-            "[FanDutyPublisher] initialized (kj=%.6f, fans=%d), publishing to %s"
-            % (self._kj, self._fan_count, DUTY_TOPIC)
+            "[FanDutyPublisher] initialized (kj=%.6f, fans=%d), %s %s"
+            % (self._kj, self._fan_count,
+               "publishing to" if active else "NOT publishing to", DUTY_TOPIC)
         )
 
     @staticmethod
@@ -115,6 +120,8 @@ class FanDutyPublisher:
 
     def publish(self) -> None:
         """Publish the current duty array to ``/ctl/duty``."""
+        if self._pub is None:
+            return
         self._node.get_logger().debug(
             f'[FanDutyPublisher] publish: {[f"{d:.3f}" for d in self._duties]}'
         )

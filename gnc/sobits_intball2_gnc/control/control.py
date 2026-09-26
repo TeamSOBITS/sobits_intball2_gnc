@@ -15,17 +15,22 @@ control loop rate, the TF frame names and the checkpoint topic name.
 
 Self-position comes from the TF tree (``iss_body`` <- ``body``), which the
 simulator publishes with Navigation OFF. Nothing here touches
-``/sensor_fusion/navigation`` or the JAXA ``ctl_only`` controller: with
-Navigation OFF that controller stays in STAND_BY and never competes for
-``/ctl/duty``.
+``/sensor_fusion/navigation``; with Navigation OFF the JAXA ``ctl_only``
+controller stays in STAND_BY. JAXA's ``fsm`` (thrust allocation) keeps running
+regardless and allocates whatever reaches ``/ctl/wrench``, so
+``control.thrust_allocation`` picks exactly one owner of ``/ctl/duty``:
+``"builtin"`` (default) allocates here and never publishes ``/ctl/wrench``;
+``"jaxa_fsm"`` publishes the total wrench to ``/ctl/wrench`` and no duty
+(docs/2026-09-26_jaxa_fsm_double_duty_issue.md).
 """
 import rclpy
-from rcl_interfaces.msg import SetParametersResult
+from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from std_srvs.srv import Trigger
 
 from sobits_intball2_gnc.common.ros.tf_client import TfClient
+from sobits_intball2_gnc.control.ros.ctl_status_subscriber import CtlStatusSubscriber
 from sobits_intball2_gnc.control.ros.fan_duty_publisher import (
     DUTY_TOPIC,
     FanDutyPublisher,
@@ -40,7 +45,7 @@ from sobits_intball2_gnc.control.utils.hover_controller import (
     HoverController,
 )
 from sobits_intball2_gnc.control.ros.wrench_publisher import (
-    WrenchPublisher, WRENCH_TOTAL_TOPIC, WRENCH_ACHIEVED_TOPIC,
+    JAXA_FSM_WRENCH_TOPIC, WrenchPublisher, WRENCH_TOTAL_TOPIC, WRENCH_ACHIEVED_TOPIC,
 )
 from sobits_intball2_gnc.control.utils.singleton_lock import (
     SingletonLockError,
@@ -62,6 +67,10 @@ DEFAULT_STATUS_LOG_PERIOD = 2.0
 BRIDGE_NODE_NAME = "ros_bridge"
 # How long to wait for the configured TF frames at startup [s].
 TF_STARTUP_TIMEOUT = 5.0
+THRUST_ALLOCATIONS = ("builtin", "jaxa_fsm")
+# /ctl/status arrives at 10 Hz from ROS1, but the bridge can drop rates 5-15x
+# under CPU load [s, sim time].
+JAXA_CTL_STATUS_TIMEOUT = 3.0
 
 # Category-A dynamic parameters
 # (docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md):
@@ -110,8 +119,19 @@ class ControlNode(Node):
             parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)],
         )
 
+        self.declare_parameter("control.thrust_allocation", "builtin",
+                               ParameterDescriptor(read_only=True))
+        self._thrust_allocation = str(
+            self.get_parameter("control.thrust_allocation").value)
+        if self._thrust_allocation not in THRUST_ALLOCATIONS:
+            raise ValueError(
+                "invalid control.thrust_allocation %r: expected one of %s"
+                % (self._thrust_allocation, ", ".join(THRUST_ALLOCATIONS))
+            )
+        allocate_here = self._thrust_allocation == "builtin"
+
         # --- ROS I/O wrappers (attach to this node; none is itself a Node) ---
-        self._fan = FanDutyPublisher(self)
+        self._fan = FanDutyPublisher(self, active=allocate_here)
         self._imu = ImuSubscriber(self, IMU_TOPIC)
 
         # --- control logic (parameters read by each module's from_node) ------
@@ -175,7 +195,17 @@ class ControlNode(Node):
         # diagnosing where a request becomes axis-dominant (docs/
         # 2026-08-27_thrust_allocator_single_axis_saturation_findings.md).
         self._wrench_total_pub = WrenchPublisher(self, topic=WRENCH_TOTAL_TOPIC)
-        self._wrench_achieved_pub = WrenchPublisher(self, topic=WRENCH_ACHIEVED_TOPIC)
+        # Achieved wrench is derived from our own allocation, meaningless when
+        # JAXA's fsm allocates.
+        self._wrench_achieved_pub = (
+            WrenchPublisher(self, topic=WRENCH_ACHIEVED_TOPIC) if allocate_here else None)
+        self._fsm_wrench_pub = None
+        self._ctl_status = None
+        self._fsm_wrench_tx = 0
+        self._fsm_wrench_held = 0
+        if not allocate_here:
+            self._fsm_wrench_pub = WrenchPublisher(self, topic=JAXA_FSM_WRENCH_TOPIC)
+            self._ctl_status = CtlStatusSubscriber(self)
 
         # Checkpoint array interface (poses in the TF reference frame).
         self._path = PoseArraySubscriber(
@@ -203,9 +233,10 @@ class ControlNode(Node):
         # archive/achieved/2026-08-25_guidance_attitude_saturation_investigation.md
         # -- this log is meant to surface that immediately instead).
         self.get_logger().info(
-            "ControlNode up: mode=%s, subscribing %s, publishing %s at %.1f Hz, "
-            "use_sim_time=%s"
-            % (mode, IMU_TOPIC, DUTY_TOPIC, self._rate,
+            "ControlNode up: mode=%s, thrust_allocation=%s, subscribing %s, "
+            "publishing %s at %.1f Hz, use_sim_time=%s"
+            % (mode, self._thrust_allocation, IMU_TOPIC,
+               DUTY_TOPIC if allocate_here else JAXA_FSM_WRENCH_TOPIC, self._rate,
                self.get_parameter("use_sim_time").value)
         )
 
@@ -312,6 +343,9 @@ class ControlNode(Node):
             not treated as contested.
           - any other name -> genuinely unexplained, flagged as CONTESTED.
         """
+        if self._fsm_wrench_pub is not None:
+            self._log_jaxa_fsm_status()
+            return
         tx = self._fan.publish_count
         tx_delta = tx - self._last_duty_tx
         self._last_duty_tx = tx
@@ -365,6 +399,34 @@ class ControlNode(Node):
         else:
             self.get_logger().info(summary + "  <-- fan control is OURS")
 
+    def _log_jaxa_fsm_status(self) -> None:
+        tx, held = self._fsm_wrench_tx, self._fsm_wrench_held
+        self._fsm_wrench_tx = self._fsm_wrench_held = 0
+        summary = (
+            "fan-control: thrust_allocation=jaxa_fsm, %s msgs=%d, held=%d, "
+            "jaxa ctl status type=%s, imu=%s, tf=%s, trajectory_active=%s, "
+            "force_total=[%s], torque_total=[%s]"
+            % (JAXA_FSM_WRENCH_TOPIC, tx, held, self._ctl_status.type,
+               "ok" if self._imu.ready else "WAITING",
+               self._hover.tf_status, self._hover.trajectory_active,
+               ", ".join("%.4f" % v for v in self._hover.last_force_total),
+               ", ".join("%.4f" % v for v in self._hover.last_torque_total))
+        )
+        if held > 0:
+            self.get_logger().warn(
+                summary + "  <-- JAXA ctl_only not confirmed idle (status missing, "
+                "stale, or >= KEEP_POSE): not publishing %s" % JAXA_FSM_WRENCH_TOPIC)
+        else:
+            self.get_logger().info(summary + "  <-- JAXA fsm allocates OUR wrench")
+
+    def _publish_fsm_wrench(self, now: float) -> None:
+        if not self._ctl_status.jaxa_ctl_idle(now, JAXA_CTL_STATUS_TIMEOUT):
+            self._fsm_wrench_held += 1
+            return
+        self._fsm_wrench_pub.publish(self._hover.last_force_total,
+                                     self._hover.last_torque_total)
+        self._fsm_wrench_tx += 1
+
     def _on_timer(self) -> None:
         # self.get_clock().now() (not time.monotonic()) so this loop's own
         # notion of elapsed time is on the same clock as the TF stamps it
@@ -373,10 +435,15 @@ class ControlNode(Node):
         # drop under CPU load no longer desyncs "how much time we think
         # passed" from "how far the vehicle actually got to move" -- see
         # docs/recording_cpu_load_control_degradation.md.
-        self._hover.step(self.get_clock().now().nanoseconds * 1e-9)
+        now = self.get_clock().now().nanoseconds * 1e-9
+        self._hover.step(now)
         self._wrench_pub.publish(self._hover.last_force_raw, self._hover.last_torque_raw)
         self._wrench_total_pub.publish(self._hover.last_force_total, self._hover.last_torque_total)
-        self._wrench_achieved_pub.publish(self._hover.last_force_achieved, self._hover.last_torque_achieved)
+        if self._wrench_achieved_pub is not None:
+            self._wrench_achieved_pub.publish(self._hover.last_force_achieved,
+                                              self._hover.last_torque_achieved)
+        if self._fsm_wrench_pub is not None:
+            self._publish_fsm_wrench(now)
 
 
 def main(args=None) -> None:

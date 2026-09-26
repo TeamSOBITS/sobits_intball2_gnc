@@ -9,11 +9,11 @@ Does NOT modify tf_correction's persisted config. Only:
     restored to the current baseline afterward, or use --restore to just
     restore and exit)
   - publishes a single offset checkpoint to /gnc/checkpoints
-  - polls TF (iss_body <- body), /ctl/duty, /imu/imu and /ctl/wrench,
+  - polls TF (iss_body <- body), /ctl/duty, /imu/imu and /ctl/wrench_correction,
     recomputing the quaternion error/sign locally with the same formula as
     pose_control_law.attitude_error_to_torque
   - logs every tick to CSV (including per-axis requested torque from
-    /ctl/wrench vs. torque actually realized by /ctl/duty, reconstructed via
+    /ctl/wrench_correction vs. torque actually realized by /ctl/duty, reconstructed via
     the live thrust_allocator's wrench matrix) and flags sign-flip ticks
 
 All timing is on the node clock (use_sim_time=True), no wall-clock sleep.
@@ -45,7 +45,7 @@ TARGET_FRAME = "body"
 CHECKPOINT_TOPIC = "/gnc/checkpoints"
 DUTY_TOPIC = "/ctl/duty"
 IMU_TOPIC = "/imu/imu"
-WRENCH_TOPIC = "/ctl/wrench"
+WRENCH_TOPIC = "/ctl/wrench_correction"
 WRENCH_TOTAL_TOPIC = "/ctl/wrench_total"
 WRENCH_ACHIEVED_TOPIC = "/ctl/wrench_achieved"
 POLL_HZ = 20.0
@@ -421,7 +421,7 @@ def main():
             # thrust, then re-apply the allocator's wrench matrix to get the
             # force/torque actually realized by that duty -- as opposed to what
             # was requested (req_force/req_torque, pre-allocation/pre-clamp,
-            # from /ctl/wrench).
+            # from /ctl/wrench_correction).
             thrust = [(d / allocator.kj) ** 2 for d in duty]
             achieved = allocator.A @ np.asarray(thrust)
             ach_force = tuple(achieved[0:3])

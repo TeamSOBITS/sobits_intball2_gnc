@@ -1,26 +1,27 @@
 #!/usr/bin/env python3
-"""Requested-wrench publisher for IntBall2 (`/ctl/wrench`).
+"""Wrench publishers for IntBall2 (`/ctl/wrench_correction` and friends).
 
-ROS I/O wrapper (does not subclass Node): attaches a ``/ctl/wrench`` publisher
-to the node passed in and turns a body-frame (force, torque) pair into a
-``geometry_msgs/WrenchStamped``. This publishes the *requested* wrench (the
+ROS I/O wrapper (does not subclass Node): attaches a ``WrenchStamped``
+publisher to the node passed in and turns a body-frame (force, torque) pair
+into a ``geometry_msgs/WrenchStamped``. The default topic carries the
+*requested* correction wrench (the
 pre-allocation, pre-clamp value ``HoverController.last_force_raw``/
 ``last_torque_raw`` -- see the "[C] Controller内部値の可観測性
 強化" task), not the realized one: the realized per-fan output is already
 observable via ``/ctl/duty``, but nothing published the requested wrench
 itself before this, which delayed root-causing a replanning attitude
 degradation (docs/archive/achieved/
-2026-08-25_guidance_attitude_saturation_investigation.md). The topic is
-already registered in the ROS1<->ROS2 bridge's ``bridge_topics.yaml`` with
-this exact message type, but neither side had ever actually published to it.
+2026-08-25_guidance_attitude_saturation_investigation.md).
 """
 from geometry_msgs.msg import WrenchStamped
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 
-WRENCH_TOPIC = "/ctl/wrench"
+# Not "/ctl/wrench": the bridge relays that to JAXA's fsm, which allocates it
+# into a second /ctl/duty (docs/2026-09-26_jaxa_fsm_double_duty_issue.md).
+WRENCH_CORRECTION_TOPIC = "/ctl/wrench_correction"
 # (IMU-law + correction), summed and clamped -- the exact wrench passed to
-# ThrustAllocator.allocate() each tick, as opposed to WRENCH_TOPIC's
+# ThrustAllocator.allocate() each tick, as opposed to WRENCH_CORRECTION_TOPIC's
 # correction-only value. See docs/2026-08-27_thrust_allocator_single_axis_
 # saturation_findings.md.
 WRENCH_TOTAL_TOPIC = "/ctl/wrench_total"
@@ -29,11 +30,14 @@ WRENCH_TOTAL_TOPIC = "/ctl/wrench_total"
 # the two can be compared without cross-topic staleness. See docs/
 # 2026-08-27_thrust_allocator_single_axis_saturation_findings.md.
 WRENCH_ACHIEVED_TOPIC = "/ctl/wrench_achieved"
+# JAXA's ctl_only -> fsm boundary; published only when control.thrust_allocation
+# is "jaxa_fsm", carrying the same total as WRENCH_TOTAL_TOPIC.
+JAXA_FSM_WRENCH_TOPIC = "/ctl/wrench"
 DEFAULT_QOS = QoSProfile(depth=1)
 
 
 class WrenchPublisher:
-    """Publish a body-frame (force, torque) pair to ``/ctl/wrench``.
+    """Publish a body-frame (force, torque) pair to ``topic``.
 
     Args:
         node: The rclpy Node that owns this publisher.
@@ -46,7 +50,7 @@ class WrenchPublisher:
 
     def __init__(self, node: Node, frame_id: str = "body",
                  qos_profile: QoSProfile = DEFAULT_QOS,
-                 topic: str = WRENCH_TOPIC) -> None:
+                 topic: str = WRENCH_CORRECTION_TOPIC) -> None:
         self._node = node
         self._frame_id = frame_id
         self._pub = node.create_publisher(WrenchStamped, topic, qos_profile)

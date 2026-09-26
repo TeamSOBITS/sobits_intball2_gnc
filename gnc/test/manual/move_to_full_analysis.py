@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One-shot move_to verification: drives a real move_to goal (MoveToClient)
 while recording everything relevant, event-driven (TF, `/gnc/trajectory_setpoint`,
-`/gnc/checkpoints`, `/ctl/wrench`, `/ctl/wrench_achieved`, `/ctl/duty`), then computes and prints a
+`/gnc/checkpoints`, `/ctl/wrench_correction`, `/ctl/wrench_achieved`, `/ctl/duty`), then computes and prints a
 single tracking-quality report -- position/attitude tracking error, fan-duty
 saturation, wrench desired-vs-achieved, and final arrival accuracy -- without
 needing a separate script per metric or manual CSV post-processing.
@@ -157,7 +157,7 @@ class CheckpointRecorder:
 
 
 class WrenchRecorder:
-    """Records ``/ctl/wrench`` (desired) or ``/ctl/wrench_achieved``
+    """Records ``/ctl/wrench_correction`` (desired) or ``/ctl/wrench_achieved``
     (event-driven, whichever topic it's pointed at)."""
 
     def __init__(self, node, topic):
@@ -289,7 +289,7 @@ def main():
     tf_rec = TfRawRecorder(node)
     sp_rec = SetpointRawRecorder(node)
     cp_rec = CheckpointRecorder(node)
-    wrench_rec = WrenchRecorder(node, "/ctl/wrench")
+    wrench_rec = WrenchRecorder(node, "/ctl/wrench_correction")
     wrench_achieved_rec = WrenchRecorder(node, "/ctl/wrench_achieved")
     duty_rec = DutyRecorder(node)
     move_client = MoveToClient(node)

@@ -123,7 +123,7 @@ class HoverController:
         self._last_torque_imu = [0.0, 0.0, 0.0]
         self._last_force_corr = [0.0, 0.0, 0.0]
         self._last_torque_corr = [0.0, 0.0, 0.0]
-        # Requested (pre-clamp) force/torque, for /ctl/wrench
+        # Requested (pre-clamp) force/torque, for /ctl/wrench_correction
         # ("[C] Controller内部値の可観測性強化" task): mirrors
         # last_force_corr/last_torque_corr while trajectory following is
         # active (sourced from TrajectoryController's own pre-clamp state),
