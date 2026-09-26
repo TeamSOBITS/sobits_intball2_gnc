@@ -5,7 +5,7 @@ Implements the ``execute_fn`` body for
 :class:`~sobits_intball2_gnc.guidance.ros.ctl_command_action_server.CtlCommandActionServer`
 (``docs/guidance_node_implementation_plan.md``): current pose (TF) -> target
 pose -> a trajectory tracker (:class:`~sobits_intball2_gnc.guidance.
-trajectory_tracking.tracker_builder.TrackerBuilder`) -> a sim-clock-paced publish loop onto
+executor.tracker_builder.TrackerBuilder`) -> a sim-clock-paced publish loop onto
 ``/gnc/trajectory_setpoint``, folding in the pre-/post-alignment steps that
 ``test/manual/send_curve_via_naventry_to_*_facing_direction.py`` scripts have
 so far done ad hoc per-script.
@@ -35,7 +35,7 @@ from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker impor
     DEFAULT_LOCAL_REPLAN_PERIOD_S,
     DEFAULT_PLANNING_HORIZON_M,
 )
-from sobits_intball2_gnc.guidance.trajectory_tracking.tracker_builder import (
+from sobits_intball2_gnc.guidance.executor.tracker_builder import (
     TrackerBuilder,
     TrajectoryBuildError,
 )
@@ -43,7 +43,7 @@ from sobits_intball2_gnc.guidance.utils.attitude_reference import (
     compute_camera_relative_quat,
     compute_q_des,
 )
-from sobits_intball2_gnc.guidance.utils.cancel_brake import CancelBrake
+from sobits_intball2_gnc.guidance.executor.cancel_brake import CancelBrake
 
 STATUS_SUCCESS = "success"
 STATUS_ABORTED = "aborted"
@@ -536,7 +536,7 @@ class GuidanceExecutor:
 
     def brake(self):
         """Stop along a JAXA ``stoppingProfile`` from the measured state, then
-        hold its end pose (:class:`~sobits_intball2_gnc.guidance.utils.
+        hold its end pose (:class:`~sobits_intball2_gnc.guidance.executor.
         cancel_brake.CancelBrake`). Returns a ``STATUS_*``."""
         return STATUS_SUCCESS if self._brake.run() else STATUS_ABORTED
 

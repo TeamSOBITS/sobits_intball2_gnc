@@ -252,7 +252,7 @@ def build_solver(A_full, fj_max, n_fans, R, q_target, p0=P0, tag="",
     ocp.constraints.ubu = np.concatenate([np.full(n_fans, fj_max), [ATHETA_MAX]])
     ocp.constraints.idxbu = np.arange(nu)
 
-    # Explicit achievable-wrench envelope (guidance/utils/actuation_envelope.py)
+    # Explicit achievable-wrench envelope (guidance/constraints/actuation_envelope.py)
     # was tried here as a general linear stage constraint (F_env @ (A_full @ f)
     # <= g_env) on the theory that it might change solver conditioning versus
     # the per-fan box alone. Reverted: wrench_envelope_halfspaces returns

@@ -30,7 +30,7 @@ from sobits_intball2_gnc.guidance.ros.marker_array_subscriber import (
     LATCHED_QOS,
     VIRTUAL_OBSTACLES_TOPIC,
 )
-from sobits_intball2_gnc.guidance.utils.guidance_executor import DEFAULT_CAMERA_FORWARD_AXIS
+from sobits_intball2_gnc.guidance.executor.guidance_executor import DEFAULT_CAMERA_FORWARD_AXIS
 
 REFERENCE_FRAME = "iss_body"
 NAMESPACE = "manual"

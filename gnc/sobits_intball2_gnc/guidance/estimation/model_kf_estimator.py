@@ -4,7 +4,7 @@
 
 This is "対策案4" from the replanning_minco v4 lag/noise investigation
 (``docs/archive/2026-09-17_replanning_minco_v4_lag_compensation_noise_robustness.md``):
-unlike :class:`~sobits_intball2_gnc.guidance.utils.velocity_estimator.
+unlike :class:`~sobits_intball2_gnc.guidance.estimation.velocity_estimator.
 VelocityEstimator` (finite-difference + EMA on position alone, which has an
 inherent lag that compounds badly with replanning-induced feedback loops),
 this predicts forward using the *commanded* (feedforward) acceleration --

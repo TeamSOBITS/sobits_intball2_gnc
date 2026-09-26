@@ -7,7 +7,7 @@ import toppra.constraint as constraint
 
 from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle, quat_rotate
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
-from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
+from sobits_intball2_gnc.guidance.constraints.actuation_envelope import (
     wrench_envelope_halfspaces,
 )
 from sobits_intball2_gnc.guidance.utils.attitude_reference import (
@@ -21,7 +21,7 @@ from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import (
     _WRENCH_DOF,
     _dense_travel_rotvecs,
 )
-from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator import (
+from sobits_intball2_gnc.guidance.trajectory.generation.hermite_spline_trajectory_generator import (
     HermiteSplineTrajectoryGenerator,
 )
 from sobits_intball2_gnc.guidance.utils.polynomial import evaluate_vector

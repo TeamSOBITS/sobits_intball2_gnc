@@ -29,7 +29,7 @@ Usage: python3 test/experiment_toppra_v0_start_multiwaypoint.py
 import numpy as np
 
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
-from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
+from sobits_intball2_gnc.guidance.constraints.actuation_envelope import (
     wrench_envelope_halfspaces,
 )
 

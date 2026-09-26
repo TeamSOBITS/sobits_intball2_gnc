@@ -30,7 +30,7 @@ import sys
 
 sys.path.insert(0, "/root/colcon_ws/src/sobits_intball2_gnc")
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
-from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
+from sobits_intball2_gnc.guidance.constraints.actuation_envelope import (
     wrench_envelope_halfspaces,
 )
 

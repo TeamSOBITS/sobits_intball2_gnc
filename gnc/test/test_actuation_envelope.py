@@ -1,10 +1,10 @@
-"""Unit tests for guidance/utils/actuation_envelope.py (plain-value, no ROS)."""
+"""Unit tests for guidance/constraints/actuation_envelope.py (plain-value, no ROS)."""
 import numpy as np
 import pytest
 from scipy.optimize import linprog
 
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
-from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
+from sobits_intball2_gnc.guidance.constraints.actuation_envelope import (
     wrench_envelope_halfspaces,
 )
 

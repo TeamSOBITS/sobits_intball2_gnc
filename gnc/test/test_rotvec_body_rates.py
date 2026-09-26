@@ -16,7 +16,7 @@ from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import ToppraTraj
 from sobits_intball2_gnc.guidance.trajectory_tracking.static_trajectory_tracker import (
     StaticTrajectoryTracker,
 )
-from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
+from sobits_intball2_gnc.guidance.constraints.actuation_envelope import (
     wrench_envelope_halfspaces,
 )
 from sobits_intball2_gnc.guidance.utils.attitude_reference import IDENTITY_QUAT

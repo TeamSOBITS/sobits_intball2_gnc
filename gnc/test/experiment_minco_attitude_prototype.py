@@ -14,7 +14,7 @@ below is dimension-agnostic.
 
 Coupled force+torque constraint: instead of independent per-axis force/torque
 box penalties (the earlier, known-too-generous simplification -- see
-guidance/utils/actuation_envelope.py's module docstring, ~68% achievable /
+guidance/constraints/actuation_envelope.py's module docstring, ~68% achievable /
 ~92% of a real path's feedforward wrench exceeded that box in production),
 this uses the REAL wrench_envelope_halfspaces polytope (same one
 ToppraTrajectory uses) as a smooth penalty function evaluated at trajectory
@@ -56,7 +56,7 @@ from scipy.optimize import minimize
 
 from sobits_intball2_gnc.control.utils.quat_math import quat_conj, quat_log, quat_mul
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
-from sobits_intball2_gnc.guidance.utils.actuation_envelope import wrench_envelope_halfspaces
+from sobits_intball2_gnc.guidance.constraints.actuation_envelope import wrench_envelope_halfspaces
 from sobits_intball2_gnc.guidance.utils.attitude_reference import compute_q_des
 
 jax.config.update("jax_enable_x64", True)

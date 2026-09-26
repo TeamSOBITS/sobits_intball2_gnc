@@ -6,7 +6,7 @@ rotation-vector offset from a reference orientation ``q0``, see
 :func:`sobits_intball2_gnc.control.utils.quat_math.quat_log`/``quat_exp``)
 through ``toppra`` (Pham & Pham, arXiv:1707.07239) and time-parameterizes it
 subject to the vehicle's actual combined force+torque actuation envelope
-(:mod:`~sobits_intball2_gnc.guidance.utils.actuation_envelope`, see below),
+(:mod:`~sobits_intball2_gnc.guidance.constraints.actuation_envelope`, see below),
 plus per-axis velocity limits -- see
 ``docs/2026-08-28_constrained_trajectory_generation_research.md`` for the
 design rationale and the open questions this implementation resolves:
@@ -21,11 +21,11 @@ design rationale and the open questions this implementation resolves:
   （2026-08-28 その2）"): even a planned path's feedforward-only wrench
   (zero tracking error) exceeded the true achievable region at ~92% of
   sampled points despite respecting each axis's own independent max. A
-  :class:`~sobits_intball2_gnc.guidance.utils.wrench_envelope_constraint.
+  :class:`~sobits_intball2_gnc.guidance.constraints.wrench_envelope_constraint.
   WrenchEnvelopeConstraint` wired to ``inv_dyn(q, qd, qdd) = M @ qdd``
   (``M = diag(mass, mass, mass, inertia, inertia, inertia)``) plus the exact
   half-space representation of that achievable region
-  (:func:`~sobits_intball2_gnc.guidance.utils.actuation_envelope.
+  (:func:`~sobits_intball2_gnc.guidance.constraints.actuation_envelope.
   wrench_envelope_halfspaces`) replaces the old
   ``JointAccelerationConstraint`` box. ``WrenchEnvelopeConstraint`` (not
   plain ``toppra.constraint.SecondOrderConstraint``) because the envelope is
@@ -48,7 +48,7 @@ design rationale and the open questions this implementation resolves:
   path (the case ``ReplanningTrajectoryTracker``'s exact v0-aware bound
   derivation exists specifically to handle) -- replanning uses MINCO instead.
 - The position path shape (before TOPP-RA re-times it) comes from
-  :class:`~sobits_intball2_gnc.guidance.trajectory_generation.
+  :class:`~sobits_intball2_gnc.guidance.trajectory.generation.
   hermite_spline_trajectory_generator.HermiteSplineTrajectoryGenerator`,
   **not** ``toppra.SplineInterpolator``'s own from-waypoints fit. A
   from-waypoints fit was tried first and rejected: feeding
@@ -89,12 +89,12 @@ from sobits_intball2_gnc.control.utils.quat_math import (
     rotvec_rates_to_body_rates,
     unwrap_rotvec,
 )
-from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator import (
+from sobits_intball2_gnc.guidance.trajectory.generation.hermite_spline_trajectory_generator import (
     HermiteSplineTrajectoryGenerator,
 )
 from sobits_intball2_gnc.guidance.utils.attitude_reference import compute_q_des
 from sobits_intball2_gnc.guidance.utils.polynomial import evaluate_vector
-from sobits_intball2_gnc.guidance.utils.wrench_envelope_constraint import (
+from sobits_intball2_gnc.guidance.constraints.wrench_envelope_constraint import (
     WrenchEnvelopeConstraint,
 )
 
@@ -139,7 +139,7 @@ class ToppraTrajectory:
         inertia: vehicle inertia, isotropic [kg*m^2]
             (``trajectory_controller.inertia``).
         wrench_envelope: ``(F, g)`` half-space representation (see
-            :func:`~sobits_intball2_gnc.guidance.utils.actuation_envelope.
+            :func:`~sobits_intball2_gnc.guidance.constraints.actuation_envelope.
             wrench_envelope_halfspaces`) of the vehicle's actual achievable
             combined force+torque region, i.e. ``{[F;T] : F @ [F;T] <= g}``
             -- computed once from the real fan geometry/``fj_max``, static

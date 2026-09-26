@@ -42,7 +42,7 @@ from sobits_intball2_gnc.control.utils.quat_math import (
 from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
     MincoTrajectory, _DEGENERATE_TANGENT_THRESHOLD, _N_COEFFS, _N_DIMS,
 )
-from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator import (
+from sobits_intball2_gnc.guidance.trajectory.generation.hermite_spline_trajectory_generator import (
     HermiteSplineTrajectoryGenerator,
 )
 from sobits_intball2_gnc.guidance.utils.attitude_reference import compute_q_des

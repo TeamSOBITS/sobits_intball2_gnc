@@ -5,7 +5,7 @@ count (docs/archive/achieved/
 2026-08-30_toppra_replanning_sd_start_speed_investigation.md "追記2〜3").
 
 ``WrenchEnvelopeConstraint`` itself now lives in production
-(``sobits_intball2_gnc.guidance.utils.wrench_envelope_constraint``, wired
+(``sobits_intball2_gnc.guidance.constraints.wrench_envelope_constraint``, wired
 into ``toppra_trajectory.py``) -- this script only re-benchmarks it against
 the old ``SecondOrderConstraint`` construction and against facet-reduced
 envelopes; it no longer needs its own copy of the class.
@@ -26,15 +26,15 @@ from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import (
     _WRENCH_DOF,
     _dense_travel_rotvecs,
 )
-from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator import (
+from sobits_intball2_gnc.guidance.trajectory.generation.hermite_spline_trajectory_generator import (
     HermiteSplineTrajectoryGenerator,
 )
-from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
+from sobits_intball2_gnc.guidance.constraints.actuation_envelope import (
     wrench_envelope_halfspaces,
 )
 from sobits_intball2_gnc.guidance.utils.attitude_reference import IDENTITY_QUAT
 from sobits_intball2_gnc.guidance.utils.polynomial import evaluate_vector
-from sobits_intball2_gnc.guidance.utils.wrench_envelope_constraint import (
+from sobits_intball2_gnc.guidance.constraints.wrench_envelope_constraint import (
     WrenchEnvelopeConstraint,
 )
 

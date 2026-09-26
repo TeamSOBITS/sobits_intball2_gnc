@@ -9,7 +9,7 @@ coefficients" is ordinary math, not a generator's own algorithm (see
 
 Coefficients are stored in **ascending** power order (``coeffs[k]`` is the
 coefficient of ``tau**k``), matching every
-:class:`~sobits_intball2_gnc.guidance.trajectory_generation.base_trajectory_generator.BaseTrajectoryGenerator`
+:class:`~sobits_intball2_gnc.guidance.trajectory.generation.base_trajectory_generator.BaseTrajectoryGenerator`
 implementation's output layout -- the opposite of ``numpy.polyval``'s
 convention.
 """

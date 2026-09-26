@@ -13,7 +13,7 @@ exist for the same "how to produce ``(p,v,a,q)`` this tick" role (see
 Pure function-like from the caller's perspective (state lives inside the
 concrete implementation), so this follows ``docs/architecture_guidelines.md``
 4 節's guidance to prefer ``typing.Protocol`` over ``ABC`` here, matching
-:mod:`sobits_intball2_gnc.guidance.trajectory_generation.base_trajectory_generator`.
+:mod:`sobits_intball2_gnc.guidance.trajectory.generation.base_trajectory_generator`.
 """
 from typing import Protocol
 

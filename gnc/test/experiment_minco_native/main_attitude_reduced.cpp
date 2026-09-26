@@ -29,7 +29,7 @@
 // coefficients to form the real 6-dim wrench and penalizes it against the
 // same wrench_envelope_halfspaces polytope the Python prototype used (loaded
 // from wrench_envelope.csv, generated once via
-// guidance/utils/actuation_envelope.wrench_envelope_halfspaces -- see the
+// guidance/constraints/actuation_envelope.wrench_envelope_halfspaces -- see the
 // generation snippet in this file's sibling docs entry). Gradients flow back
 // to each MINCO instance's own coefficients via its own propogateGrad call;
 // the two instances' d(penalty)/dT contributions are summed since T is
@@ -50,7 +50,7 @@
 // Requires wrench_envelope.csv (same directory) generated via:
 //   python3 -c "
 //   from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
-//   from sobits_intball2_gnc.guidance.utils.actuation_envelope import wrench_envelope_halfspaces
+//   from sobits_intball2_gnc.guidance.constraints.actuation_envelope import wrench_envelope_halfspaces
 //   a = ThrustAllocator()
 //   F, g = wrench_envelope_halfspaces(a.A, a.fj_max, safety_margin=0.7)
 //   with open('wrench_envelope.csv', 'w') as fp:

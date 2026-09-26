@@ -4,14 +4,14 @@ import pytest
 
 from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
-from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
+from sobits_intball2_gnc.guidance.constraints.actuation_envelope import (
     wrench_envelope_halfspaces,
 )
 from sobits_intball2_gnc.guidance.utils.attitude_reference import (
     compute_camera_relative_quat,
     compute_q_des,
 )
-from sobits_intball2_gnc.guidance.utils.guidance_executor import (
+from sobits_intball2_gnc.guidance.executor.guidance_executor import (
     STATUS_ABORTED,
     STATUS_CANCELED,
     STATUS_PLANNING_FAILED,
@@ -856,7 +856,7 @@ def test_execute_replan_minco_mode_passes_via_waypoints_to_the_tracker(monkeypat
     Trajectory (covered by
     test_execute_via_waypoints_routes_the_planned_curve_through_the_relay_points)."""
     pytest.importorskip("minco_native_py")
-    import sobits_intball2_gnc.guidance.trajectory_tracking.tracker_builder as ge_module
+    import sobits_intball2_gnc.guidance.executor.tracker_builder as ge_module
 
     captured = {}
     real_tracker_cls = ge_module.ReplanMincoTracker
@@ -886,7 +886,7 @@ def test_execute_replan_minco_mode_passes_via_waypoints_to_the_tracker(monkeypat
 
 def test_execute_replan_minco_mode_passes_local_replan_params_to_the_tracker(monkeypatch):
     pytest.importorskip("minco_native_py")
-    import sobits_intball2_gnc.guidance.trajectory_tracking.tracker_builder as ge_module
+    import sobits_intball2_gnc.guidance.executor.tracker_builder as ge_module
 
     captured = {}
     real_tracker_cls = ge_module.ReplanMincoTracker
@@ -1026,7 +1026,7 @@ def test_execute_static_mode_fails_planning_when_toppra_is_infeasible(monkeypatc
     from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import (
         TrajectoryInfeasibleError,
     )
-    from sobits_intball2_gnc.guidance.trajectory_tracking import tracker_builder
+    from sobits_intball2_gnc.guidance.executor import tracker_builder
 
     def infeasible(*_a, **_k):
         raise TrajectoryInfeasibleError("test")
@@ -1045,7 +1045,7 @@ def test_execute_static_minco_mode_fails_planning_when_infeasible(monkeypatch):
     from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
         MincoInfeasibleError,
     )
-    from sobits_intball2_gnc.guidance.trajectory_tracking import tracker_builder
+    from sobits_intball2_gnc.guidance.executor import tracker_builder
 
     def infeasible(*_a, **_k):
         raise MincoInfeasibleError("test")

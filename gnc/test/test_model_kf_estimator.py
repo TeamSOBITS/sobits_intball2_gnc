@@ -5,7 +5,7 @@ design/verification in docs/archive/
 """
 import numpy as np
 
-from sobits_intball2_gnc.guidance.utils.model_kf_estimator import ModelKfEstimator
+from sobits_intball2_gnc.guidance.estimation.model_kf_estimator import ModelKfEstimator
 
 
 def test_perfect_model_no_noise_converges_to_truth():

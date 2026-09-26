@@ -3,7 +3,7 @@
 
 The only ``rclpy`` node in the guidance system (1-file-1-node rule, matching
 ``control/control.py``). Wires the ROS I/O wrappers (``guidance/ros``,
-``common/ros``) to :class:`~sobits_intball2_gnc.guidance.utils.guidance_executor.GuidanceExecutor`
+``common/ros``) to :class:`~sobits_intball2_gnc.guidance.executor.guidance_executor.GuidanceExecutor`
 via dependency injection, and serves it as the ``execute_fn`` behind
 ``CtlCommandActionServer`` (``docs/guidance_node_implementation_plan.md``).
 
@@ -30,7 +30,7 @@ from sobits_intball2_gnc.control.utils.singleton_lock import (
     acquire_singleton_lock,
 )
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
-from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
+from sobits_intball2_gnc.guidance.constraints.actuation_envelope import (
     wrench_envelope_halfspaces,
 )
 from sobits_intball2_gnc.guidance.guidance_params import (
@@ -52,16 +52,16 @@ from sobits_intball2_gnc.guidance.ros.multi_dof_joint_trajectory_publisher impor
 from sobits_intball2_gnc.guidance.ros.marker_array_publisher import MarkerArrayPublisher
 from sobits_intball2_gnc.guidance.ros.marker_array_subscriber import MarkerArraySubscriber
 from sobits_intball2_gnc.guidance.ros.speed_path_publisher import SpeedPathPublisher
-from sobits_intball2_gnc.guidance.trajectory_tracking.tracker_builder import (
+from sobits_intball2_gnc.guidance.executor.tracker_builder import (
     TRAJECTORY_TRACKING_MODES,
 )
-from sobits_intball2_gnc.guidance.utils.guidance_executor import (
+from sobits_intball2_gnc.guidance.executor.guidance_executor import (
     STATUS_CANCELED,
     STATUS_PLANNING_FAILED,
     STATUS_SUCCESS,
     GuidanceExecutor,
 )
-from sobits_intball2_gnc.guidance.utils.velocity_estimator import VelocityEstimator
+from sobits_intball2_gnc.guidance.estimation.velocity_estimator import VelocityEstimator
 
 ACTION_NAME = "/gnc/move_to"
 TRAJECTORY_SPEED_PATH_TOPIC = "/gnc/trajectory_path_speed"

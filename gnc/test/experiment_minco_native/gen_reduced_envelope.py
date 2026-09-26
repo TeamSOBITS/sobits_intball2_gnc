@@ -5,7 +5,7 @@ docs/2026-08-29_minco_attitude_torque_integration_plan.md.
 
 The true envelope is a zonotope: conv({A @ f : f_i in {0, fj_max}}), exactly
 256 vertices for this vehicle's 8 fans (see
-guidance/utils/actuation_envelope.py's docstring). Taking the convex hull of
+guidance/constraints/actuation_envelope.py's docstring). Taking the convex hull of
 any SUBSET of those 256 vertices is guaranteed to be a subset of the true
 envelope (monotonicity of convex hull) -- i.e. safe/inscribed by
 construction, no approximation error beyond "which vertices got dropped".

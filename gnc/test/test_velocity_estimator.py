@@ -1,11 +1,11 @@
-"""Unit tests for guidance/utils/velocity_estimator.py (ROS-agnostic, pure
+"""Unit tests for guidance/estimation/velocity_estimator.py (ROS-agnostic, pure
 finite-difference + EMA velocity estimate -- see
 docs/guidance_velocity_estimator_design.md for the design this implements).
 """
 import numpy as np
 import pytest
 
-from sobits_intball2_gnc.guidance.utils.velocity_estimator import VelocityEstimator
+from sobits_intball2_gnc.guidance.estimation.velocity_estimator import VelocityEstimator
 
 
 def test_initial_state_is_zero_velocity_before_any_update():

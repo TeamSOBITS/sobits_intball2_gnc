@@ -11,7 +11,7 @@ from sobits_intball2_gnc.common.utils.stopping_profile import (
 )
 from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
-from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
+from sobits_intball2_gnc.guidance.constraints.actuation_envelope import (
     wrench_envelope_halfspaces,
 )
 

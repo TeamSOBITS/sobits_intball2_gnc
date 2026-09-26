@@ -30,7 +30,7 @@ import numpy as np
 
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
 from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import ToppraTrajectory
-from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
+from sobits_intball2_gnc.guidance.constraints.actuation_envelope import (
     wrench_envelope_halfspaces,
 )
 from sobits_intball2_gnc.guidance.utils.attitude_reference import IDENTITY_QUAT

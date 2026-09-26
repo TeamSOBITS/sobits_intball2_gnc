@@ -9,9 +9,9 @@ min-snap solution -- degree-3 per segment (4 of the 8 coefficient slots used,
 the rest zero) instead of degree-7. Used today as the geometric path that
 :class:`~sobits_intball2_gnc.guidance.trajectory.toppra_trajectory.ToppraTrajectory`
 re-times (only the shape matters there, not these segment times); swap in
-:class:`~sobits_intball2_gnc.guidance.trajectory_generation.min_snap_trajectory_generator.MinSnapTrajectoryGenerator`
+:class:`~sobits_intball2_gnc.guidance.trajectory.generation.min_snap_trajectory_generator.MinSnapTrajectoryGenerator`
 once ``min_snap.py``'s core lands (same
-:class:`~sobits_intball2_gnc.guidance.trajectory_generation.base_trajectory_generator.BaseTrajectoryGenerator`
+:class:`~sobits_intball2_gnc.guidance.trajectory.generation.base_trajectory_generator.BaseTrajectoryGenerator`
 contract, so no caller changes needed).
 
 Tangents at interior waypoints use a Catmull-Rom-style estimate (weighted by

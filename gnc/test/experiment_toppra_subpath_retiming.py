@@ -44,15 +44,15 @@ from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import (
     _WRENCH_DOF,
     _dense_travel_rotvecs,
 )
-from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator import (
+from sobits_intball2_gnc.guidance.trajectory.generation.hermite_spline_trajectory_generator import (
     HermiteSplineTrajectoryGenerator,
 )
-from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
+from sobits_intball2_gnc.guidance.constraints.actuation_envelope import (
     wrench_envelope_halfspaces,
 )
 from sobits_intball2_gnc.guidance.utils.attitude_reference import IDENTITY_QUAT
 from sobits_intball2_gnc.guidance.utils.polynomial import evaluate_vector
-from sobits_intball2_gnc.guidance.utils.wrench_envelope_constraint import (
+from sobits_intball2_gnc.guidance.constraints.wrench_envelope_constraint import (
     WrenchEnvelopeConstraint,
 )
 

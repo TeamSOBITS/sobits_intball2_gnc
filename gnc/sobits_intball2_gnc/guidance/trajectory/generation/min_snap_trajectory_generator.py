@@ -12,13 +12,13 @@ a since-abandoned division-of-labor plan (a separate implementer owning the
 core numerics via ``docs/minimum_snap/min_snap_interface_contract.md``).
 That plan is moot now that the core will not be written, so the two files
 were merged into this one, matching the single-file pattern already used by
-:class:`~sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator.HermiteSplineTrajectoryGenerator`.
+:class:`~sobits_intball2_gnc.guidance.trajectory.generation.hermite_spline_trajectory_generator.HermiteSplineTrajectoryGenerator`.
 
-:class:`~sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator.HermiteSplineTrajectoryGenerator`
+:class:`~sobits_intball2_gnc.guidance.trajectory.generation.hermite_spline_trajectory_generator.HermiteSplineTrajectoryGenerator`
 is the actual trajectory generator in use (wired into
-:mod:`sobits_intball2_gnc.guidance.utils.guidance_executor`). It satisfies
+:mod:`sobits_intball2_gnc.guidance.executor.guidance_executor`). It satisfies
 the same
-:class:`~sobits_intball2_gnc.guidance.trajectory_generation.base_trajectory_generator.BaseTrajectoryGenerator`
+:class:`~sobits_intball2_gnc.guidance.trajectory.generation.base_trajectory_generator.BaseTrajectoryGenerator`
 contract as this class would, so no caller changes would be needed if this
 were implemented and swapped in later.
 """

@@ -6,7 +6,7 @@ polynomial coefficients (``docs/min_snap_interface_contract.md`` 2 節's
 ``coeffs`` layout). Package-ized
 per ``docs/architecture_guidelines.md`` 2 節: a min-snap solver (Mellinger &
 Kumar 2011, core solve not implemented -- 2026-08-24 decision, see
-:mod:`sobits_intball2_gnc.guidance.trajectory_generation.min_snap_trajectory_generator`)
+:mod:`sobits_intball2_gnc.guidance.trajectory.generation.min_snap_trajectory_generator`)
 and a Hermite-spline stand-in (this package's degraded-but-usable, actually
 wired-in placeholder) are two concrete, named candidates.
 

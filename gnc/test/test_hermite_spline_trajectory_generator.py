@@ -1,10 +1,10 @@
 """Unit tests for
-guidance/trajectory_generation/hermite_spline_trajectory_generator.py
+guidance/trajectory/generation/hermite_spline_trajectory_generator.py
 (plain-value, no ROS)."""
 import numpy as np
 import pytest
 
-from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator import (
+from sobits_intball2_gnc.guidance.trajectory.generation.hermite_spline_trajectory_generator import (
     HermiteSplineTrajectoryGenerator,
 )
 from sobits_intball2_gnc.guidance.utils.polynomial import evaluate_vector

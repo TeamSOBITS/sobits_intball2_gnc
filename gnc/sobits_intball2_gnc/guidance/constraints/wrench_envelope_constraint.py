@@ -19,7 +19,7 @@ per gridpoint (the same path ``toppra.constraint.joint_torque
 .JointTorqueConstraint`` already uses for its box-shaped torque limits). This
 class is the same pattern generalized from a box ``[I; -I]`` polytope to an
 arbitrary half-space polytope, so it applies to the wrench envelope's actual
-shape (see ``sobits_intball2_gnc.guidance.utils.actuation_envelope
+shape (see ``sobits_intball2_gnc.guidance.constraints.actuation_envelope
 .wrench_envelope_halfspaces``).
 
 Prototyped and speed/behavior-validated in ``test/

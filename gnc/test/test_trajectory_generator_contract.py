@@ -1,16 +1,16 @@
-"""Contract test for guidance/trajectory_generation/ implementations
+"""Contract test for guidance/trajectory/generation/ implementations
 (docs/architecture_guidelines.md 5 節: shared properties every
 BaseTrajectoryGenerator implementation must satisfy).
 
 MinSnapTrajectoryGenerator is intentionally NOT parametrized here: its core
 solve was decided not to be implemented (2026-08-24, see
-guidance/trajectory_generation/min_snap_trajectory_generator.py's module
+guidance/trajectory/generation/min_snap_trajectory_generator.py's module
 docstring), so it cannot satisfy this contract.
 """
 import numpy as np
 import pytest
 
-from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator import (
+from sobits_intball2_gnc.guidance.trajectory.generation.hermite_spline_trajectory_generator import (
     HermiteSplineTrajectoryGenerator,
 )
 from sobits_intball2_gnc.guidance.utils.polynomial import evaluate_vector

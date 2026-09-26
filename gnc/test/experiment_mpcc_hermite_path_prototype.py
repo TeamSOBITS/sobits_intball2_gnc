@@ -7,7 +7,7 @@ Motivation (docs/2026-09-20_mpcc_static_mode_disturbance_sweep_and_hermite_
 next_step.md "次の一手"): MINCO has known open bugs (accRot Jacobian
 missing, heuristic time-stretch whack-a-mole) that would contaminate any
 MPCC-side finding if used as the reference-path source now. ``sobits_
-intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_
+intball2_gnc.guidance.trajectory.generation.hermite_spline_trajectory_
 generator.HermiteSplineTrajectoryGenerator`` is simpler (closed-form
 piecewise cubic, no known bugs) and is an actual production component
 (current stand-in for min-snap in the real Guidance pipeline), so it lets
@@ -62,7 +62,7 @@ import numpy as np
 
 from sobits_intball2_gnc.control.utils.quat_math import quat_conj, quat_mul
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
-from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator import (
+from sobits_intball2_gnc.guidance.trajectory.generation.hermite_spline_trajectory_generator import (
     HermiteSplineTrajectoryGenerator,
 )
 

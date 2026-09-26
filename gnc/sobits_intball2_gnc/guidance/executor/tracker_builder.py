@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Builds the tracker for one move_to goal's ``trajectory_tracking_mode`` (ROS-agnostic).
 
-Split out of ``GuidanceExecutor.execute()`` (``guidance/utils/guidance_executor.py``),
+Split out of ``GuidanceExecutor.execute()`` (``guidance/executor/guidance_executor.py``),
 which calls :meth:`TrackerBuilder.build` once per goal. ``replan_minco``
 falls back to ``static_toppra`` on failure; any other failure raises
 :class:`TrajectoryBuildError` and the goal is aborted.
