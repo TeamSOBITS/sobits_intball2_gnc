@@ -28,6 +28,10 @@ export PYTHONPATH=/root/colcon_ws/src/sobits_intball2_gnc/gnc:$PYTHONPATH
 | `constraint_points.py <capture.json> <label>` | 1本の結果の制約点それぞれが膨張した格子に入るかと、かすめの時間を並べる（衝突が制約点の間かを見る） |
 | `async_paced_scenario.py <ahead_m> <appear_after_m> [--sync-on-collision]` | 段階5のJEMの人の場面を、本番と同じ非同期の再計画で、sim時間を実時間と同じ速さ（RTF=1）で進めて回す |
 | `free_gaps.py <capture.json> [--z=5.0]` | 保存した箱の位置で、JEMを横切る空きの幅を膨張0.1m・0.2mで格子から測る |
+| `trace_scenario.py <ahead_m> <appear_after_m> [--sync] [--latency=S] [--proto]` | `async_paced_scenario.py`に、再計画ごとの出発点・膨張の中か・箱との余裕・成否と、箱の横のすき間の幅の表示を足したもの |
+| `repro_run4.py [--latency=S] [--appear-clr=M] [--proto [--no-b1] [--no-b2] [--no-b4]]` | シムの走行4（逆向き、古い地図のsolveが走っている最中に箱が出て、止まり始めが遅れる）の再現 |
+| `rest_near_box.py <box_x> <box_y> <box_z> <clearance_m> [--reverse]` | 箱の手前に静止した状態から再計画させる（出発点が膨張の中だと解けないことの確認） |
+| `early_stop_tracker.py` | 試作（本番に入れていない）: `ReplanMincoTracker`を継承し、待たずに止める（B-1）・届いたsolveを最新の地図で判定（B-2）・止まる最中に解けたら乗り換える（B-4）を足したもの。`docs/2026-09-26_obstacle_emergency_stop_and_recovery.md`の5節 |
 
 `diag_common.py`は共通の処理（保存・読み込み、格子地図の組み立て、かすめの数え方）。
 保存したファイル（JSON）はリポジトリに入れず、scratchなど外に置く。

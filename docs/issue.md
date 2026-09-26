@@ -18,11 +18,8 @@
 
 ## 未達成タスク（カテゴリ別・各カテゴリ内は優先度順）
 
-### [G] 実行不能時フォールバック順序の見直し（Hermite台形をウレンチ制約無視のまま最終手段にしない）
-現状の最終フォールバック（Hermite台形）はウレンチ包絡域を一切考慮しておらず、約92%のサンプルで真の到達可能領域を超える危険側の設計。TOPP-RA/MINCO→逐次実行（並進→回転）→直線+単軸回転、の順に変更する。詳細: `docs/arch/2026-09-20_jaxa_to_sobits_backport_candidates.md`（B-1）
-
 ### [G] 微小移動指令のデッドゾーン
-5cm未満のような微小指令でもA*→Hermite→TOPP-RAのフルパイプラインが走り、`static_minco`時は3〜5秒ブロックする。閾値未満は即`STATUS_SUCCEEDED`で返す。詳細: 同上（B-2）
+5cm未満のような微小指令でもA*→Hermite→TOPP-RAのフルパイプラインが走り、`static_minco`時は3〜5秒ブロックする。閾値未満は即`STATUS_SUCCEEDED`で返す。詳細: `docs/arch/2026-09-20_jaxa_to_sobits_backport_candidates.md`（B-2）
 
 ### [G] K分離(2自由度版)、短距離レグでのduration悪化が未改良
 MINCOの姿勢waypoint密度↑時のduration悪化は圧縮できた（+133%→+21%等）が、短距離レグでは悪化が
@@ -57,6 +54,9 @@ TOPP-RA側は`wrench_envelope_safety_margin=0.7`だが、MINCO側は既定`1.0`�
 
 ### [G] 抗力トルク実測値（κ_j/k_j）をAに反映して包絡を再構築（シム未対応のため実機フィデリティはシム上で検証不可）
 三谷・西下・平野2023の実測値から8基分のκ_j/k_jは同定済み・番号対応も検証済み（ロールで36%の能力回復、力とヨーは正しく1〜2割補正、面数24→112）。実装対象は自分たちの`A`行列（`actuation_envelope.py`）のみでシム変更は不要だが、現在のシムは`kappa=0`（抗力トルクなし）のままなので、シム上ではこの改善による実機フィデリティ向上分を検証しようがない点に注意。付随課題として実機の推力方向ベクトル未入手（公称モデルとの乖離あり、Y方向が実測で3割弱い；著者への問い合わせ候補）。
+
+### [G] JAXAの直線移動を移植したモード（`jaxa_linear`、優先度低）
+移動中の制御だけをJAXAと同条件で比べる場合に必要（ホバーだけなら不要）。`common/utils/stopping_profile.py`は`target()`の減速側だけの移植で、加速・巡航側と移動用プロファイル（`v_max`・`w_max`、回転と並進の順序）は未移植。本番モードにせず`test/manual/`のスクリプトにする案もある。詳細: `docs/archive/achieved/2026-09-24_guidance_directory_restructure_plan.md`（手順5）
 
 ### [G] min_snap.py のコアロジック実装（別担当者、優先度低）
 Phase 2で契約は確定済みだがコア実装が未着手。pure functionとして実装（ROS import禁止）。理論: Mellinger & Kumar (2011)。入出力契約: `docs/minimum_snap/min_snap_interface_contract.md`。参考実装: https://github.com/The-SS/quadrotor_trajectory 、参考解説: https://dev10110.github.io/tech-notes/control-theory/min_snap.html
