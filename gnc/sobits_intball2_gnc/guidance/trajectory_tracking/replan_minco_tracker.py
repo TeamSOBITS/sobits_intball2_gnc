@@ -67,7 +67,15 @@ The new local's t=0 is when its start state was sampled, not when the solve
 finished as in EGO v2: with 0.2-0.35 s solves the latter jumps the reference
 back by v*solve_time (``docs/2026-09-24_replanning_minco_replan_face_travel_
 replan_gap_offline_check.md``).
+
+With ``async_replan`` and obstacles, a collision does not wait for the replan
+when braking only after the expected solve wait would already enter the grid
+(the vehicle needs ~0.4 m to stop, unlike EGO's drone); a landed solve is judged
+on the grid current at landing rather than re-solved; and replanning continues
+while braking, switching to a collision-free local instead of stopping
+(``docs/2026-09-26_obstacle_emergency_stop_and_recovery.md``).
 """
+import collections
 import threading
 
 import numpy as np
@@ -80,6 +88,10 @@ DEFAULT_LOCAL_REPLAN_PERIOD_S = 1.0
 DEFAULT_PLANNING_HORIZON_M = 2.0
 # EGO-Planner v2 safety_timer_ period.
 DEFAULT_COLLISION_CHECK_PERIOD_S = 0.05
+# Expected async solve wait: margin x the longest of the recent waits, fallback before any.
+REPLAN_WAIT_FALLBACK_S = 1.0
+REPLAN_WAIT_MARGIN = 1.2
+REPLAN_WAIT_WINDOW = 10
 
 
 class ReplanMincoTracker:
@@ -134,7 +146,8 @@ class ReplanMincoTracker:
             and holds its end, replanning from rest every period until one
             succeeds (``EMERGENCY_STOP`` then ``GEN_NEW_TRAJ``). ``emergency_time_s=None``
             uses the stop profile's own duration (EGO's fixed 1 s assumes a drone
-            that brakes in a fraction of a second).
+            that brakes in a fraction of a second). With ``async_replan`` see the
+            module docstring for stopping early and resuming while braking.
         async_replan: see module docstring. ``False`` solves inside
             ``sample()`` (deterministic, for offline/unit use).
 
@@ -191,7 +204,10 @@ class ReplanMincoTracker:
         self._pending_result = None
         self._pending_lag = 0.0
         self._collision_replan_pending = False
-        self._pending_is_collision_replan = False
+        self._pending_is_brake_replan = False
+        self._brake_replan_t = 0.0
+        self._brake_switch = None
+        self._recent_replan_waits = collections.deque(maxlen=REPLAN_WAIT_WINDOW)
 
         v0 = np.zeros(3) if initial_v0 is None else np.asarray(initial_v0, dtype=float)
         self._last_p_now = p0.copy()
@@ -260,6 +276,7 @@ class ReplanMincoTracker:
             self._pending_lag += dt
             if not self._pending_thread.is_alive():
                 self._pending_thread = None
+                self._recent_replan_waits.append(self._pending_lag)
                 self._adopt_local(self._pending_result, self._pending_lag)
                 if self._collision_replan_pending:
                     self._resolve_collision_replan()
@@ -289,17 +306,23 @@ class ReplanMincoTracker:
     def _collision_ahead_s(self):
         """Time until the current local first enters the inflated grid, checked from now
         over its first 3/4 (all of it when it touches the goal), or ``None``."""
-        local = self._local_trajectory
-        end = local.global_total_duration * (1.0 if self._local_touches_goal else 0.75)
+        return self._first_collision_s(self._local_trajectory, self._local_touches_goal,
+                                       self._local_elapsed)
+
+    def _first_collision_s(self, local, touches_goal, t_from):
+        end = local.global_total_duration * (1.0 if touches_goal else 0.75)
         grid = self._planner.obstacle_grid
         speed = self._planner.local_max_vel or self._planner.global_avg_speed
         t_step = grid.resolution / 2.0 / max(speed, 1e-6)
-        t = self._local_elapsed
+        t = t_from
         while t <= end:
             if grid.inflated_occupied(list(local.sample(t)[0])):
-                return t - self._local_elapsed
+                return t - t_from
             t += t_step
         return None
+
+    def _local_collides(self, local, touches_goal):
+        return self._first_collision_s(local, touches_goal, 0.0) is not None
 
     def set_obstacle_grid(self, grid):
         """Swap in a rebuilt grid (obstacles changed); the next collision check uses it."""
@@ -312,10 +335,13 @@ class ReplanMincoTracker:
         if self.last_collision_ahead_s is None:
             return
         if self._async_replan:
-            # Like EGO v2: keep playing the old local while replanning, decide to stop on the result.
+            # Like EGO v2: keep playing the old local while replanning, decide to stop on the
+            # result -- unless braking after the expected wait would already be too late.
             self._collision_replan_pending = True
             if self._pending_thread is None:
                 self._start_background_replan()
+            if self._stop_profile_fn is not None and self._braking_after_wait_collides():
+                self._start_emergency_stop(self._stop_profile_at_reference())
             return
         result = self._try_build_local(self._reference_start_state())
         if result is not None:
@@ -324,42 +350,88 @@ class ReplanMincoTracker:
             return
         self._emergency_stop_if_collision_close()
 
+    def _expected_replan_wait_s(self):
+        if not self._recent_replan_waits:
+            return REPLAN_WAIT_FALLBACK_S
+        return REPLAN_WAIT_MARGIN * max(self._recent_replan_waits)
+
+    def _braking_after_wait_collides(self):
+        local, grid = self._local_trajectory, self._planner.obstacle_grid
+        t_brake = min(self._local_elapsed + self._expected_replan_wait_s(),
+                      local.global_total_duration)
+        for t in np.arange(self._local_elapsed, t_brake, self._collision_check_period):
+            if grid.inflated_occupied(list(local.sample(t)[0])):
+                return True
+        p, v, _a, q = local.sample(t_brake)
+        omega, _alpha = local.sample_body_angular(t_brake)
+        profile = self._stop_profile_fn(p, v, q, omega)
+        for t in np.append(np.arange(0.0, profile.duration, 0.1), profile.duration):
+            if grid.inflated_occupied(list(profile.sample(t)[0])):
+                return True
+        return False
+
     def _start_background_replan(self):
+        self._start_background_solve(self._reference_start_state())
+
+    def _start_background_solve(self, start_state, brake_replan_t=None):
         self._since_replan_attempt = 0.0
         self._pending_lag = 0.0
-        self._pending_is_collision_replan = self._collision_replan_pending
+        self._pending_is_brake_replan = brake_replan_t is not None
+        self._brake_replan_t = brake_replan_t
         self._pending_thread = threading.Thread(
-            target=self._solve_local_in_background, args=(self._reference_start_state(),),
-            daemon=True)
+            target=self._solve_local_in_background, args=(start_state,), daemon=True)
         self._pending_thread.start()
 
     def _resolve_collision_replan(self):
-        if not self._pending_is_collision_replan:
-            # Started before the collision was seen (possibly on the old grid): solve again.
-            self._start_background_replan()
-            return
+        # Judged on the grid current now, whichever grid the solve started on: with a camera the
+        # grid changes every frame, so re-solving pre-collision solves would never settle.
         self._collision_replan_pending = False
         self.last_collision_ahead_s = self._collision_ahead_s()
-        if self.last_collision_ahead_s is not None:
-            self._emergency_stop_if_collision_close()
+        if self.last_collision_ahead_s is None:
+            return
+        self._emergency_stop_if_collision_close()
+        if self._stop_profile is None:
+            self._collision_replan_pending = True
+            self._start_background_replan()
+
+    def _stop_profile_at_reference(self):
+        p_ref, v_ref, _a, q_ref = self._local_trajectory.sample(self._local_elapsed)
+        omega_ref, _alpha = self._local_trajectory.sample_body_angular(self._local_elapsed)
+        return self._stop_profile_fn(p_ref, v_ref, q_ref, omega_ref)
+
+    def _start_emergency_stop(self, profile):
+        self._stop_profile = profile
+        self._stop_elapsed = 0.0
+        self._brake_switch = None
+        self.emergency_stops += 1
+        self.last_fallback_reason = "emergency_stop"
 
     def _emergency_stop_if_collision_close(self):
         if self._stop_profile_fn is None:
             return
-        p_ref, v_ref, _a, q_ref = self._local_trajectory.sample(self._local_elapsed)
-        omega_ref, _alpha = self._local_trajectory.sample_body_angular(self._local_elapsed)
-        profile = self._stop_profile_fn(p_ref, v_ref, q_ref, omega_ref)
+        profile = self._stop_profile_at_reference()
         emergency_time = (profile.duration if self._emergency_time_s is None
                           else self._emergency_time_s)
         if self.last_collision_ahead_s < emergency_time:
-            self._stop_profile = profile
-            self._stop_elapsed = 0.0
-            self.emergency_stops += 1
-            self.last_fallback_reason = "emergency_stop"
+            self._start_emergency_stop(profile)
 
     def _sample_emergency_stop(self, dt):
-        """Play the stop profile, then hold its end and replan from rest every period."""
-        self._stop_elapsed += dt
+        """Play the stop profile, then hold its end and replan from rest every period.
+        With ``async_replan``, keep replanning while braking and switch to a collision-free
+        result instead of stopping."""
+        t_now = self._stop_elapsed + dt
+        if self._pending_thread is not None:
+            if self._pending_thread.is_alive():
+                # build_local mutates planner state: no rest replan while a solve runs.
+                self._since_replan_attempt = 0.0
+            else:
+                self._take_brake_replan_result(t_now)
+        if self._brake_switch is not None and t_now >= self._brake_switch[0]:
+            return self._switch_from_brake(t_now)
+        if (self._async_replan and self._pending_thread is None and self._brake_switch is None
+                and t_now < self._stop_profile.duration):
+            self._start_brake_replan(t_now)
+        self._stop_elapsed = t_now
         profile = self._stop_profile
         t = min(self._stop_elapsed, profile.duration)
         p, v, a, q, omega, alpha = profile.sample(t)
@@ -377,6 +449,41 @@ class ReplanMincoTracker:
                     self._adopt_local(result, 0.0)
                 else:
                     self._rest_replan_failures += 1
+        return self._last_output
+
+    def _start_brake_replan(self, t_now):
+        """Solve from where the brake will be once the solve lands, so switching there
+        keeps the reference continuous."""
+        profile = self._stop_profile
+        t_switch = min(t_now + self._expected_replan_wait_s(), profile.duration)
+        p, v, a, q, _omega, _alpha = profile.sample(t_switch)
+        rv = quat_log(quat_mul(quat_conj(self._q0), np.asarray(q, dtype=float)))
+        self._start_background_solve(
+            (np.asarray(p), np.asarray(v), np.asarray(a), rv, np.zeros(3), np.zeros(3), None, 0.0),
+            brake_replan_t=t_switch)
+
+    def _take_brake_replan_result(self, t_now):
+        result, was_brake_replan = self._pending_result, self._pending_is_brake_replan
+        self._pending_thread = None
+        self._pending_result = None
+        self._pending_is_brake_replan = False
+        # A solve started before the stop began from the old motion: dropped.
+        self._collision_replan_pending = False
+        if isinstance(result, Exception):
+            raise result
+        if (was_brake_replan and result is not None and t_now <= self._brake_replan_t
+                and not self._local_collides(*result)):
+            self._brake_switch = (self._brake_replan_t, result)
+
+    def _switch_from_brake(self, t_now):
+        t_switch, result = self._brake_switch
+        self._brake_switch = None
+        self._stop_profile = None
+        self._rest_replan_failures = 0
+        self._adopt_local(result, t_now - t_switch)
+        p_out, v_out, a_out, q_out = self._local_trajectory.sample(self._local_elapsed)
+        self.last_body_angular = self._local_trajectory.sample_body_angular(self._local_elapsed)
+        self._last_output = (p_out, v_out, a_out, q_out)
         return self._last_output
 
     def _goal_local_played_out(self):
