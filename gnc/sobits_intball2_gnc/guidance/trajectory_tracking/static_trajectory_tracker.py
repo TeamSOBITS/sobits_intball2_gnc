@@ -1,30 +1,22 @@
 #!/usr/bin/env python3
 """Static (open-loop) trajectory tracker (ROS-agnostic, pure).
 
-Thin wrapper around :class:`~sobits_intball2_gnc.guidance.trajectory.trajectory.Trajectory`.
+Thin wrapper around an already-built ``ToppraTrajectory`` or ``MincoTrajectory``.
 ``sample()`` and ``total_duration`` delegate straight through -- never reads
-TF, never re-plans. This is the behavior-preserving default
-(``docs/guidance_realtime_replanning_design.md`` 4 節): wiring
-``GuidanceExecutor`` through :class:`~sobits_intball2_gnc.guidance.
-trajectory_tracking.base_trajectory_tracker.BaseTrajectoryTracker` instead of
-a bare ``Trajectory`` must not change today's behavior by a single bit when
-this implementation is selected.
+TF, never re-plans (``docs/guidance_realtime_replanning_design.md`` 4 節).
 """
 import numpy as np
 
 
 class StaticTrajectoryTracker:
-    """See module docstring. ``trajectory``: an already-built
-    :class:`~sobits_intball2_gnc.guidance.trajectory.trajectory.Trajectory`."""
+    """See module docstring."""
 
     def __init__(self, trajectory):
         self._trajectory = trajectory
         self.last_body_angular = (np.zeros(3), np.zeros(3))
 
     def sample(self, t):
-        # The Hermite fallback Trajectory has no analytic attitude rates.
-        if hasattr(self._trajectory, "sample_body_angular"):
-            self.last_body_angular = self._trajectory.sample_body_angular(t)
+        self.last_body_angular = self._trajectory.sample_body_angular(t)
         return self._trajectory.sample(t)
 
     @property

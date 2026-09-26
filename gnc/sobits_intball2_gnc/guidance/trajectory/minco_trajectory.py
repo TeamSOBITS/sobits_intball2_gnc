@@ -56,8 +56,7 @@ class MincoInfeasibleError(ValueError):
     """``plan_minco`` reported ``success=False`` (最適化がwrench envelope制約を
     満たす解に収束しなかった、またはC++側で例外が発生した).
 
-    ``SegmentTimeInfeasibleError``（``base_segment_time_allocator.py``）と
-    同じ位置付け: 呼び出し側は捕捉してフォールバックすべき、"genuine
+    呼び出し側は捕捉してフォールバックまたはabortすべき、"genuine
     kinematic dead end" 相当のエラー。
     """
 
@@ -107,8 +106,7 @@ class MincoTrajectory:
             の代わりに``plan_minco_heuristic_time``（弧長比配分のヒューリス
             ティックT＋fixed-T solve＋wrench違反時の解析的伸長ループをC++
             内で完結、``docs/2026-09-01_replanning_minco_v4_production_port_plan.md``
-            Phase 1）を使う。``HeuristicSegmentTimeAllocator``と同じ役割の
-            パラメータ。デフォルト``None``（両方Noneのまま）は既存の
+            Phase 1）を使う。デフォルト``None``（両方Noneのまま）は既存の
             ``plan_minco``経路を使う既存挙動と完全に同一——オプトインの
             新経路であり、呼び出し側が明示的に指定しない限り挙動は変わらない。
         body_frame_wrench: ``True``なら``q0``をC++に渡し、wrench envelope（機体座標）を

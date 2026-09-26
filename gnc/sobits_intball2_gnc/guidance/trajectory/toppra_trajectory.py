@@ -46,9 +46,7 @@ design rationale and the open questions this implementation resolves:
   ``compute_trajectory(sd_start, ...)`` only accepts a *scalar* path-tangent
   start speed, which cannot express a velocity residual perpendicular to the
   path (the case ``ReplanningTrajectoryTracker``'s exact v0-aware bound
-  derivation exists specifically to handle) -- replanning keeps using
-  :class:`~sobits_intball2_gnc.guidance.trajectory.trajectory.Trajectory` /
-  ``HeuristicSegmentTimeAllocator`` unchanged.
+  derivation exists specifically to handle) -- replanning uses MINCO instead.
 - The position path shape (before TOPP-RA re-times it) comes from
   :class:`~sobits_intball2_gnc.guidance.trajectory_generation.
   hermite_spline_trajectory_generator.HermiteSplineTrajectoryGenerator`,
@@ -116,21 +114,17 @@ class TrajectoryInfeasibleError(ValueError):
     acceleration limits for this path (``toppra``'s ``compute_trajectory``
     returned ``None``) -- e.g. the path's curvature demands more
     acceleration than the vehicle's force/torque budget allows at any
-    speed. Callers should treat this the same way
-    ``SegmentTimeInfeasibleError`` is treated elsewhere in this package: a
-    genuine kinematic dead end, not a bug."""
+    speed. A genuine kinematic dead end, not a bug."""
 
 
 class ToppraTrajectory:
     """Time-parameterized combined position+attitude trajectory.
 
-    Satisfies the same minimal duck-typed interface
-    :class:`~sobits_intball2_gnc.guidance.trajectory.trajectory.Trajectory` gives
+    Satisfies the minimal duck-typed interface
     :class:`~sobits_intball2_gnc.guidance.trajectory_tracking.
-    static_trajectory_tracker.StaticTrajectoryTracker` (``sample(t) ->
-    (p, v, a, q)`` and a ``global_total_duration`` property) -- ``Trajectory``
-    itself is untouched; this is a separate class for the ``static`` path
-    only (see module docstring).
+    static_trajectory_tracker.StaticTrajectoryTracker` needs (``sample(t) ->
+    (p, v, a, q)`` and a ``global_total_duration`` property). Used for the
+    ``static`` path only (see module docstring).
 
     Args:
         position_waypoints: ``(n, 3)`` reference-frame positions.

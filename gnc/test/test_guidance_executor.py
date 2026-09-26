@@ -3,6 +3,10 @@ import numpy as np
 import pytest
 
 from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle
+from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
+from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
+    wrench_envelope_halfspaces,
+)
 from sobits_intball2_gnc.guidance.utils.attitude_reference import (
     compute_camera_relative_quat,
     compute_q_des,
@@ -10,9 +14,24 @@ from sobits_intball2_gnc.guidance.utils.attitude_reference import (
 from sobits_intball2_gnc.guidance.utils.guidance_executor import (
     STATUS_ABORTED,
     STATUS_CANCELED,
+    STATUS_PLANNING_FAILED,
     STATUS_SUCCESS,
     GuidanceExecutor,
 )
+
+_ALLOC = ThrustAllocator()
+TOPPRA_KWARGS = {
+    "wrench_envelope": wrench_envelope_halfspaces(_ALLOC.A, _ALLOC.fj_max),
+    "mass": 3.216,
+    "inertia": 0.0136,
+    "max_angular_rate": np.radians(90.0),
+}
+
+
+def _make_executor(*args, **kwargs):
+    for key, value in TOPPRA_KWARGS.items():
+        kwargs.setdefault(key, value)
+    return GuidanceExecutor(*args, **kwargs)
 
 
 class FakeTf:
@@ -82,12 +101,16 @@ class FakeCheckpointPublisher:
 class FakeLogger:
     def __init__(self):
         self.warnings = []
+        self.errors = []
 
     def info(self, msg):
         pass
 
     def warn(self, msg):
         self.warnings.append(msg)
+
+    def error(self, msg):
+        self.errors.append(msg)
 
 
 class FakeSpeedPathPublisher:
@@ -207,7 +230,7 @@ def _make_clock(dt_per_spin=0.05):
 
 
 def test_execute_returns_aborted_when_no_tf_pose():
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         FakeTf(None, None), FakeSetpointPublisher(), FakeCheckpointPublisher(),
         *_make_clock(), FakeLogger(),
     )
@@ -223,7 +246,7 @@ def test_execute_face_travel_false_never_touches_checkpoints():
     requirement -> no pre-alignment, straight to the translation loop."""
     setpoint_pub = FakeSetpointPublisher()
     checkpoint_pub = FakeCheckpointPublisher()
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
         setpoint_pub, checkpoint_pub, *_make_clock(), FakeLogger(),
         target_speed=1.0,
@@ -255,7 +278,7 @@ def test_execute_face_travel_true_publishes_setpoints_and_reaches_target():
         [[0.0, 0.0, 0.0], [0.9, 0.0, 0.0], [1.0, 0.0, 0.0]],
         [0.0, 0.0, 0.0, 1.0],
     )
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.2),
         logger, target_speed=1.0, align_tolerance_deg=180.0,
         align_pos_tolerance_m=0.05, align_pos_settle_time=0.3,
@@ -281,7 +304,7 @@ def test_run_trajectory_times_out_and_proceeds_when_position_never_converges():
     setpoint_pub = FakeSetpointPublisher()
     logger = FakeLogger()
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])  # never moves toward p_target
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.2),
         logger, target_speed=1.0, align_pos_tolerance_m=0.05,
         align_pos_settle_time=0.5, align_pos_timeout=0.5,
@@ -314,7 +337,7 @@ def test_run_trajectory_survives_transient_tf_outage_without_losing_dwell_progre
     silently-slow pass.
     """
     tf = ScriptedPosOrNoneTf(
-        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], None, None, [1.0, 0.0, 0.0]],
+        [[1.0 - 1e-4, 0.0, 0.0], [1.0, 0.0, 0.0], None, None, [1.0, 0.0, 0.0]],
         [0.0, 0.0, 0.0, 1.0],
     )
     logger = FakeLogger()
@@ -324,15 +347,14 @@ def test_run_trajectory_survives_transient_tf_outage_without_losing_dwell_progre
         calls["n"] += 1
         return calls["n"] >= 6
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), FakeCheckpointPublisher(),
-        # target_speed huge -> total_duration collapses to
-        # DEFAULT_MIN_SEGMENT_TIME (1e-3s), so the very first spin (0.2s)
-        # already exceeds it -- the translation phase takes exactly one
+        # p0 is 0.1mm short of p_target, so the first spin (0.2s) already
+        # exceeds total_duration -- the translation phase takes exactly one
         # iteration, keeping this test's is_cancel_requested call-count
         # math (see docstring) exact.
         *_make_clock(dt_per_spin=0.2), logger,
-        target_speed=1000.0, align_pos_tolerance_m=0.05,
+        target_speed=1.0, align_pos_tolerance_m=0.05,
         align_pos_settle_time=0.5, align_pos_timeout=5.0,
     )
     status = executor.execute(
@@ -361,7 +383,7 @@ def test_run_trajectory_ignores_a_transient_position_pass_through():
         [0.0, 0.0, 0.0, 1.0],
     )
     logger = FakeLogger()
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), FakeCheckpointPublisher(),
         *_make_clock(dt_per_spin=0.2), logger,
         target_speed=1000.0, align_pos_tolerance_m=0.05,
@@ -383,7 +405,7 @@ def test_execute_cancels_mid_trajectory():
         calls["n"] += 1
         return calls["n"] > 2
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]),
         FakeSetpointPublisher(), FakeCheckpointPublisher(),
         *_make_clock(dt_per_spin=0.01), FakeLogger(),
@@ -401,7 +423,7 @@ def test_execute_pre_aligns_when_facing_travel_and_misaligned():
     checkpoint_pub = FakeCheckpointPublisher()
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0])  # 180 deg off from +X-facing
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), checkpoint_pub, *_make_clock(dt_per_spin=0.1),
         FakeLogger(), target_speed=1.0, align_tolerance_deg=3.0, align_timeout=0.2,
         align_pos_timeout=0.1,
@@ -427,7 +449,7 @@ def test_execute_pre_aligns_even_when_target_speed_is_slow():
     checkpoint_pub = FakeCheckpointPublisher()
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0])  # 180 deg off from +X-facing
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), checkpoint_pub, *_make_clock(dt_per_spin=0.1),
         FakeLogger(), target_speed=0.01, attitude_speed_threshold=0.02,
         align_tolerance_deg=3.0, align_timeout=0.2, align_pos_timeout=0.1,
@@ -445,7 +467,7 @@ def test_execute_skips_pre_align_when_pre_align_false():
     checkpoint_pub = FakeCheckpointPublisher()
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0])  # 180 deg off from +X-facing
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), checkpoint_pub, *_make_clock(dt_per_spin=0.1),
         FakeLogger(), target_speed=1.0, align_tolerance_deg=3.0, align_timeout=0.2,
         align_pos_timeout=0.1,
@@ -474,7 +496,7 @@ def test_align_to_ignores_a_transient_pass_through_tolerance():
     tf = ScriptedTf([0.0, 0.0, 0.0], [q_far, q_far, q_target, q_far])
     logger = FakeLogger()
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), FakeCheckpointPublisher(),
         *_make_clock(dt_per_spin=0.1), logger,
         target_speed=1.0, align_tolerance_deg=3.0, align_timeout=1.0,
@@ -501,7 +523,7 @@ def test_align_to_converges_once_settle_time_elapses():
     tf = ScriptedTf([0.0, 0.0, 0.0], [q_far, q_far] + [q_target] * 20)
     logger = FakeLogger()
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), FakeCheckpointPublisher(),
         *_make_clock(dt_per_spin=0.1), logger,
         target_speed=1.0, align_tolerance_deg=3.0, align_timeout=5.0,
@@ -531,7 +553,7 @@ def test_align_to_ramps_via_slerp_when_configured():
     tf = FakeTf([0.0, 0.0, 0.0], q_from)
     checkpoint_pub = FakeCheckpointPublisher()
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), checkpoint_pub, *_make_clock(dt_per_spin=1.0),
         FakeLogger(), target_speed=1.0, align_tolerance_deg=3.0, align_timeout=0.2,
         align_pos_timeout=0.1,
@@ -562,7 +584,7 @@ def test_align_to_skips_ramp_when_already_at_target():
     tf = FakeTf([0.0, 0.0, 0.0], q_target)
     checkpoint_pub = FakeCheckpointPublisher()
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), checkpoint_pub, *_make_clock(dt_per_spin=0.1),
         FakeLogger(), target_speed=1.0, align_tolerance_deg=3.0, align_timeout=0.2,
         align_pos_timeout=0.1,
@@ -594,7 +616,7 @@ def test_align_to_ramp_respects_cancel():
         calls["n"] += 1
         return calls["n"] > 2
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), checkpoint_pub, *_make_clock(dt_per_spin=1.0),
         FakeLogger(), target_speed=1.0, align_tolerance_deg=3.0, align_timeout=0.2,
         align_pos_timeout=0.1,
@@ -613,7 +635,7 @@ def test_execute_align_at_arrival_camera_main_uses_target_orientation_as_is():
     checkpoint_pub = FakeCheckpointPublisher()
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0])  # 180 deg off from q_target
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), checkpoint_pub, *_make_clock(dt_per_spin=0.1),
         FakeLogger(), target_speed=1.0, align_tolerance_deg=3.0, align_timeout=0.2,
         align_pos_timeout=0.1,
@@ -633,7 +655,7 @@ def test_execute_align_at_arrival_camera_stereo_offsets_from_target_orientation(
     checkpoint_pub = FakeCheckpointPublisher()
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0])  # far from either candidate
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), checkpoint_pub, *_make_clock(dt_per_spin=0.1),
         FakeLogger(), target_speed=1.0, align_tolerance_deg=3.0, align_timeout=0.2,
         align_pos_timeout=0.1,
@@ -658,7 +680,7 @@ def test_execute_align_at_arrival_unknown_camera_falls_back_to_target_orientatio
     checkpoint_pub = FakeCheckpointPublisher()
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0])  # 180 deg off from q_target
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), checkpoint_pub, *_make_clock(dt_per_spin=0.1),
         FakeLogger(), target_speed=1.0, align_tolerance_deg=3.0, align_timeout=0.2,
         align_pos_timeout=0.1,
@@ -682,7 +704,7 @@ def test_execute_aborts_when_initial_tf_pose_is_stale():
     (docs/guidance_realtime_replanning_design.md 6-8)."""
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], stamp=5.0)
     logger = FakeLogger()
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), FakeCheckpointPublisher(),
         *_make_clock(dt_per_spin=0.1), logger,
         target_speed=1000.0, align_pos_tolerance_m=2.0,
@@ -728,7 +750,7 @@ def test_run_trajectory_ignores_stale_tf_position_for_convergence():
         [0.0, 0.0, 0.0, 1.0],
         stamp=[1.0, 2.0, 3.0],
     )
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.2),
         logger, target_speed=1000.0, align_pos_tolerance_m=0.05,
         align_pos_settle_time=0.3, align_pos_timeout=0.5,
@@ -755,7 +777,7 @@ def test_execute_replanning_minco_v3_mode_reaches_target():
     setpoint_pub = FakeSetpointPublisher()
     logger = FakeLogger()
     tf = SetpointFollowingTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], setpoint_pub)
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05),
         logger, target_speed=1.0, max_accel=0.02,
         align_pos_tolerance_m=0.05, align_pos_settle_time=1.5, align_pos_timeout=8.0,
@@ -785,7 +807,7 @@ def test_execute_replanning_minco_v3_mode_terminates_with_steady_state_offset():
                              offset=(0.0, 0.02, 0.0))
     clock_seconds_fn, spin_fn = _make_clock(dt_per_spin=0.05)
     local_speed_path_pub = FakeSpeedPathPublisher()
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, setpoint_pub, FakeCheckpointPublisher(), clock_seconds_fn, spin_fn,
         logger, target_speed=1.0, max_accel=0.02,
         align_pos_tolerance_m=0.05, align_pos_settle_time=1.5, align_pos_timeout=8.0,
@@ -812,7 +834,7 @@ def test_execute_replanning_minco_v3_mode_falls_back_to_static_without_max_accel
     setpoint_pub = FakeSetpointPublisher()
     logger = FakeLogger()
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05),
         logger, target_speed=1.0, max_accel=None,
         align_pos_tolerance_m=0.05, align_pos_settle_time=0.1, align_pos_timeout=1.0,
@@ -848,7 +870,7 @@ def test_execute_replanning_minco_v3_mode_passes_via_waypoints_to_the_tracker(mo
 
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
     via_waypoints = [[0.5, 0.5, 0.0]]
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), FakeCheckpointPublisher(),
         *_make_clock(dt_per_spin=0.05), FakeLogger(),
         target_speed=1.0, max_accel=0.02,
@@ -878,7 +900,7 @@ def test_execute_replanning_minco_v3_mode_passes_local_replan_params_to_the_trac
     monkeypatch.setattr(ge_module, "ReplanningMincoV3Tracker", SpyTracker)
 
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), FakeCheckpointPublisher(),
         *_make_clock(dt_per_spin=0.05), FakeLogger(),
         target_speed=1.0, max_accel=0.02,
@@ -897,7 +919,7 @@ def test_execute_replanning_minco_v3_mode_falls_back_to_static_on_non_positive_h
     pytest.importorskip("minco_native_py")
     logger = FakeLogger()
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), FakeCheckpointPublisher(),
         *_make_clock(dt_per_spin=0.05), logger,
         target_speed=1.0, max_accel=0.02,
@@ -923,7 +945,7 @@ def test_execute_replanning_minco_v3_mode_republishes_speed_path_preview_on_repl
     setpoint_pub = FakeSetpointPublisher()
     speed_path_pub = FakeSpeedPathPublisher()
     tf = SetpointFollowingTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], setpoint_pub)
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05),
         FakeLogger(), target_speed=1.0, max_accel=0.02,
         align_pos_tolerance_m=0.05, align_pos_settle_time=1.5, align_pos_timeout=8.0,
@@ -948,7 +970,7 @@ def test_execute_static_mode_publishes_speed_path_preview_only_once():
     logger = FakeLogger()
     speed_path_pub = FakeSpeedPathPublisher()
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.1),
         logger, target_speed=1.0, align_pos_timeout=0.1,
         speed_path_publisher=speed_path_pub,
@@ -962,43 +984,90 @@ def test_execute_static_mode_publishes_speed_path_preview_only_once():
     assert len(speed_path_pub.calls) == 1
 
 
+def _execute_planning(executor, trajectory_tracking_mode="static"):
+    return executor.execute(
+        [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=False,
+        trajectory_tracking_mode=trajectory_tracking_mode,
+    )
+
+
 @pytest.mark.parametrize(
-    "removed_mode", ["replanning", "replanning_minco", "replanning_minco_v2"])
-def test_execute_removed_trajectory_tracking_modes_fall_back_to_static(removed_mode):
+    "unknown_mode", ["bogus", "replanning", "replanning_minco", "replanning_minco_v2"])
+def test_execute_unknown_trajectory_tracking_mode_fails_planning(unknown_mode):
     setpoint_pub = FakeSetpointPublisher()
     logger = FakeLogger()
-    tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
-    executor = GuidanceExecutor(
-        tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.1),
-        logger, target_speed=1.0, max_accel=0.02, align_pos_timeout=0.1,
-        velocity_fn=lambda: FakeVelocityEstimate([0.0, 0.0, 0.0]),
+    executor = _make_executor(
+        FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), setpoint_pub,
+        FakeCheckpointPublisher(), *_make_clock(), logger, target_speed=1.0,
     )
-    status = executor.execute(
-        [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
-        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
-        face_travel=False, align_at_arrival=False,
-        trajectory_tracking_mode=removed_mode,
-    )
-    assert status == STATUS_SUCCESS
-    assert any("unknown trajectory_tracking_mode" in w for w in logger.warnings)
+    assert _execute_planning(executor, unknown_mode) == STATUS_PLANNING_FAILED
+    assert any("unknown trajectory_tracking_mode" in e for e in logger.errors)
+    assert setpoint_pub.calls == []
 
 
-def test_execute_unknown_trajectory_tracking_mode_falls_back_to_static():
-    setpoint_pub = FakeSetpointPublisher()
+@pytest.mark.parametrize(
+    "missing", ["wrench_envelope", "mass", "inertia", "max_angular_rate"])
+def test_execute_static_mode_fails_planning_without_toppra_constraints(missing):
     logger = FakeLogger()
-    tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
-    executor = GuidanceExecutor(
-        tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.1),
-        logger, target_speed=1.0, align_pos_timeout=0.1,
+    executor = _make_executor(
+        FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
+        FakeCheckpointPublisher(), *_make_clock(), logger, target_speed=1.0,
+        **{missing: None},
     )
-    status = executor.execute(
-        [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
-        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
-        face_travel=False, align_at_arrival=False,
-        trajectory_tracking_mode="bogus",
+    assert _execute_planning(executor) == STATUS_PLANNING_FAILED
+    assert any(missing in e for e in logger.errors)
+
+
+def test_execute_static_mode_fails_planning_when_toppra_is_infeasible(monkeypatch):
+    from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import (
+        TrajectoryInfeasibleError,
     )
-    assert status == STATUS_SUCCESS
+    from sobits_intball2_gnc.guidance.trajectory_tracking import tracker_builder
+
+    def infeasible(*_a, **_k):
+        raise TrajectoryInfeasibleError("test")
+
+    monkeypatch.setattr(tracker_builder, "ToppraTrajectory", infeasible)
+    logger = FakeLogger()
+    executor = _make_executor(
+        FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
+        FakeCheckpointPublisher(), *_make_clock(), logger, target_speed=1.0,
+    )
+    assert _execute_planning(executor) == STATUS_PLANNING_FAILED
+    assert any("TOPP-RA" in e for e in logger.errors)
+
+
+def test_execute_static_minco_mode_fails_planning_when_infeasible(monkeypatch):
+    from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
+        MincoInfeasibleError,
+    )
+    from sobits_intball2_gnc.guidance.trajectory_tracking import tracker_builder
+
+    def infeasible(*_a, **_k):
+        raise MincoInfeasibleError("test")
+
+    monkeypatch.setattr(tracker_builder, "MincoTrajectory", infeasible)
+    logger = FakeLogger()
+    executor = _make_executor(
+        FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
+        FakeCheckpointPublisher(), *_make_clock(), logger, target_speed=1.0,
+    )
+    assert _execute_planning(executor, "static_minco") == STATUS_PLANNING_FAILED
+    assert any("static MINCO" in e for e in logger.errors)
+
+
+def test_execute_replanning_minco_v3_mode_fails_planning_when_toppra_fallback_is_unavailable():
+    logger = FakeLogger()
+    executor = _make_executor(
+        FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
+        FakeCheckpointPublisher(), *_make_clock(), logger, target_speed=1.0,
+        max_accel=None, wrench_envelope=None,
+    )
+    assert _execute_planning(executor, "replanning_minco_v3") == STATUS_PLANNING_FAILED
     assert any("falling back to 'static'" in w for w in logger.warnings)
+    assert any("wrench_envelope" in e for e in logger.errors)
 
 
 def test_align_to_ignores_stale_tf_attitude_for_convergence():
@@ -1020,7 +1089,7 @@ def test_align_to_ignores_stale_tf_attitude_for_convergence():
     )
     logger = FakeLogger()
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), FakeCheckpointPublisher(),
         *_make_clock(dt_per_spin=0.2), logger,
         target_speed=1000.0, align_tolerance_deg=3.0, align_timeout=0.6,
@@ -1043,7 +1112,7 @@ def test_execute_via_waypoints_routes_the_planned_curve_through_the_relay_points
     """Static-mode routing check (docs/
     2026-08-25_guidance_waypoint_insertion_curve_verification.md, generalized
     from a single point to a list 2026-08-31): with a non-collinear via
-    waypoint, the planned Hermite curve must actually pass near it -- unlike
+    waypoint, the planned curve must actually pass near it -- unlike
     the old 2-waypoint straight line p0->p_target, which would never come
     near an off-line via waypoint."""
     setpoint_pub = FakeSetpointPublisher()
@@ -1053,7 +1122,7 @@ def test_execute_via_waypoints_routes_the_planned_curve_through_the_relay_points
     via_waypoints = [[1.0, 1.0, 0.0]]
     p_target = [2.0, 0.0, 0.0]
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, setpoint_pub, FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.1),
         FakeLogger(), target_speed=1.0, align_pos_timeout=0.1,
     )
@@ -1081,7 +1150,7 @@ def test_execute_pre_aligns_toward_via_waypoint_not_final_target():
     via_waypoints = [[0.0, 1.0, 0.0]]  # +Y -- a very different direction from
     p_target = [1.0, 1.0, 0.0]         # the chord straight to p_target
 
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         tf, FakeSetpointPublisher(), checkpoint_pub, *_make_clock(dt_per_spin=0.1),
         FakeLogger(), target_speed=1.0, align_tolerance_deg=3.0, align_timeout=0.2,
         align_pos_timeout=0.1,
@@ -1106,7 +1175,7 @@ def test_execute_pre_aligns_toward_via_waypoint_not_final_target():
 def _brake_executor(tf, setpoint_pub, checkpoint_pub, logger, allocator=True,
                     vel=(0.2, 0.0, 0.0), gyro=(0.0, 0.0, 0.0)):
     from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
-    return GuidanceExecutor(
+    return _make_executor(
         tf, setpoint_pub, checkpoint_pub, *_make_clock(dt_per_spin=0.05), logger,
         mass=3.216, inertia=0.0136,
         velocity_fn=lambda: FakeVelocityEstimate(list(vel)),
@@ -1172,7 +1241,7 @@ class _MovedGoalTracker:
 def test_run_trajectory_converges_on_the_trackers_moved_goal():
     moved_goal = [0.55, 0.0, 0.0]
     logger = FakeLogger()
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         FakeTf(moved_goal, [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
         FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05), logger,
         target_speed=1.0, align_pos_tolerance_m=0.05, align_pos_settle_time=0.2,
@@ -1187,7 +1256,7 @@ def test_run_trajectory_converges_on_the_trackers_moved_goal():
 
 def test_execute_aligns_at_arrival_on_the_trackers_moved_goal(monkeypatch):
     moved_goal = [0.55, 0.0, 0.0]
-    executor = GuidanceExecutor(
+    executor = _make_executor(
         FakeTf(moved_goal, [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
         FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05), FakeLogger(),
         target_speed=1.0, align_tolerance_deg=3.0, align_timeout=0.2,

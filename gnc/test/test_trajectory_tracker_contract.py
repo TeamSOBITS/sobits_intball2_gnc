@@ -4,25 +4,23 @@ BaseTrajectoryTracker implementation must satisfy).
 
 The property every tracker must share is simply "eventually converges to
 p_target" -- StaticTrajectoryTracker trivially so (it just samples a
-pre-built Trajectory), ReplanningMincoV3Tracker by construction (its last
+pre-built TOPP-RA trajectory), ReplanningMincoV3Tracker by construction (its last
 local trajectory touches the goal and ends at rest there).
 """
 import numpy as np
 import pytest
 
-from sobits_intball2_gnc.guidance.segment_time.heuristic_segment_time_allocator import (
-    HeuristicSegmentTimeAllocator,
-)
-from sobits_intball2_gnc.guidance.trajectory_generation.hermite_spline_trajectory_generator import (
-    HermiteSplineTrajectoryGenerator,
-)
+from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
+from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import ToppraTrajectory
 from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
     ReplanningMincoV3Tracker,
 )
 from sobits_intball2_gnc.guidance.trajectory_tracking.static_trajectory_tracker import (
     StaticTrajectoryTracker,
 )
-from sobits_intball2_gnc.guidance.trajectory.trajectory import Trajectory
+from sobits_intball2_gnc.guidance.utils.actuation_envelope import (
+    wrench_envelope_halfspaces,
+)
 
 P0 = [0.0, 0.0, 0.0]
 P_TARGET = [2.0, 0.0, 0.0]
@@ -31,12 +29,13 @@ MAX_ACCEL = 0.1 / 4.5
 
 
 def _build_trajectory(p0=P0, p_target=P_TARGET):
-    waypoints = [p0, p_target]
-    segment_times = HeuristicSegmentTimeAllocator(
-        target_speed=TARGET_SPEED, max_accel=MAX_ACCEL,
-    ).allocate(waypoints)
-    coeffs = HermiteSplineTrajectoryGenerator().generate(waypoints, segment_times)
-    return Trajectory(waypoints, segment_times, coeffs)
+    alloc = ThrustAllocator()
+    return ToppraTrajectory(
+        [p0, p_target], [0.0, 0.0, 0.0, 1.0], max_vel=TARGET_SPEED,
+        mass=3.216, inertia=0.0136,
+        wrench_envelope=wrench_envelope_halfspaces(alloc.A, alloc.fj_max),
+        max_angular_rate=np.deg2rad(90.0),
+    )
 
 
 class _StaticFixture:

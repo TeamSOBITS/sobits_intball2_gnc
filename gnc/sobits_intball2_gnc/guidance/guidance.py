@@ -57,6 +57,7 @@ from sobits_intball2_gnc.guidance.trajectory_tracking.tracker_builder import (
 )
 from sobits_intball2_gnc.guidance.utils.guidance_executor import (
     STATUS_CANCELED,
+    STATUS_PLANNING_FAILED,
     STATUS_SUCCESS,
     GuidanceExecutor,
 )
@@ -98,13 +99,12 @@ class GuidanceNode(Node):
 
         # Same values as control.py's trajectory_controller section (shared
         # with HoverController's TrajectoryController) -- declared here too,
-        # read-only, so segment-time allocation knows the same force/mass
-        # budget the control side will actually track with (see
-        # HeuristicSegmentTimeAllocator's docstring and
-        # docs/guidance_move_to_debug_2026-08-20.md).
+        # read-only, so trajectory generation knows the same force/mass
+        # budget the control side will actually track with
+        # (docs/guidance_move_to_debug_2026-08-20.md).
         self.declare_parameter("trajectory_controller.max_force", [0.181, 0.0996, 0.122])
         self.declare_parameter("trajectory_controller.mass", 3.216, static_descriptor)
-        # Only used by HeuristicSegmentTimeAllocator (the replanning path's
+        # Only used by replanning_minco_v3's heuristic segment times (a
         # scalar 1-D model) -- the static/TOPP-RA path below uses the real
         # fan-derived wrench envelope instead (wrench_envelope below), see
         # docs/2026-08-28_constrained_trajectory_generation_research.md and
@@ -436,7 +436,7 @@ class GuidanceNode(Node):
         )
         if status == STATUS_SUCCESS:
             return TERMINATE_SUCCESS
-        if status == STATUS_CANCELED:
+        if status in (STATUS_CANCELED, STATUS_PLANNING_FAILED):
             self._start_braking()
         return TERMINATE_ABORTED
 

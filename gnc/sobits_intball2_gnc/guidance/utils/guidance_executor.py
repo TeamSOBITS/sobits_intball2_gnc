@@ -4,8 +4,8 @@
 Implements the ``execute_fn`` body for
 :class:`~sobits_intball2_gnc.guidance.ros.ctl_command_action_server.CtlCommandActionServer`
 (``docs/guidance_node_implementation_plan.md``): current pose (TF) -> target
-pose -> ``HeuristicSegmentTimeAllocator`` -> ``HermiteSplineTrajectoryGenerator``
--> ``Trajectory`` -> a sim-clock-paced publish loop onto
+pose -> a trajectory tracker (:class:`~sobits_intball2_gnc.guidance.
+trajectory_tracking.tracker_builder.TrackerBuilder`) -> a sim-clock-paced publish loop onto
 ``/gnc/trajectory_setpoint``, folding in the pre-/post-alignment steps that
 ``test/manual/send_curve_via_naventry_to_*_facing_direction.py`` scripts have
 so far done ad hoc per-script.
@@ -31,14 +31,14 @@ checkpoint chaining) is still out of scope here.
 import numpy as np
 
 from sobits_intball2_gnc.guidance.align.attitude_aligner import AttitudeAligner
-from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import MincoTrajectory
-from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import ToppraTrajectory
-from sobits_intball2_gnc.guidance.trajectory.trajectory import Trajectory
 from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
     DEFAULT_LOCAL_REPLAN_PERIOD_S,
     DEFAULT_PLANNING_HORIZON_M,
 )
-from sobits_intball2_gnc.guidance.trajectory_tracking.tracker_builder import TrackerBuilder
+from sobits_intball2_gnc.guidance.trajectory_tracking.tracker_builder import (
+    TrackerBuilder,
+    TrajectoryBuildError,
+)
 from sobits_intball2_gnc.guidance.utils.attitude_reference import (
     compute_camera_relative_quat,
     compute_q_des,
@@ -48,6 +48,7 @@ from sobits_intball2_gnc.guidance.utils.cancel_brake import CancelBrake
 STATUS_SUCCESS = "success"
 STATUS_ABORTED = "aborted"
 STATUS_CANCELED = "canceled"
+STATUS_PLANNING_FAILED = "planning_failed"
 
 DEFAULT_CAMERA_FORWARD_AXIS = {
     "main": (1.0, 0.0, 0.0),
@@ -129,10 +130,8 @@ class GuidanceExecutor:
         self._log = logger
         self._target_speed = float(target_speed)
         # Vehicle's achievable acceleration [m/s^2], e.g.
-        # trajectory_controller.max_force / mass -- see
-        # HeuristicSegmentTimeAllocator's docstring for why this matters
-        # (segment_time must be long enough for a from-rest-to-rest profile
-        # at this acceleration, not just distance/target_speed).
+        # trajectory_controller.max_force / mass -- replanning_minco_v3's
+        # heuristic segment times must allow a rest-to-rest profile at it.
         self._max_accel = None if max_accel is None else float(max_accel)
         self._attitude_speed_threshold = float(attitude_speed_threshold)
         # Position-error counterpart of AttitudeAligner's align_tolerance_rad/
@@ -162,13 +161,8 @@ class GuidanceExecutor:
         self._tf_last_stamp = None
         self._tf_last_advance_t = None
         self._dt = 1.0 / float(rate)
-        # q_des rate limit (docs/archive/achieved/
-        # 2026-08-24_trajectory_state_carryover_design.md 3-4節): always
-        # passed to every Trajectory this class builds (static or
-        # re-planning) -- None (default) reproduces the prior unlimited
-        # behavior, but the node wires a real value so re-planning's noisy
-        # v0 (docs/guidance_realtime_replanning_design.md 6-4節) can't
-        # translate into an unbounded single-tick q_des jump.
+        # q_des rate limit for TOPP-RA's face-travel attitude (docs/archive/
+        # achieved/2026-08-24_trajectory_state_carryover_design.md 3-4節).
         self._max_angular_rate = (
             None if max_angular_rate is None else float(max_angular_rate)
         )
@@ -185,9 +179,8 @@ class GuidanceExecutor:
         # Real actuator-derived budget for the static/TOPP-RA path (docs/
         # 2026-08-28_constrained_trajectory_generation_research.md,
         # docs/2026-08-28_toppra_static_path_attitude_overshoot_incident.md
-        # "追記（2026-08-28 その2）") -- None (any of the three) disables
-        # TOPP-RA and falls back to the legacy Hermite/
-        # HeuristicSegmentTimeAllocator static path.
+        # "追記（2026-08-28 その2）") -- None (any of the three, or
+        # max_angular_rate) makes static-mode goals abort.
         # wrench_envelope is a static (F, g) half-space pair from
         # actuation_envelope.wrench_envelope_halfspaces -- passed straight
         # through to ToppraTrajectory, not touched here.
@@ -211,7 +204,7 @@ class GuidanceExecutor:
         )
         self._tracker_builder = TrackerBuilder(
             tf_client, self._tf_pose_fresh, logger, self._target_speed, self._max_accel,
-            self._attitude_speed_threshold, self._max_angular_rate, self._wrench_envelope,
+            self._max_angular_rate, self._wrench_envelope,
             self._mass, self._inertia, obstacle_map=obstacle_map,
             stop_profile_fn=self._brake.profile_from if self._brake.available else None,
         )
@@ -373,14 +366,12 @@ class GuidanceExecutor:
         whatever the main camera would have seen".
 
         ``trajectory_tracking_mode``: ``"static"`` (default) samples a single
-        open-loop trajectory generated at goal start (TOPP-RA if configured,
-        else Hermite). An unrecognized value falls back to ``"static"`` with
-        a warning.
+        open-loop TOPP-RA trajectory generated at goal start (needs
+        ``wrench_envelope``/``mass``/``inertia``/``max_angular_rate``).
 
         ``"static_minco"`` is like ``"static"`` (single open-loop trajectory,
         no TF-driven re-planning) but backed by ``MincoTrajectory`` instead
-        of TOPP-RA/Hermite. Falls back to the Hermite static path (not
-        TOPP-RA) if the MINCO solve is infeasible.
+        of TOPP-RA.
 
         ``"replanning_minco_v3"`` (``docs/
         2026-09-20_ego_v2_style_replan_migration_plan.md``): an
@@ -394,6 +385,9 @@ class GuidanceExecutor:
         ``q0``). Needs no ``velocity_fn``; needs ``max_accel`` unless
         ``minco_freetime=True``. Falls back to ``"static"`` if ``max_accel``
         is missing or the initial global/local solve is infeasible.
+
+        Returns ``STATUS_PLANNING_FAILED`` (the caller brakes) when no
+        trajectory can be built, including an unrecognized mode.
         """
         pose = self._tf.get_pose()
         if pose is None:
@@ -461,7 +455,7 @@ class GuidanceExecutor:
 
             # Re-read TF: pre_align may have just rotated the vehicle to
             # q_align, but (p0, q0) above are from BEFORE that rotation.
-            # Without this re-read, Trajectory's initial_q_des below seeds
+            # Without this re-read, the tracker's q0 below seeds
             # face-travel's reference with the STALE pre-pre_align attitude
             # -- once translation speed crosses attitude_speed_threshold,
             # compute_q_des then has to visibly (rate-limited) catch up from
@@ -488,22 +482,26 @@ class GuidanceExecutor:
                 )
                 return STATUS_ABORTED
 
-        tracker, traj = self._tracker_builder.build(
-            p0, q0, p_target, via_waypoints, trajectory_tracking_mode,
-            forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"], face_travel,
-            minco_via_half_width=minco_via_half_width,
-            minco_attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
-            minco_wrench_safety_margin=minco_wrench_safety_margin,
-            minco_freetime=minco_freetime,
-            minco_local_replan_period=minco_local_replan_period,
-            minco_planning_horizon_m=minco_planning_horizon_m,
-            minco_v3_face_travel=minco_v3_face_travel,
-            minco_local_max_vel=minco_local_max_vel,
-            minco_v3_async_replan=minco_v3_async_replan,
-            minco_obstacle_avoidance=minco_obstacle_avoidance,
-            minco_local_piece_length_m=minco_local_piece_length_m,
-            minco_obstacle_clearance_soft=minco_obstacle_clearance_soft,
-        )
+        try:
+            tracker, traj = self._tracker_builder.build(
+                p0, q0, p_target, via_waypoints, trajectory_tracking_mode,
+                forward_axis or DEFAULT_CAMERA_FORWARD_AXIS["main"], face_travel,
+                minco_via_half_width=minco_via_half_width,
+                minco_attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
+                minco_wrench_safety_margin=minco_wrench_safety_margin,
+                minco_freetime=minco_freetime,
+                minco_local_replan_period=minco_local_replan_period,
+                minco_planning_horizon_m=minco_planning_horizon_m,
+                minco_v3_face_travel=minco_v3_face_travel,
+                minco_local_max_vel=minco_local_max_vel,
+                minco_v3_async_replan=minco_v3_async_replan,
+                minco_obstacle_avoidance=minco_obstacle_avoidance,
+                minco_local_piece_length_m=minco_local_piece_length_m,
+                minco_obstacle_clearance_soft=minco_obstacle_clearance_soft,
+            )
+        except TrajectoryBuildError as exc:
+            self._log.error("[GuidanceExecutor] %s, aborting" % exc)
+            return STATUS_PLANNING_FAILED
 
         if self._speed_path_pub is not None:
             self._publish_speed_path_preview(traj)
@@ -573,32 +571,13 @@ class GuidanceExecutor:
         RViz-only visualization -- called once at goal start, and again on
         every re-plan (see ``_run_trajectory``).
 
-        For a legacy ``Trajectory``, samples a throwaway instance built from
-        ``traj``'s current ``waypoints``/``segment_times``/``coeffs``, not
-        ``traj`` itself: ``Trajectory.sample()`` is stateful (face-travel
-        rate-limiting via ``_last_sample_t``/``_last_q_des``) and sampling it
-        out of order here would corrupt that state before the real,
-        monotonically-increasing sampling in ``_run_trajectory``. The
-        preview never reads ``q_des`` (``SpeedPathPublisher.publish()`` only
-        wants position/speed), so ``face_travel=False`` skips the attitude
-        computation entirely rather than reproducing the goal's actual
-        attitude-reference settings here.
-
-        For a ``ToppraTrajectory`` or ``MincoTrajectory``, ``sample()`` is a
-        pure lookup into an already-computed time-parameterized trajectory
-        (no per-call mutable state), so it's safe to sample ``traj``
-        directly here.
+        ``ToppraTrajectory``/``MincoTrajectory.sample()`` is a pure lookup
+        (no per-call mutable state), so sampling ``traj`` out of order here
+        is safe.
         """
         n = max(2, self._path_preview_points)
-        if isinstance(traj, (ToppraTrajectory, MincoTrajectory)):
-            duration = traj.global_total_duration
-            samples = [traj.sample(duration * i / (n - 1)) for i in range(n)]
-        else:
-            preview_traj = Trajectory(
-                traj.waypoints, traj.segment_times, traj.coeffs, face_travel=False,
-            )
-            samples = [preview_traj.sample(traj.total_duration * i / (n - 1))
-                       for i in range(n)]
+        duration = traj.global_total_duration
+        samples = [traj.sample(duration * i / (n - 1)) for i in range(n)]
         (publisher or self._speed_path_pub).publish(
             [(p, np.linalg.norm(v)) for p, v, _a, _q in samples]
         )

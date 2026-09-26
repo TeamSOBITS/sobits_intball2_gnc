@@ -4,8 +4,7 @@
 A trajectory tracker turns "the current goal's elapsed time" into a sampled
 ``(p, v, a, q_des)`` reference, and owns the decision of *how* that reference
 gets produced tick to tick -- either by sampling a fixed, open-loop
-:class:`~sobits_intball2_gnc.guidance.trajectory.trajectory.Trajectory`
-(:mod:`static_trajectory_tracker`) or by periodically re-planning it
+trajectory (:mod:`static_trajectory_tracker`) or by periodically re-planning it
 (:mod:`replanning_minco_v3_tracker`). Package-ized per
 ``docs/architecture_guidelines.md`` 2 節: two concrete, named implementations
 exist for the same "how to produce ``(p,v,a,q)`` this tick" role (see
@@ -41,9 +40,8 @@ class BaseTrajectoryTracker(Protocol):
     @property
     def total_duration(self):
         """Current global "reaches the target" time [s], on the same time
-        axis as ``sample(t)``'s ``t`` -- i.e. ``Trajectory.
-        global_total_duration``, not the possibly-re-planned-and-therefore-
-        locally-zeroed ``Trajectory.total_duration``. Fixed for
+        axis as ``sample(t)``'s ``t`` -- i.e. the trajectory's
+        ``global_total_duration``. Fixed for
         :class:`~static_trajectory_tracker.StaticTrajectoryTracker`; may
         change over time (each re-plan) for
         :class:`~replanning_minco_v3_tracker.ReplanningMincoV3Tracker`.

@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Common interface for trajectory (coefficient) generators (ROS-agnostic, pure).
 
-A trajectory generator turns a waypoint list + per-segment durations into the
-polynomial coefficients that
-:class:`sobits_intball2_gnc.guidance.trajectory.trajectory.Trajectory` samples
-(``docs/min_snap_interface_contract.md`` 2 節's ``coeffs`` layout). Package-ized
+A trajectory generator turns a waypoint list + per-segment durations into
+polynomial coefficients (``docs/min_snap_interface_contract.md`` 2 節's
+``coeffs`` layout). Package-ized
 per ``docs/architecture_guidelines.md`` 2 節: a min-snap solver (Mellinger &
 Kumar 2011, core solve not implemented -- 2026-08-24 decision, see
 :mod:`sobits_intball2_gnc.guidance.trajectory_generation.min_snap_trajectory_generator`)
@@ -24,17 +23,12 @@ class BaseTrajectoryGenerator(Protocol):
     def generate(self, waypoints, segment_times, v0=None):
         """Return ``coeffs``: shape ``(n_segments, 3, 8)``, ascending-power
         per-axis polynomial coefficients evaluated in local segment time
-        ``tau`` (``docs/min_snap_interface_contract.md`` 2 節/3 節) --
-        exactly what
-        :class:`~sobits_intball2_gnc.guidance.trajectory.trajectory.Trajectory`
-        expects as its ``coeffs`` argument.
+        ``tau`` (``docs/min_snap_interface_contract.md`` 2 節/3 節).
 
         Args:
             waypoints: ``(n_waypoints, 3)`` reference-frame position array.
             segment_times: ``(n_waypoints - 1,)`` per-segment durations [s],
-                every element ``> 0`` (e.g. from a
-                :class:`~sobits_intball2_gnc.guidance.segment_time.base_segment_time_allocator.BaseSegmentTimeAllocator`,
-                and matching the ``v0`` passed there -- see below).
+                every element ``> 0``, chosen for the same ``v0`` (see below).
             v0: optional start velocity vector, shape ``(3,)``, at
                 ``waypoints[0]`` (e.g. the vehicle's real TF-estimated
                 velocity when re-planning mid-flight, see
