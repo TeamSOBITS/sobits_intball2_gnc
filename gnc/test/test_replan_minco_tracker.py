@@ -451,7 +451,13 @@ def test_async_collision_stops_once_the_replan_fails():
     assert tracker.last_fallback_reason == "emergency_stop"
 
 
-def test_async_collision_seen_during_an_older_solve_solves_again_before_deciding():
+def _join_pending(tracker):
+    """A daemon solve still inside the native solver at interpreter exit aborts the process."""
+    if tracker._pending_thread is not None:
+        tracker._pending_thread.join()
+
+
+def _older_solve_landing_with_collision(ahead_s_after_landing):
     tf = _IdealTrackingTf()
     tracker, collision = _async_tracker_with_scripted_collision(tf)
     gate = _gate_local_builds(tracker)
@@ -462,13 +468,161 @@ def test_async_collision_seen_during_an_older_solve_solves_again_before_deciding
     t = _tick(tracker, tf, 0.0)
     assert tracker._pending_thread is older
 
+    collision["ahead_s"] = ahead_s_after_landing
     gate.set()
     older.join()
-    t = _tick(tracker, tf, t)
+    _tick(tracker, tf, t)
+    return tracker, older
+
+
+def test_async_older_solve_landing_collision_free_on_the_current_grid_is_kept():
+    tracker, _older = _older_solve_landing_with_collision(None)
+    assert tracker.last_replan_occurred
+    assert tracker.emergency_stops == 0
+    assert tracker._pending_thread is None
+    _join_pending(tracker)
+
+
+def test_async_older_solve_landing_still_colliding_far_away_replans_without_stopping():
+    tracker, older = _older_solve_landing_with_collision(_HoldStop.duration + 1.0)
     assert tracker.emergency_stops == 0
     assert tracker._pending_thread is not None and tracker._pending_thread is not older
+    _join_pending(tracker)
 
-    collision["ahead_s"] = None
-    tracker._pending_thread.join()
+
+def test_async_older_solve_landing_still_colliding_close_stops_without_solving_again():
+    tracker, _older = _older_solve_landing_with_collision(1.0)
+    assert tracker.emergency_stops == 1
+    assert tracker._stop_profile is not None
+    _join_pending(tracker)
+
+
+class _OccupiedBeyondX:
+    resolution = 0.1
+
+    def __init__(self, x):
+        self.x = x
+
+    def inflated_occupied(self, p):
+        return p[0] >= self.x
+
+
+def _moving_tracker_with_collision_ahead(tf, grid_x_ahead):
+    tracker, collision = _async_tracker_with_scripted_collision(tf)
+    t = 0.0
+    for _ in range(40):
+        t = _tick(tracker, tf, t)
+    tracker._planner.obstacle_grid = _OccupiedBeyondX(tf.pos[0] + grid_x_ahead)
+    gate = _gate_local_builds(tracker)
+    collision["ahead_s"] = 1.0
     t = _tick(tracker, tf, t)
+    return tracker, gate
+
+
+def test_async_collision_stops_at_once_when_braking_after_the_expected_wait_would_collide():
+    tf = _IdealTrackingTf()
+    tracker, gate = _moving_tracker_with_collision_ahead(tf, 0.01)
+    assert tracker.emergency_stops == 1
+    assert tracker._pending_thread is not None
+    gate.set()
+    _join_pending(tracker)
+
+
+def test_async_collision_keeps_flying_when_braking_after_the_expected_wait_is_clear():
+    tf = _IdealTrackingTf()
+    tracker, gate = _moving_tracker_with_collision_ahead(tf, 100.0)
     assert tracker.emergency_stops == 0
+    assert tracker._pending_thread is not None
+    gate.set()
+    _join_pending(tracker)
+
+
+def test_expected_replan_wait_is_a_margin_over_recent_async_waits():
+    tf = _IdealTrackingTf()
+    tracker = _make_tracker(tf, local_replan_period=1.0, async_replan=True)
+    assert tracker._expected_replan_wait_s() == pytest.approx(1.0)
+    gate = _gate_local_builds(tracker)
+    t = 0.0
+    while tracker._pending_thread is None:
+        t = _tick(tracker, tf, t)
+    for _ in range(5):
+        t = _tick(tracker, tf, t)
+    gate.set()
+    tracker._pending_thread.join()
+    _tick(tracker, tf, t)
+    assert tracker._expected_replan_wait_s() == pytest.approx(1.2 * 6 * DT)
+
+
+def _braking_tracker(tf):
+    tracker, _collision = _async_tracker_with_scripted_collision(tf)
+    t = 0.0
+    for _ in range(10):
+        t = _tick(tracker, tf, t)
+    gate = _gate_local_builds(tracker)
+    tracker._start_emergency_stop(_HoldStop(tf.pos))
+    t = _tick(tracker, tf, t)
+    assert tracker._pending_is_brake_replan
+    return tracker, gate, t
+
+
+def test_braking_switches_to_a_collision_free_replan_once_the_brake_reaches_its_start():
+    tf = _IdealTrackingTf()
+    tracker, gate, t = _braking_tracker(tf)
+    t_switch = tracker._brake_replan_t
+    gate.set()
+    tracker._pending_thread.join()
+    ticks = 0
+    while tracker._stop_profile is not None and ticks < 100:
+        t = _tick(tracker, tf, t)
+        ticks += 1
+    assert tracker._stop_profile is None
+    assert tracker.last_replan_occurred
+    assert tracker.emergency_stops == 1
+    assert ticks * DT >= t_switch - DT - 1e-9
+    _join_pending(tracker)
+
+
+def test_braking_drops_a_replan_that_lands_after_its_start_time():
+    tf = _IdealTrackingTf()
+    tracker, gate, t = _braking_tracker(tf)
+    late = tracker._pending_thread
+    for _ in range(int(tracker._brake_replan_t / DT) + 5):
+        t = _tick(tracker, tf, t)
+    gate.set()
+    late.join()
+    t = _tick(tracker, tf, t)
+    assert tracker._stop_profile is not None
+    assert tracker._brake_switch is None
+    assert tracker._pending_thread is not None and tracker._pending_thread is not late
+    _join_pending(tracker)
+
+
+def test_braking_drops_a_replan_whose_local_collides():
+    tf = _IdealTrackingTf()
+    tracker, gate, t = _braking_tracker(tf)
+    tracker._local_collides = lambda local, touches_goal: True
+    gate.set()
+    tracker._pending_thread.join()
+    for _ in range(40):
+        t = _tick(tracker, tf, t)
+    assert tracker._stop_profile is not None
+    assert tracker._brake_switch is None
+    assert not tracker.last_replan_occurred
+    _join_pending(tracker)
+
+
+def test_stop_drops_a_solve_started_before_it():
+    tf = _IdealTrackingTf()
+    tracker, _collision = _async_tracker_with_scripted_collision(tf)
+    gate = _gate_local_builds(tracker)
+    tracker._start_background_replan()
+    before_stop = tracker._pending_thread
+    local_before = tracker.local_trajectory
+    tracker._start_emergency_stop(_HoldStop(tf.pos))
+    gate.set()
+    before_stop.join()
+    t = _tick(tracker, tf, 0.0)
+    assert tracker.local_trajectory is local_before
+    assert not tracker.last_replan_occurred
+    assert tracker._pending_is_brake_replan
+    _join_pending(tracker)
