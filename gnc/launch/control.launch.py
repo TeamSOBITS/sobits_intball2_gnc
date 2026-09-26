@@ -1,4 +1,4 @@
-"""Launch the IntBall2 hover control node with its ROS2 parameter file.
+"""Launch the IntBall2 control node (control_node) with its ROS2 parameter file.
 
 Loads ``config/gnc_params.yaml`` (installed to the package share directory) into
 the ``control`` orchestrator node so TF-corrected IMU hover runs with the tuned
@@ -17,8 +17,8 @@ TF stamps (sim time) -- under CPU load, Gazebo's real-time factor drops below
 failure (see docs/recording_cpu_load_control_degradation.md). Aligning this
 node to sim time removes that mismatch.
 
-    ros2 launch sobits_intball2_gnc hover_control.launch.py
-    ros2 launch sobits_intball2_gnc hover_control.launch.py params_file:=/abs/path.yaml
+    ros2 launch sobits_intball2_gnc control.launch.py
+    ros2 launch sobits_intball2_gnc control.launch.py params_file:=/abs/path.yaml
 """
 import os
 

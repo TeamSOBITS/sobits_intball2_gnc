@@ -124,9 +124,9 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
     ```
     ros2 launch sobits_intball2_gnc gnc_bringup.launch.py
     ```
-- [hover_control.launch.py](gnc/launch/hover_control.launch.py)を起動し，現在位置・姿勢の保持を行います．
+- [control.launch.py](gnc/launch/control.launch.py)を起動し，現在位置・姿勢の保持を行います．
     ```
-    ros2 launch sobits_intball2_gnc hover_control.launch.py
+    ros2 launch sobits_intball2_gnc control.launch.py
     ```
 - [guidance.py](gnc/sobits_intball2_gnc/guidance/guidance.py)を起動し，目標軌道の生成・追従を行います．
     ```

@@ -4,7 +4,7 @@ Manual verification scripts for the trajectory-following interface
 (`/gnc/trajectory_setpoint`, Phase 3a). **Not pytest tests** -- none of these
 are named `test_*.py` inside a test function, so `colcon test` never collects
 or runs them. They require a running simulator and `gnc launch` (or
-`ros2 launch sobits_intball2_gnc hover_control.launch.py`) and are run
+`ros2 launch sobits_intball2_gnc control.launch.py`) and are run
 directly with `python3`:
 
 ```sh

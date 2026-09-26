@@ -1,7 +1,7 @@
 """Launch the IntBall2 guidance node with its ROS2 parameter file.
 
 Loads ``config/gnc_params.yaml`` (installed to the package share directory) into
-``guidance_node``, the same file ``hover_control.launch.py`` gives
+``guidance_node``, the same file ``control.launch.py`` gives
 ``control_node``, so both nodes read one set of shared physical constants
 (``trajectory_controller.mass``, ``thrust_allocator.*``, ...). Started via
 plain ``ros2 run`` the node silently fell back to its in-code defaults, which

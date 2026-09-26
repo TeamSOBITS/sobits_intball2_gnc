@@ -108,7 +108,7 @@ class ControlNode(Node):
         # (guidance/guidance.py): this node's TF-stamp-based dt math
         # (trajectory_controller.py's compute()/compute_attitude()) assumes
         # self.get_clock() is sim time. Previously this was only ever true
-        # because hover_control.launch.py injects use_sim_time as a launch
+        # because control.launch.py injects use_sim_time as a launch
         # parameter -- a bare `ros2 run sobits_intball2_gnc control` (bypassing
         # the launch file) silently defaulted to wall-clock, asymmetric with
         # guidance_node's code-level default. A parameter_override is a
@@ -363,7 +363,7 @@ class ControlNode(Node):
         if duplicate_control_nodes > 0:
             self.get_logger().error(
                 "DUPLICATE %s DETECTED: %d other publisher(s) named %r on %s "
-                "-- is hover_control.launch.py running twice (possibly on "
+                "-- is control.launch.py running twice (possibly on "
                 "another host/container sharing this ROS_DOMAIN_ID)? Detected "
                 "by publisher identity, not duty content, so it won't be "
                 "hidden even if both instances happen to command the same "
@@ -473,7 +473,7 @@ def main(args=None) -> None:
             "$(ros2 pkg prefix sobits_intball2_gnc)"
             "/share/sobits_intball2_gnc/config/gnc_params.yaml\n"
             "  # or, more simply:\n"
-            "  ros2 launch sobits_intball2_gnc hover_control.launch.py\n"
+            "  ros2 launch sobits_intball2_gnc control.launch.py\n"
             "  # IMU-only hover (no TF lookups):\n"
             "  ros2 run sobits_intball2_gnc control --ros-args "
             "-p hover_control.mode:=imu\n"

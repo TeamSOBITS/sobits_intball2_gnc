@@ -10,11 +10,11 @@ togglable piece of this launch, not its purpose -- as the GNC stack grows
 (e.g. a Guidance node), it belongs here too, so the file is named for the
 whole stack rather than for RViz alone.
 
-Deliberately a separate launch file from hover_control.launch.py: bring-up
+Deliberately a separate launch file from control.launch.py: bring-up
 extras like RViz are a debug aid, not something the control node should pull
 in by default (e.g. in headless/CI runs). Run both together:
 
-    ros2 launch sobits_intball2_gnc hover_control.launch.py
+    ros2 launch sobits_intball2_gnc control.launch.py
     ros2 launch sobits_intball2_gnc gnc_bringup.launch.py
     ros2 launch sobits_intball2_gnc gnc_bringup.launch.py use_rviz:=false
 """

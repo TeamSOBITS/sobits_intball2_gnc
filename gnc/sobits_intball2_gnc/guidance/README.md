@@ -86,7 +86,7 @@ export ROS_DOMAIN_ID=54   # 環境に合わせて設定
 source /root/colcon_ws/install/setup.bash
 
 ros2 launch sobits_intball2_gnc gnc_bringup.launch.py        # TF・機体モデル・RViz・名前付き地点のTF配信
-ros2 launch sobits_intball2_gnc hover_control.launch.py      # control_node（gnc_params.yamlを読む）
+ros2 launch sobits_intball2_gnc control.launch.py      # control_node（gnc_params.yamlを読む）
 ros2 launch sobits_intball2_gnc guidance.launch.py          # guidance_node（gnc_params.yamlを読む）
 ```
 
