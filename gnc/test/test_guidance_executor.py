@@ -765,10 +765,10 @@ def test_run_trajectory_ignores_stale_tf_position_for_convergence():
     assert any("did not converge" in w for w in logger.warnings)
 
 
-def test_execute_replanning_minco_v3_mode_reaches_target():
-    """trajectory_tracking_mode="replanning_minco_v3" (docs/
+def test_execute_replan_minco_mode_reaches_target():
+    """trajectory_tracking_mode="replan_minco" (docs/
     2026-09-20_ego_v2_style_replan_migration_plan.md). Does NOT pass
-    velocity_fn -- ReplanningMincoV3Tracker never reads it. Uses an
+    velocity_fn -- ReplanMincoTracker never reads it. Uses an
     ideal-tracking TF fake: this tracker replans from its own reference
     state (EGO-Planner v2), so a TF fake advancing independently of the
     commanded setpoint would converge while the reference is still mid-route."""
@@ -787,15 +787,15 @@ def test_execute_replanning_minco_v3_mode_reaches_target():
         [2.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
         feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
         face_travel=False, align_at_arrival=False,
-        trajectory_tracking_mode="replanning_minco_v3",
+        trajectory_tracking_mode="replan_minco",
     )
     assert status == STATUS_SUCCESS
-    assert not any("falling back to 'static'" in w for w in logger.warnings)
+    assert not any("falling back to 'static_toppra'" in w for w in logger.warnings)
     final_p, _v, _a, _q = setpoint_pub.calls[-1]
     assert np.allclose(final_p, [2.0, 0.0, 0.0], atol=0.15)
 
 
-def test_execute_replanning_minco_v3_mode_terminates_with_steady_state_offset():
+def test_execute_replan_minco_mode_terminates_with_steady_state_offset():
     """Live-sim regression (docs/2026-09-23_replanning_minco_v3_fix_live_sim_
     verification.md): a constant in-tolerance TF offset used to keep the
     ETA-based total_duration ahead of elapsed forever, so the goal never ended."""
@@ -819,7 +819,7 @@ def test_execute_replanning_minco_v3_mode_terminates_with_steady_state_offset():
         feedback_cb=lambda *a: None,
         is_cancel_requested=lambda: clock_seconds_fn() > 300.0,
         face_travel=False, align_at_arrival=False,
-        trajectory_tracking_mode="replanning_minco_v3",
+        trajectory_tracking_mode="replan_minco",
     )
     assert status == STATUS_SUCCESS
     assert not any("did not converge" in w for w in logger.warnings)
@@ -830,7 +830,7 @@ def test_execute_replanning_minco_v3_mode_terminates_with_steady_state_offset():
     assert np.allclose(last_local_end, [2.0, 0.0, 0.0], atol=1e-3)
 
 
-def test_execute_replanning_minco_v3_mode_falls_back_to_static_without_max_accel():
+def test_execute_replan_minco_mode_falls_back_to_static_without_max_accel():
     setpoint_pub = FakeSetpointPublisher()
     logger = FakeLogger()
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
@@ -843,30 +843,30 @@ def test_execute_replanning_minco_v3_mode_falls_back_to_static_without_max_accel
         [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
         feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
         face_travel=False, align_at_arrival=False,
-        trajectory_tracking_mode="replanning_minco_v3",
+        trajectory_tracking_mode="replan_minco",
     )
     assert any(
-        "replanning_minco_v3' requires max_accel" in w for w in logger.warnings
+        "replan_minco' requires max_accel" in w for w in logger.warnings
     )
 
 
-def test_execute_replanning_minco_v3_mode_passes_via_waypoints_to_the_tracker(monkeypatch):
+def test_execute_replan_minco_mode_passes_via_waypoints_to_the_tracker(monkeypatch):
     """Wiring check: execute()'s via_waypoints must reach the
-    ReplanningMincoV3Tracker constructor, not just the static-mode
+    ReplanMincoTracker constructor, not just the static-mode
     Trajectory (covered by
     test_execute_via_waypoints_routes_the_planned_curve_through_the_relay_points)."""
     pytest.importorskip("minco_native_py")
     import sobits_intball2_gnc.guidance.trajectory_tracking.tracker_builder as ge_module
 
     captured = {}
-    real_tracker_cls = ge_module.ReplanningMincoV3Tracker
+    real_tracker_cls = ge_module.ReplanMincoTracker
 
     class SpyTracker(real_tracker_cls):
         def __init__(self, *args, **kwargs):
             captured["route_waypoints"] = kwargs.get("route_waypoints")
             super().__init__(*args, **kwargs)
 
-    monkeypatch.setattr(ge_module, "ReplanningMincoV3Tracker", SpyTracker)
+    monkeypatch.setattr(ge_module, "ReplanMincoTracker", SpyTracker)
 
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
     via_waypoints = [[0.5, 0.5, 0.0]]
@@ -879,17 +879,17 @@ def test_execute_replanning_minco_v3_mode_passes_via_waypoints_to_the_tracker(mo
         [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
         feedback_cb=lambda *a: None, is_cancel_requested=lambda: True,
         face_travel=False, align_at_arrival=False,
-        trajectory_tracking_mode="replanning_minco_v3", via_waypoints=via_waypoints,
+        trajectory_tracking_mode="replan_minco", via_waypoints=via_waypoints,
     )
     assert np.allclose(captured["route_waypoints"], via_waypoints)
 
 
-def test_execute_replanning_minco_v3_mode_passes_local_replan_params_to_the_tracker(monkeypatch):
+def test_execute_replan_minco_mode_passes_local_replan_params_to_the_tracker(monkeypatch):
     pytest.importorskip("minco_native_py")
     import sobits_intball2_gnc.guidance.trajectory_tracking.tracker_builder as ge_module
 
     captured = {}
-    real_tracker_cls = ge_module.ReplanningMincoV3Tracker
+    real_tracker_cls = ge_module.ReplanMincoTracker
 
     class SpyTracker(real_tracker_cls):
         def __init__(self, *args, **kwargs):
@@ -897,7 +897,7 @@ def test_execute_replanning_minco_v3_mode_passes_local_replan_params_to_the_trac
             captured["planning_horizon_m"] = kwargs.get("planning_horizon_m")
             super().__init__(*args, **kwargs)
 
-    monkeypatch.setattr(ge_module, "ReplanningMincoV3Tracker", SpyTracker)
+    monkeypatch.setattr(ge_module, "ReplanMincoTracker", SpyTracker)
 
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
     executor = _make_executor(
@@ -909,13 +909,13 @@ def test_execute_replanning_minco_v3_mode_passes_local_replan_params_to_the_trac
         [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
         feedback_cb=lambda *a: None, is_cancel_requested=lambda: True,
         face_travel=False, align_at_arrival=False,
-        trajectory_tracking_mode="replanning_minco_v3",
+        trajectory_tracking_mode="replan_minco",
         minco_local_replan_period=0.5, minco_planning_horizon_m=1.5,
     )
     assert captured == {"local_replan_period": 0.5, "planning_horizon_m": 1.5}
 
 
-def test_execute_replanning_minco_v3_mode_falls_back_to_static_on_non_positive_horizon():
+def test_execute_replan_minco_mode_falls_back_to_static_on_non_positive_horizon():
     pytest.importorskip("minco_native_py")
     logger = FakeLogger()
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0])
@@ -928,13 +928,13 @@ def test_execute_replanning_minco_v3_mode_falls_back_to_static_on_non_positive_h
         [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
         feedback_cb=lambda *a: None, is_cancel_requested=lambda: True,
         face_travel=False, align_at_arrival=False,
-        trajectory_tracking_mode="replanning_minco_v3",
+        trajectory_tracking_mode="replan_minco",
         minco_planning_horizon_m=0.0,
     )
-    assert any("falling back to 'static'" in w for w in logger.warnings)
+    assert any("falling back to 'static_toppra'" in w for w in logger.warnings)
 
 
-def test_execute_replanning_minco_v3_mode_republishes_speed_path_preview_on_replan():
+def test_execute_replan_minco_mode_republishes_speed_path_preview_on_replan():
     """The speed-path preview must be re-published beyond the initial
     goal-start call once the tracker actually re-plans, so RViz doesn't show
     a stale first-plan path ([G] "再計画軌道のRVizプレビュー更新" task). The
@@ -955,7 +955,7 @@ def test_execute_replanning_minco_v3_mode_republishes_speed_path_preview_on_repl
         [5.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
         feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
         face_travel=False, align_at_arrival=False,
-        trajectory_tracking_mode="replanning_minco_v3",
+        trajectory_tracking_mode="replan_minco",
     )
     assert status == STATUS_SUCCESS
     # 1 initial goal-start preview + at least one more from an actual re-plan.
@@ -984,7 +984,7 @@ def test_execute_static_mode_publishes_speed_path_preview_only_once():
     assert len(speed_path_pub.calls) == 1
 
 
-def _execute_planning(executor, trajectory_tracking_mode="static"):
+def _execute_planning(executor, trajectory_tracking_mode="static_toppra"):
     return executor.execute(
         [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
         feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
@@ -994,7 +994,9 @@ def _execute_planning(executor, trajectory_tracking_mode="static"):
 
 
 @pytest.mark.parametrize(
-    "unknown_mode", ["bogus", "replanning", "replanning_minco", "replanning_minco_v2"])
+    "unknown_mode",
+    ["bogus", "static", "replanning", "replanning_minco", "replanning_minco_v2",
+     "replanning_minco_v3"])
 def test_execute_unknown_trajectory_tracking_mode_fails_planning(unknown_mode):
     setpoint_pub = FakeSetpointPublisher()
     logger = FakeLogger()
@@ -1058,15 +1060,15 @@ def test_execute_static_minco_mode_fails_planning_when_infeasible(monkeypatch):
     assert any("static MINCO" in e for e in logger.errors)
 
 
-def test_execute_replanning_minco_v3_mode_fails_planning_when_toppra_fallback_is_unavailable():
+def test_execute_replan_minco_mode_fails_planning_when_toppra_fallback_is_unavailable():
     logger = FakeLogger()
     executor = _make_executor(
         FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
         FakeCheckpointPublisher(), *_make_clock(), logger, target_speed=1.0,
         max_accel=None, wrench_envelope=None,
     )
-    assert _execute_planning(executor, "replanning_minco_v3") == STATUS_PLANNING_FAILED
-    assert any("falling back to 'static'" in w for w in logger.warnings)
+    assert _execute_planning(executor, "replan_minco") == STATUS_PLANNING_FAILED
+    assert any("falling back to 'static_toppra'" in w for w in logger.warnings)
     assert any("wrench_envelope" in e for e in logger.errors)
 
 
@@ -1226,7 +1228,7 @@ def test_brake_at_rest_holds_current_pose():
 
 class _MovedGoalTracker:
     """Ends at ``goal_position`` instead of the requested target, like
-    ReplanningMincoV3Tracker after moving a goal out of an obstacle."""
+    ReplanMincoTracker after moving a goal out of an obstacle."""
 
     total_duration = 0.1
     last_body_angular = (np.zeros(3), np.zeros(3))

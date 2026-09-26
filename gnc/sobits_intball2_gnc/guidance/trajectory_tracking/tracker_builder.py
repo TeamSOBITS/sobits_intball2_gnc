@@ -2,8 +2,8 @@
 """Builds the tracker for one move_to goal's ``trajectory_tracking_mode`` (ROS-agnostic).
 
 Split out of ``GuidanceExecutor.execute()`` (``guidance/utils/guidance_executor.py``),
-which calls :meth:`TrackerBuilder.build` once per goal. ``replanning_minco_v3``
-falls back to ``static`` (TOPP-RA) on failure; any other failure raises
+which calls :meth:`TrackerBuilder.build` once per goal. ``replan_minco``
+falls back to ``static_toppra`` on failure; any other failure raises
 :class:`TrajectoryBuildError` and the goal is aborted.
 """
 import time
@@ -18,17 +18,17 @@ from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import (
     ToppraTrajectory,
     TrajectoryInfeasibleError,
 )
-from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
+from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import (
     DEFAULT_LOCAL_REPLAN_PERIOD_S,
     DEFAULT_PLANNING_HORIZON_M,
-    ReplanningMincoV3Tracker,
+    ReplanMincoTracker,
 )
 from sobits_intball2_gnc.guidance.trajectory_tracking.static_trajectory_tracker import (
     StaticTrajectoryTracker,
 )
 
 TRAJECTORY_TRACKING_MODES = frozenset(
-    {"static", "static_minco", "replanning_minco_v3"}
+    {"static_toppra", "static_minco", "replan_minco"}
 )
 
 
@@ -40,7 +40,7 @@ class TrackerBuilder:
     """Args mirror ``GuidanceExecutor``'s of the same names; ``tf_fresh_fn`` is its
     TF-liveness check, ``stop_profile_fn(p, v, q, omega)`` the emergency-stop
     profile for obstacle avoidance (``None`` = no emergency stop). While an
-    obstacle-avoiding ``replanning_minco_v3`` goal runs, grids rebuilt by
+    obstacle-avoiding ``replan_minco`` goal runs, grids rebuilt by
     ``obstacle_map`` are handed to its tracker."""
 
     def __init__(self, tf_client, tf_fresh_fn, logger, target_speed, max_accel,
@@ -66,11 +66,11 @@ class TrackerBuilder:
               minco_wrench_safety_margin=1.0, minco_freetime=False,
               minco_local_replan_period=DEFAULT_LOCAL_REPLAN_PERIOD_S,
               minco_planning_horizon_m=DEFAULT_PLANNING_HORIZON_M,
-              minco_v3_face_travel=False, minco_local_max_vel=None,
-              minco_v3_async_replan=False, minco_obstacle_avoidance=False,
+              minco_replan_face_travel=False, minco_local_max_vel=None,
+              minco_async_replan=False, minco_obstacle_avoidance=False,
               minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2):
         """Returns ``(tracker, traj)``: ``traj`` is the trajectory to preview (the
-        tracked one, or the global one for ``replanning_minco_v3``).
+        tracked one, or the global one for ``replan_minco``).
         ``forward_axis`` must already be resolved (never ``None``).
         Raises :class:`TrajectoryBuildError` if no trajectory can be built."""
         waypoints = [p0, *via_waypoints, p_target]
@@ -79,31 +79,31 @@ class TrackerBuilder:
         if mode not in TRAJECTORY_TRACKING_MODES:
             raise TrajectoryBuildError(
                 "unknown trajectory_tracking_mode=%r" % trajectory_tracking_mode)
-        if mode == "replanning_minco_v3" and self._max_accel is None and not minco_freetime:
+        if mode == "replan_minco" and self._max_accel is None and not minco_freetime:
             # Only the (one-time) global build's heuristic-time path needs
             # max_accel; minco_freetime doesn't.
             self._log.warn(
-                "[TrackerBuilder] trajectory_tracking_mode='replanning_minco_v3' "
+                "[TrackerBuilder] trajectory_tracking_mode='replan_minco' "
                 "requires max_accel to be configured (unless minco_freetime=True) "
-                "-- falling back to 'static'"
+                "-- falling back to 'static_toppra'"
             )
-            mode = "static"
+            mode = "static_toppra"
 
         traj = None
-        v3_tracker = None
+        replan_tracker = None
         self._obstacle_tracker = None
         obstacle_kwargs = {}
-        if mode == "replanning_minco_v3" and minco_obstacle_avoidance:
+        if mode == "replan_minco" and minco_obstacle_avoidance:
             obstacle_kwargs = self._obstacle_tracker_kwargs(
                 minco_local_piece_length_m, minco_obstacle_clearance_soft)
-        if mode == "replanning_minco_v3":
+        if mode == "replan_minco":
             # Builds its own trajectory internally; `traj` is set to its
             # global MincoTrajectory only for the speed path preview.
             #
-            # Must run before the `mode == "static"` branch below, which
+            # Must run before the `mode == "static_toppra"` branch below, which
             # also serves its downgrade on infeasibility.
             try:
-                v3_tracker = ReplanningMincoV3Tracker(
+                replan_tracker = ReplanMincoTracker(
                     p0, p_target, pose_fn=self._tf.get_pose,
                     tf_fresh_fn=self._tf_fresh_fn, q0=q0,
                     target_speed=(None if minco_freetime else self._target_speed),
@@ -114,32 +114,32 @@ class TrackerBuilder:
                     attitude_resample_spacing_m=minco_attitude_resample_spacing_m,
                     local_replan_period=minco_local_replan_period,
                     planning_horizon_m=minco_planning_horizon_m,
-                    face_travel=face_travel and minco_v3_face_travel,
+                    face_travel=face_travel and minco_replan_face_travel,
                     forward_axis=forward_axis,
                     local_max_vel=minco_local_max_vel,
-                    async_replan=minco_v3_async_replan,
+                    async_replan=minco_async_replan,
                     **obstacle_kwargs,
                 )
                 if obstacle_kwargs:
-                    self._obstacle_tracker = v3_tracker
+                    self._obstacle_tracker = replan_tracker
                     if self._obstacle_map.grid is not obstacle_kwargs["obstacle_grid"]:
-                        v3_tracker.set_obstacle_grid(self._obstacle_map.grid)
-                traj = v3_tracker.trajectory
+                        replan_tracker.set_obstacle_grid(self._obstacle_map.grid)
+                traj = replan_tracker.trajectory
                 self._log.info(
-                    "[TrackerBuilder] initial replanning_minco_v3 global "
+                    "[TrackerBuilder] initial replan_minco global "
                     "solve took %.2fs (%d waypoints)"
                     % (traj.solve_wall_seconds, traj.num_waypoints)
                 )
             except (MincoInfeasibleError, ValueError) as exc:
                 self._log.warn(
-                    "[TrackerBuilder] replanning_minco_v3 tracker "
-                    "construction failed (%s) -- falling back to 'static'" % exc
+                    "[TrackerBuilder] replan_minco tracker "
+                    "construction failed (%s) -- falling back to 'static_toppra'" % exc
                 )
-                v3_tracker = None
+                replan_tracker = None
                 traj = None
-                mode = "static"
+                mode = "static_toppra"
 
-        if mode == "static":
+        if mode == "static_toppra":
             traj = self._build_toppra(waypoints, q0, forward_axis, face_travel)
 
         if mode == "static_minco":
@@ -169,8 +169,8 @@ class TrackerBuilder:
                    minco_wrench_safety_margin)
             )
 
-        if mode == "replanning_minco_v3":
-            return v3_tracker, traj
+        if mode == "replan_minco":
+            return replan_tracker, traj
         return StaticTrajectoryTracker(traj), traj
 
     def _build_toppra(self, waypoints, q0, forward_axis, face_travel):

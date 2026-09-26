@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""MINCO global/local planner behind ``ReplanningMincoV3Tracker`` (ROS-agnostic, pure).
+"""MINCO global/local planner behind ``ReplanMincoTracker`` (ROS-agnostic, pure).
 
 EGO-Planner v2 splits replanning into ``ego_replan_fsm`` (when to replan, collision
 checks, emergency stop) and ``planner_manager`` (how to build the trajectories).
-This is the latter; ``trajectory_tracking/replanning_minco_v3_tracker.py`` is the
+This is the latter; ``trajectory_tracking/replan_minco_tracker.py`` is the
 former.
 
 - **Global**: built **once**, at construction, from ``p0`` + ``route_waypoints``
@@ -38,7 +38,7 @@ attitude waypoints facing its own tangent (not the global attitude, so it stays
 valid once the local deviates, e.g. for obstacles), carrying the head rotvec
 rate/accel. It also caps local speed (the split local otherwise accelerates to its
 braking limit every period) and checks the wrench envelope in the body frame
-(``docs/archive/achieved/2026-09-23_replanning_minco_v3_face_travel_handoff.md``).
+(``docs/archive/achieved/2026-09-23_replanning_minco_replan_face_travel_handoff.md``).
 ``attitude_resample_spacing_m`` is still forwarded to the *global* build for
 spatial densify (the global route's own smoothness, independent of whether
 attitude is tracked) -- this only works because of the ``face_travel``/densify
@@ -62,7 +62,7 @@ _SELF_PATH_SAMPLES = 400
 
 
 class MincoLocalPlanner:
-    """See module docstring. Arguments are those of ``ReplanningMincoV3Tracker``
+    """See module docstring. Arguments are those of ``ReplanMincoTracker``
     with the same names (see its docstring); ``obstacle_grid`` can be swapped
     later through the attribute of the same name."""
 

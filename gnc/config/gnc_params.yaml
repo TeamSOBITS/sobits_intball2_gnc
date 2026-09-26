@@ -147,16 +147,16 @@
       face_travel_camera: main      # camera axis facing travel direction (face_travel)
       look_at_target_frame: ""      # not yet implemented
       align_at_arrival_camera: main # camera aligned to q_target on arrival
-      # static / static_minco (open-loop single trajectory) or
-      # replanning_minco_v3 (global/local MINCO re-planning). Latched at goal
+      # static_toppra / static_minco (open-loop single trajectory) or
+      # replan_minco (global/local MINCO re-planning). Latched at goal
       # receipt, like attitude_reference_mode.
-      trajectory_tracking_mode: static
-      minco_local_replan_period: 1.0  # [s] replanning_minco_v3 local replan period
-      minco_planning_horizon_m: 4.0   # [m] replanning_minco_v3 local look-ahead (face travel needs ~4m)
-      minco_v3_face_travel: true      # replanning_minco_v3 faces travel (needs attitude_reference_mode face_travel); use horizon ~4m
-      minco_local_max_vel: 0.15       # [m/s] replanning_minco_v3 local speed cap, face travel only
-      minco_v3_async_replan: true     # replanning_minco_v3 solves local off the setpoint loop (EGO v2 planner/traj_server split)
-      # replanning_minco_v3 obstacle avoidance (docs/2026-09-24_obstacle_avoidance_production_integration_plan.md)
+      trajectory_tracking_mode: static_toppra
+      minco_local_replan_period: 1.0  # [s] replan_minco local replan period
+      minco_planning_horizon_m: 4.0   # [m] replan_minco local look-ahead (face travel needs ~4m)
+      minco_replan_face_travel: true  # replan_minco faces travel (needs attitude_reference_mode face_travel); use horizon ~4m
+      minco_local_max_vel: 0.15       # [m/s] replan_minco local speed cap, face travel only
+      minco_async_replan: true        # replan_minco solves local off the setpoint loop (EGO v2 planner/traj_server split)
+      # replan_minco obstacle avoidance (docs/2026-09-24_obstacle_avoidance_production_integration_plan.md)
       minco_obstacle_avoidance: false        # avoid the obstacle map (needs face travel); latched per goal
       minco_local_piece_length_m: 1.5        # [m] local piece length when avoiding (EGO v2 polyTraj_piece_length)
       minco_obstacle_clearance_soft: 0.2     # [m] soft clearance from collided obstacles

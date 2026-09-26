@@ -63,7 +63,7 @@ Phase 2で契約は確定済みだがコア実装が未着手。pure functionと
 成果物: `test_min_snap.py`に数値解検証テスト追加、`test_trajectory_generator_contract.py`の対象に`MinSnapTrajectoryGenerator`追加、`test_segment_time_to_trajectory_pipeline.py`を差し替えて統合確認。依存関係なし（他タスクと並行可）。`static`モードは既にTOPP-RA（`ToppraTrajectory`）で力/トルク制約を考慮した軌道生成に置き換わっているため、緊急度は下がっている。
 
 ### [C] 姿勢FFの既定ON化判断（残りの検証）
-`trajectory_controller.attitude_feedforward`は既定`false`のまま。`static`の1ルートではON時に移動中の姿勢誤差が最大3.23°→0.51°だったが、新コードでのOFF再計測と`static_minco`・`replanning_minco_v3`での検証が未実施。これらを済ませてから既定をONにするか決める。詳細: `docs/archive/achieved/2026-09-23_attitude_feedforward_implementation_and_sim_verification.md`
+`trajectory_controller.attitude_feedforward`は既定`false`のまま。`static`の1ルートではON時に移動中の姿勢誤差が最大3.23°→0.51°だったが、新コードでのOFF再計測と`static_minco`・`replan_minco`での検証が未実施。これらを済ませてから既定をONにするか決める。詳細: `docs/archive/achieved/2026-09-23_attitude_feedforward_implementation_and_sim_verification.md`
 
 ### [C] omega_errを数値微分から解析値へ置き換え
 現状50Hzの数値微分（`att_filter_alpha=1.0`で無フィルタ）でノイズと位相遅れを抱えている。姿勢FF導入（2026-09-23、`docs/archive/achieved/2026-09-23_attitude_feedforward_implementation_and_sim_verification.md`）で`w_des`が取れるようになったため、`omega_imu - R(qe)*w_des`で解析的に算出できる。詳細: `docs/arch/2026-09-20_jaxa_to_sobits_backport_candidates.md`（A-2）

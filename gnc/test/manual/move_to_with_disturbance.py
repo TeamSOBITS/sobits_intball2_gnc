@@ -29,7 +29,7 @@ calibration pulse (4.4mm displacement) to a collision-like kick -- otherwise
 the test only exercises noise-scale jitter.
 
 Usage:
-    ros2 param set /guidance_node guidance.trajectory_tracking_mode replanning_minco_v3
+    ros2 param set /guidance_node guidance.trajectory_tracking_mode replan_minco
     python3 test/manual/move_to_with_disturbance.py nav_entry \\
         --trigger-elapsed-sec 3.0 --force 0.0 5.0 0.0 --force-duration 0.3 \\
         --out-csv /tmp/disturbance_nav_entry.csv

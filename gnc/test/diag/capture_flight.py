@@ -6,8 +6,8 @@ scenario, from the moment the box appears up to the first emergency stop.
 import sys
 
 import minco_native_py
-from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
-    ReplanningMincoV3Tracker,
+from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import (
+    ReplanMincoTracker,
 )
 
 import diag_common
@@ -43,7 +43,7 @@ def main():
 
     minco_native_py.plan_minco = recording_plan
 
-    sample = ReplanningMincoV3Tracker.sample
+    sample = ReplanMincoTracker.sample
 
     def watching_sample(self, t):
         current["tracker"], current["t"] = self, t
@@ -54,7 +54,7 @@ def main():
             raise SystemExit(0)
         return result
 
-    ReplanningMincoV3Tracker.sample = watching_sample
+    ReplanMincoTracker.sample = watching_sample
     stage5.run(True, ahead, stage5.jem.PERSON_ACROSS_Y, stage5.stop_profile_factory(), t_max=60.0,
                progress="capture", appear_after=appear_after)
     diag_common.save_capture(out, inflation, boxes, calls)

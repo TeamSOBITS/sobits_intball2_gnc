@@ -9,8 +9,8 @@ import numpy as np
 
 import minco_native_py
 from sobits_intball2_gnc.guidance.local_planner.minco_local_planner import MincoLocalPlanner
-from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
-    ReplanningMincoV3Tracker,
+from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import (
+    ReplanMincoTracker,
 )
 
 import diag_common
@@ -62,13 +62,13 @@ def main():
 
     minco_native_py.plan_minco = recording_plan
 
-    sample = ReplanningMincoV3Tracker.sample
+    sample = ReplanMincoTracker.sample
 
     def watching_sample(self, t):
         current["tracker"] = self
         return sample(self, t)
 
-    ReplanningMincoV3Tracker.sample = watching_sample
+    ReplanMincoTracker.sample = watching_sample
 
     build = MincoLocalPlanner.build_face_travel_local
 

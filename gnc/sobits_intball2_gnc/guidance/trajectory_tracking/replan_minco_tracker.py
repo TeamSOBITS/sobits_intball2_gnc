@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""replanning_minco v3: EGO-Planner v2-style global/local replanning tracker
+"""replan_minco: EGO-Planner v2-style global/local replanning tracker
 (ROS-agnostic, pure).
 
 Production port of the offline-verified design in ``docs/
@@ -10,7 +10,7 @@ verification.md``, facts 44-54). This is a *new*, separate class from
 replanning_minco_v2_tracker.ReplanningMincoV2Tracker` (which keeps its
 periodic-full-global-reopt + closed-form-Hermite-local design unchanged) --
 not yet the default; opt-in via ``trajectory_tracking_mode=
-"replanning_minco_v3"``. **Experimental -- offline-verified only, not yet
+"replan_minco"``. **Experimental -- offline-verified only, not yet
 sim-validated** (same caveat as v2 originally carried).
 
 Architecture, matching EGO-Planner v2's actual global/local role split
@@ -46,7 +46,7 @@ fallback rather than inventing new latch/hard-stop machinery):
 - First-ever local build failing (in the constructor, no previous trajectory
   to fall back to): raises ``MincoInfeasibleError``, same as the global
   build failing -- the caller (``GuidanceExecutor``) already handles this
-  uniformly (falls back to ``"static"``).
+  uniformly (falls back to ``"static_toppra"``).
 - Replans keep going after the local target reaches ``p_target``
   (``touch_goal``) until the goal-touching local has played out, which is
   also ``total_duration`` (EGO-Planner v2 ``EXEC_TRAJ``: replan once the
@@ -65,7 +65,7 @@ pose is only used for the first plan, the TF-freshness latch and the ETA.
 ``traj_server`` split), so a slow solve no longer stalls the setpoint stream.
 The new local's t=0 is when its start state was sampled, not when the solve
 finished as in EGO v2: with 0.2-0.35 s solves the latter jumps the reference
-back by v*solve_time (``docs/2026-09-24_replanning_minco_v3_face_travel_
+back by v*solve_time (``docs/2026-09-24_replanning_minco_replan_face_travel_
 replan_gap_offline_check.md``).
 """
 import threading
@@ -82,7 +82,7 @@ DEFAULT_PLANNING_HORIZON_M = 2.0
 DEFAULT_COLLISION_CHECK_PERIOD_S = 0.05
 
 
-class ReplanningMincoV3Tracker:
+class ReplanMincoTracker:
     """See module docstring.
 
     Args:

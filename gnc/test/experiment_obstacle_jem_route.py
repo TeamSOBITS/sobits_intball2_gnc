@@ -1,5 +1,5 @@
 """JEM route with the real walls (maps/jem_octomap.bt) plus a person box: the production
-ReplanningMincoV3Tracker, ideal tracking, synchronous replans
+ReplanMincoTracker, ideal tracking, synchronous replans
 (docs/2026-09-24_obstacle_avoidance_jem_map_check.md).
 """
 import importlib.util
@@ -12,8 +12,8 @@ from scipy.spatial import cKDTree
 
 import minco_native_py
 from sobits_intball2_gnc.control.utils.quat_math import quat_rotate
-from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
-    ReplanningMincoV3Tracker,
+from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import (
+    ReplanMincoTracker,
 )
 
 _here = os.path.dirname(__file__)
@@ -53,7 +53,7 @@ def run(start, goal, boxes, wall_points, wall_tree):
         grid.add_box(list(c), list(h))
     q0 = facing_quat(goal - start)
     state = {"p": start.copy(), "s": 0.0}
-    tr = ReplanningMincoV3Tracker(
+    tr = ReplanMincoTracker(
         start, goal, lambda: (state["p"], list(q0), state["s"]), lambda s: True, q0,
         stage4.TS, stage4.MA, via_half_width=0.0, wrench_safety_margin=stage4.MARGIN,
         attitude_resample_spacing_m=stage4.SPACING, planning_horizon_m=stage4.HORIZON,

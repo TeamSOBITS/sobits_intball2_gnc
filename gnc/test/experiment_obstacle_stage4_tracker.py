@@ -1,5 +1,5 @@
 """Obstacle avoidance stage 4 (docs/2026-09-24_obstacle_avoidance_local_cost_plan.md):
-the production ReplanningMincoV3Tracker with an obstacle grid, replanning every 1 s
+the production ReplanMincoTracker with an obstacle grid, replanning every 1 s
 under ideal tracking along a straight 6 m route with virtual person boxes.
 """
 
@@ -7,8 +7,8 @@ import numpy as np
 
 import minco_native_py
 from sobits_intball2_gnc.control.utils.quat_math import quat_rotate
-from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
-    ReplanningMincoV3Tracker,
+from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import (
+    ReplanMincoTracker,
 )
 
 MARGIN = 0.7
@@ -49,7 +49,7 @@ def run(boxes):
     for c, h in boxes:
         grid.add_box(list(c), list(h))
     state = {"p": np.zeros(3), "s": 0.0}
-    tr = ReplanningMincoV3Tracker(
+    tr = ReplanMincoTracker(
         np.zeros(3), GOAL, lambda: (state["p"], list(Q0), state["s"]), lambda s: True, Q0,
         TS, MA, via_half_width=0.0, wrench_safety_margin=MARGIN,
         attitude_resample_spacing_m=SPACING, planning_horizon_m=HORIZON, face_travel=True,

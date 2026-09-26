@@ -42,7 +42,7 @@ design rationale and the open questions this implementation resolves:
   ``docs/archive/achieved/2026-08-28_toppra_static_path_attitude_overshoot_incident.md``
   "その11") -- this approximation is not the limiting factor it was
   originally thought to be.
-- Only used for ``trajectory_tracking_mode="static"``: ``toppra``'s
+- Only used for ``trajectory_tracking_mode="static_toppra"``: ``toppra``'s
   ``compute_trajectory(sd_start, ...)`` only accepts a *scalar* path-tangent
   start speed, which cannot express a velocity residual perpendicular to the
   path (the case ``ReplanningTrajectoryTracker``'s exact v0-aware bound

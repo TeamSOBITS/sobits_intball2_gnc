@@ -1,5 +1,5 @@
 """Obstacle avoidance stage 5 (docs/2026-09-24_obstacle_avoidance_jem_map_check.md):
-EGO-Planner v2 checkCollisionCallback in ReplanningMincoV3Tracker, with obstacles that
+EGO-Planner v2 checkCollisionCallback in ReplanMincoTracker, with obstacles that
 appear suddenly ahead on the straight 6 m route, stopping along the real StoppingProfile.
 """
 import importlib.util
@@ -12,8 +12,8 @@ from scipy.spatial import cKDTree
 import minco_native_py
 from sobits_intball2_gnc.common.utils.stopping_profile import StoppingProfile
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
-from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
-    ReplanningMincoV3Tracker,
+from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import (
+    ReplanMincoTracker,
 )
 
 _here = os.path.dirname(__file__)
@@ -64,7 +64,7 @@ def run(use_jem, ahead, half, stop_fn, t_max=60.0, progress=None, appear_after=2
         start, goal, q0 = np.zeros(3), stage4.GOAL, stage4.Q0
     route_dir = (goal - start) / np.linalg.norm(goal - start)
     state = {"p": start.copy(), "s": 0.0}
-    tr = ReplanningMincoV3Tracker(
+    tr = ReplanMincoTracker(
         start, goal, lambda: (state["p"], list(q0), state["s"]),
         lambda s: True, q0, stage4.TS, stage4.MA, via_half_width=0.0,
         wrench_safety_margin=stage4.MARGIN, attitude_resample_spacing_m=stage4.SPACING,
@@ -136,18 +136,18 @@ def main():
 
 
 def stage4_run_with_stop(boxes, stop_fn):
-    orig = ReplanningMincoV3Tracker.__init__
+    orig = ReplanMincoTracker.__init__
     holder = {}
 
     def init(self, *a, **kw):
         holder["tr"] = self
         orig(self, *a, stop_profile_fn=stop_fn, **kw)
 
-    stage4.ReplanningMincoV3Tracker.__init__ = init
+    stage4.ReplanMincoTracker.__init__ = init
     try:
         r = stage4.run(boxes)
     finally:
-        stage4.ReplanningMincoV3Tracker.__init__ = orig
+        stage4.ReplanMincoTracker.__init__ = orig
     return holder["tr"].emergency_stops, r["clr"], r["t"], r["end"]
 
 

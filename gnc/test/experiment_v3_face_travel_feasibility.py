@@ -1,6 +1,6 @@
-"""Offline feasibility check: replanning_minco_v3 with face_travel (global+local).
+"""Offline feasibility check: replan_minco with face_travel (global+local).
 
-Local layer is a replica of ReplanningMincoV3Tracker's loop that calls the
+Local layer is a replica of ReplanMincoTracker's loop that calls the
 production minco_native_py.plan_minco directly with rotvec waypoints, so the
 existing C++ limits apply: head rotvec accel = 0, tail rotvec rate = 0.
 """
@@ -18,8 +18,8 @@ from sobits_intball2_gnc.control.utils.quat_math import (
 from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
     MincoInfeasibleError, MincoTrajectory,
 )
-from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
-    ReplanningMincoV3Tracker,
+from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import (
+    ReplanMincoTracker,
 )
 from sobits_intball2_gnc.guidance.utils.attitude_reference import compute_q_des
 from sobits_intball2_gnc.guidance.utils.polynomial import evaluate_vector
@@ -275,7 +275,7 @@ def global_face_err(g, q0):
 def production_v3_duration(wps, q0):
     """Sanity: production tracker (face_travel=False) with ideal tracking."""
     pos = {"p": wps[0].copy(), "s": 0.0}
-    tr = ReplanningMincoV3Tracker(
+    tr = ReplanMincoTracker(
         wps[0], wps[-1], lambda: (pos["p"], list(q0), pos["s"]), lambda s: True, q0,
         TS, MA, route_waypoints=wps[1:-1], via_half_width=VHW,
         wrench_safety_margin=MARGIN, attitude_resample_spacing_m=SPACING)

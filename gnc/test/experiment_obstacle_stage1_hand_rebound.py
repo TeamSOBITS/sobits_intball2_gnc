@@ -1,7 +1,7 @@
 """Obstacle avoidance stage 1 (docs/2026-09-24_obstacle_avoidance_local_cost_plan.md):
 EGO-Planner v2 obstacle cost with hand-made rebound pairs, one person-sized box.
 
-Replicates one ReplanningMincoV3Tracker face-travel local (multi-piece shape solve,
+Replicates one ReplanMincoTracker face-travel local (multi-piece shape solve,
 then the attitude re-solve along it) on a straight 4 m look-ahead. The rebound
 pairs follow finelyCheckAndSetConstraintPoints, with a hand-placed detour around
 the box's narrower side standing in for the A* path.

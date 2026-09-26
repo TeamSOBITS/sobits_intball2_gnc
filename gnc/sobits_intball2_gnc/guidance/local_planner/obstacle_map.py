@@ -1,4 +1,4 @@
-"""Obstacle map for replanning_minco_v3: static OctoMap points plus keyed boxes.
+"""Obstacle map for replan_minco: static OctoMap points plus keyed boxes.
 
 Boxes come from outside (``/guidance/virtual_obstacles`` today, a perception
 source later) and are keyed so they can be updated or removed. Every change

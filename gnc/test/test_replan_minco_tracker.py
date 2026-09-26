@@ -1,4 +1,4 @@
-"""Unit tests for ReplanningMincoV3Tracker (docs/
+"""Unit tests for ReplanMincoTracker (docs/
 2026-09-20_ego_v2_style_replan_migration_plan.md).
 """
 import threading
@@ -12,8 +12,8 @@ from sobits_intball2_gnc.control.utils.quat_math import quat_rotate
 from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
     MincoInfeasibleError,
 )
-from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
-    ReplanningMincoV3Tracker,
+from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import (
+    ReplanMincoTracker,
 )
 
 P0 = [0.0, 0.0, 0.0]
@@ -27,7 +27,7 @@ T_CAP = 300.0
 
 class _IdealTrackingTf:
     """Reports the tracker's own last position setpoint as the measured pose:
-    v3 replans from its reference state, so a TF advancing independently of
+    replan_minco replans from its reference state, so a TF advancing independently of
     the setpoint would not exercise the real closed loop."""
 
     def __init__(self, p0=P0, offset=(0.0, 0.0, 0.0)):
@@ -49,7 +49,7 @@ class _IdealTrackingTf:
 def _make_tracker(tf, tf_fresh_fn=lambda stamp: True, p_target=P_TARGET, **kwargs):
     kwargs.setdefault("target_speed", TARGET_SPEED)
     kwargs.setdefault("max_accel", MAX_ACCEL)
-    return ReplanningMincoV3Tracker(
+    return ReplanMincoTracker(
         P0, p_target, tf.pose_fn, tf_fresh_fn, Q0, **kwargs
     )
 

@@ -12,7 +12,7 @@ import numpy as np
 from rclpy.clock import Clock, ClockType
 import diag_common
 from sobits_intball2_gnc.guidance.local_planner.obstacle_map import ObstacleMap
-from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import ReplanningMincoV3Tracker
+from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import ReplanMincoTracker
 
 class PacedThread:
     """Looks alive for ceil(wall/dt) more sample() calls after the real solve finished."""
@@ -31,7 +31,7 @@ omap = ObstacleMap(0.1, 0.2, diag_common.JEM_MAP)
 start, goal = jem.location("inspection_entry_1"), jem.location("nav_entry")
 q0 = jem.facing_quat(goal - start); route_dir = (goal - start) / np.linalg.norm(goal - start)
 state = {"p": start.copy(), "s": 0.0}
-tr = ReplanningMincoV3Tracker(start, goal, lambda: (state["p"], list(q0), state["s"]), lambda s: True, q0,
+tr = ReplanMincoTracker(start, goal, lambda: (state["p"], list(q0), state["s"]), lambda s: True, q0,
     stage4.TS, stage4.MA, via_half_width=0.0, wrench_safety_margin=stage4.MARGIN,
     attitude_resample_spacing_m=stage4.SPACING, planning_horizon_m=stage4.HORIZON, face_travel=True,
     forward_axis=stage4.FWD, local_max_vel=stage4.CRUISE, local_piece_length_m=stage4.PIECE_LENGTH,
@@ -39,14 +39,14 @@ tr = ReplanningMincoV3Tracker(start, goal, lambda: (state["p"], list(q0), state[
     stop_profile_fn=s5.stop_profile_factory(), async_replan=True)
 omap.add_listener(tr.set_obstacle_grid)
 if "--sync-on-collision" in sys.argv:
-    orig_check = ReplanningMincoV3Tracker._check_collision
+    orig_check = ReplanMincoTracker._check_collision
     def check(self):
         self._async_replan = False
         try:
             orig_check(self)
         finally:
             self._async_replan = True
-    ReplanningMincoV3Tracker._check_collision = check
+    ReplanMincoTracker._check_collision = check
 half = jem.PERSON_ACROSS_Y
 box, t, clr, stop_ts, walls, lags = None, 0.0, np.inf, [], [], []
 seen_thread = None

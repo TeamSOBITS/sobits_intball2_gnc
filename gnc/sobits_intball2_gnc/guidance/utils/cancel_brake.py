@@ -4,7 +4,7 @@
 Stops along a JAXA ``stoppingProfile`` (``common/utils/stopping_profile.py``) from
 the measured state, then holds its end pose (JAXA ``Ctl::cancelTarget``, docs/
 archive/achieved/2026-09-24_cancel_stopping_profile_implementation_and_sim_verification.md).
-The same profile, started from a reference state instead, is replanning_minco_v3's
+The same profile, started from a reference state instead, is replan_minco's
 emergency stop (:meth:`CancelBrake.profile_from`).
 """
 import numpy as np

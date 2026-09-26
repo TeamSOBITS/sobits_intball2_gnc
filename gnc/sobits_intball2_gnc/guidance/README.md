@@ -27,7 +27,7 @@ guidance/
 │   ├── astar_planner.py
 │   └── rrt_planner.py
 ├── local_planner/                        # 障害物を見たlocalの計画
-│   ├── minco_local_planner.py                # replanning_minco_v3のglobal/localの作り方（EGO-Planner v2のplanner_manager）
+│   ├── minco_local_planner.py                # replan_mincoのglobal/localの作り方（EGO-Planner v2のplanner_manager）
 │   └── obstacle_map.py                       # 静的な地図（OctoMap）＋仮想の箱から格子地図を作り直す
 ├── ros/                                  # ROS 入出力ラッパ
 │   ├── path_publisher.py                     # nav_msgs/Path をRVizへ可視化publish（/gnc/trajectory_path）
@@ -50,10 +50,10 @@ guidance/
 │   ├── trajectory.py                         # Trajectory: sample(t) -> (p, v, a, q_des)
 │   ├── minco_trajectory.py                   # MINCO姿勢/トルク統合軌道（minco_native_py拡張のPythonラッパ）
 │   └── toppra_trajectory.py                  # TOPP-RAによる力/トルク制約付き時間割当済み軌道
-├── trajectory_tracking/                  # 生成済み軌道の追従方式（static/replanning_minco_v3切替）
+├── trajectory_tracking/                  # 生成済み軌道の追従方式（static_toppra/static_minco/replan_minco切替）
 │   ├── base_trajectory_tracker.py            # 共通インターフェース
 │   ├── static_trajectory_tracker.py          # 開ループ単一軌道を最後まで追従（デフォルト）
-│   ├── replanning_minco_v3_tracker.py        # global MINCO軌道を一度だけ解き、local区間を一定周期で再計画しながら追従（衝突確認・非常停止）
+│   ├── replan_minco_tracker.py        # global MINCO軌道を一度だけ解き、local区間を一定周期で再計画しながら追従（衝突確認・非常停止）
 │   └── tracker_builder.py                    # goalのtrajectory_tracking_modeに応じてtrackerを組み立てる（フォールバックの順も）
 └── utils/                                # ROS非依存のロジック
     ├── polynomial.py                         # 多項式（微分）評価
@@ -133,17 +133,17 @@ python3 gnc/test/manual/move_to_cancel_brake_test.py inspection_entry_2   # 途�
 
 | やりたいこと | パラメータ | 値 |
 |---|---|---|
-| 追従の方式を選ぶ | `guidance.trajectory_tracking_mode` | `static`（既定、一度だけ計画した軌道を追従）/ `static_minco` / `replanning_minco_v3`（1秒ごとに再計画） |
+| 追従の方式を選ぶ | `guidance.trajectory_tracking_mode` | `static_toppra`（既定、一度だけ計画した軌道を追従）/ `static_minco` / `replan_minco`（1秒ごとに再計画） |
 | 経由点を通る | `guidance.via_waypoints` | 地点名の配列、例: `"['nav_entry']"`。**使い終わったら`"['']"`に戻す**（残すと以降の全goalが経由する） |
 | 進行方向を向いて移動する | `guidance.attitude_reference_mode` | `face_travel`（既定）/ `fixed` |
-| 同上（`replanning_minco_v3`のとき） | `guidance.minco_v3_face_travel`、`guidance.minco_planning_horizon_m` | 既定で`true`と`4.0`（姿勢を固定するなら`false`。face travelのまま先読みを2mにすると角を曲がりきれない） |
+| 同上（`replan_minco`のとき） | `guidance.minco_replan_face_travel`、`guidance.minco_planning_horizon_m` | 既定で`true`と`4.0`（姿勢を固定するなら`false`。face travelのまま先読みを2mにすると角を曲がりきれない） |
 | 出発前・到着時の姿勢合わせ | `guidance.pre_align`、`guidance.align_at_arrival` | `true`（既定）/ `false` |
 
-例: `replanning_minco_v3`で進行方向を向き、`nav_entry`を経由して`inspection_entry_1`へ行く
+例: `replan_minco`で進行方向を向き、`nav_entry`を経由して`inspection_entry_1`へ行く
 
 ```sh
-ros2 param set /guidance_node guidance.trajectory_tracking_mode replanning_minco_v3
-ros2 param set /guidance_node guidance.minco_v3_face_travel true
+ros2 param set /guidance_node guidance.trajectory_tracking_mode replan_minco
+ros2 param set /guidance_node guidance.minco_replan_face_travel true
 ros2 param set /guidance_node guidance.minco_planning_horizon_m 4.0
 ros2 param set /guidance_node guidance.via_waypoints "['nav_entry']"
 ros2 run sobits_intball2_gnc move_to_client inspection_entry_1
@@ -157,9 +157,9 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 
 1. **出発前の姿勢合わせ**（`pre_align`、`attitude_reference_mode=face_travel`のとき）: 最初の進行方向へ向きを合わせる。`/gnc/checkpoints`で静止保持、最大`align_timeout`秒
 2. **軌道の追従**: `/gnc/trajectory_setpoint`へ参照を出す。方式は`trajectory_tracking_mode`で決まる
-   - `static`: 力・トルクの制約付きで一度だけ計画した軌道（TOPP-RA、使えない場合はHermiteスプライン）
+   - `static_toppra`: 力・トルクの制約付きで一度だけ計画した軌道（TOPP-RA）
    - `static_minco`: MINCOで一度だけ計画した軌道
-   - `replanning_minco_v3`: ゴールまでのglobal軌道を一度だけ作り、そこから先読み距離先までのlocal軌道を1秒ごとに作り直す（EGO-Planner v2と同じ構成）
+   - `replan_minco`: ゴールまでのglobal軌道を一度だけ作り、そこから先読み距離先までのlocal軌道を1秒ごとに作り直す（EGO-Planner v2と同じ構成）
    - 計画時間が過ぎても、位置誤差が`align_pos_tolerance_m`以下に`align_pos_settle_time`秒続くまで待つ（最大`align_pos_timeout`秒）
 3. **到着時の姿勢合わせ**（`align_at_arrival`）: 目標姿勢へ合わせる。`/gnc/checkpoints`で静止保持、最大`align_timeout`秒
 4. **cancelされたとき**（`GuidanceExecutor.brake()`、上のどの段階でも）: 結果を返したあと別スレッドで実行する。JAXA `ctl_only`と同じく、先に回転を止め（その間の並進は等速）、次に並進を一定の減速度で止める軌道を`/gnc/trajectory_setpoint`へ出す。減速度はファン1基あたり`wrench_envelope_safety_margin`倍までの推力で出せる値で、さらに各軸`hover_control.max_force`以下に抑える。軌道を最後まで出し、停止点から`stopping.tolerance_pos`・`stopping.tolerance_att`以内に`stopping.duration_goal`秒いたら（最大は軌道時間＋`stopping.wait_cancel`秒）、停止点を`/gnc/checkpoints`で静止保持にする。停止距離は速度の2乗に比例する（0.5 m/sから3〜6 m）。
@@ -186,7 +186,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `/gnc/trajectory_setpoint` | `trajectory_msgs/MultiDOFJointTrajectory` | 軌道追従の目標位置・速度・加速度（Control側が購読） |
 | `/gnc/checkpoints` | `geometry_msgs/PoseArray` | 事前整列・到着時整列での静止保持目標（Control側が購読） |
 | `/gnc/trajectory_path_speed` | `visualization_msgs/Marker` | 速度で色分けした軌道のRViz表示（表示のみ、制御には無関係） |
-| `/gnc/trajectory_path_speed_local` | `visualization_msgs/Marker` | `replanning_minco_v3`のlocal軌道のRViz表示（表示のみ） |
+| `/gnc/trajectory_path_speed_local` | `visualization_msgs/Marker` | `replan_minco`のlocal軌道のRViz表示（表示のみ） |
 | `/guidance/obstacles_active` | `visualization_msgs/MarkerArray` | 今の障害物の地図に入っている仮想の箱の一覧（RViz表示、transient local） |
 
 ### アクション
@@ -208,7 +208,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 
 | パラメータ名 | 役割 | デフォルト値 |
 |---|---|---|
-| `guidance.trajectory_tracking_mode` | 軌道追従方式（`static` / `static_minco` / `replanning_minco_v3`、[実行の流れ](#execution-flow)参照） | `static` |
+| `guidance.trajectory_tracking_mode` | 軌道追従方式（`static_toppra` / `static_minco` / `replan_minco`、[実行の流れ](#execution-flow)参照） | `static_toppra` |
 | `guidance.via_waypoints` | 経由点のTFフレーム名の配列（順に経由）。`['']`で経由なし | `['']` |
 | `guidance.attitude_reference_mode` | 移動中の姿勢参照（`fixed`/`face_travel`/`look_at`）。`look_at`は未実装で`face_travel`にフォールバック（警告ログ） | `face_travel` |
 | `guidance.face_travel_camera` | `face_travel`で進行方向に向けるカメラ軸（`main`/`stereo`） | `main` |
@@ -217,18 +217,18 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `guidance.align_at_arrival` | 到着後に姿勢合わせを行うか | `true` |
 | `guidance.align_at_arrival_camera` | 到着後どのカメラ軸を基準に合わせるか。`main`はgoalの姿勢そのまま、他のカメラは「goalの姿勢でメインカメラが見ていた方向」をそのカメラで向く（`compute_camera_relative_quat`） | `main` |
 
-### MINCO（`static_minco`・`replanning_minco_v3`）
+### MINCO（`static_minco`・`replan_minco`）
 
 | パラメータ名 | 役割 | デフォルト値 |
 |---|---|---|
 | `guidance.minco_via_half_width` | 経由点・分割点を±この幅[m]の箱の中で動かせる。`0.0`で厳密に通過 | `0.0` |
 | `guidance.minco_attitude_resample_spacing_m` | 経路をこの間隔[m]で分割して姿勢の経由点を置く。`0.0`で分割しない | `0.3` |
-| `guidance.minco_freetime` | `replanning_minco_v3`のglobalを、区間時間も最適化する方式（`plan_minco`）で解く。`false`は`target_speed`・加速度上限から区間時間を決める方式 | `false` |
-| `guidance.minco_local_replan_period` | `replanning_minco_v3`のlocal再計画周期[s] | `1.0` |
-| `guidance.minco_planning_horizon_m` | `replanning_minco_v3`のlocalの先読み距離[m]（global上で直線距離がこの値以上になる最初の点を目標にする） | `4.0` |
-| `guidance.minco_v3_face_travel` | `replanning_minco_v3`で進行方向を向く（`attitude_reference_mode=face_travel`も必要）。localを2回solveし、wrenchを機体座標で評価する。先読みは`4.0`程度にする | `true` |
-| `guidance.minco_local_max_vel` | `minco_v3_face_travel`のときのlocalの速度上限[m/s] | `0.15` |
-| `guidance.minco_obstacle_avoidance` | `replanning_minco_v3`で障害物の地図（JEMの壁＋仮想の箱）を避ける（`minco_v3_face_travel`も必要）。避けきれないときは停止プロファイルで非常停止し、静止から再計画する | `false` |
+| `guidance.minco_freetime` | `replan_minco`のglobalを、区間時間も最適化する方式（`plan_minco`）で解く。`false`は`target_speed`・加速度上限から区間時間を決める方式 | `false` |
+| `guidance.minco_local_replan_period` | `replan_minco`のlocal再計画周期[s] | `1.0` |
+| `guidance.minco_planning_horizon_m` | `replan_minco`のlocalの先読み距離[m]（global上で直線距離がこの値以上になる最初の点を目標にする） | `4.0` |
+| `guidance.minco_replan_face_travel` | `replan_minco`で進行方向を向く（`attitude_reference_mode=face_travel`も必要）。localを2回solveし、wrenchを機体座標で評価する。先読みは`4.0`程度にする | `true` |
+| `guidance.minco_local_max_vel` | `minco_replan_face_travel`のときのlocalの速度上限[m/s] | `0.15` |
+| `guidance.minco_obstacle_avoidance` | `replan_minco`で障害物の地図（JEMの壁＋仮想の箱）を避ける（`minco_replan_face_travel`も必要）。避けきれないときは停止プロファイルで非常停止し、静止から再計画する | `false` |
 | `guidance.minco_local_piece_length_m` | 障害物を避けるときのlocalの1区間の長さ[m]（EGO-Planner v2の`polyTraj_piece_length`） | `1.5` |
 | `guidance.minco_obstacle_clearance_soft` | 障害物を避けるときの緩い余裕[m]（ぶつかった障害物から離す距離） | `0.2` |
 
@@ -254,7 +254,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 
 | パラメータ名 | 役割 | デフォルト値 |
 |---|---|---|
-| `guidance.target_speed` | 巡航速度[m/s]（区間時間配分、`replanning_minco_v3`のglobal） | `0.5` |
+| `guidance.target_speed` | 巡航速度[m/s]（区間時間配分、`replan_minco`のglobal） | `0.5` |
 | `guidance.attitude_speed_threshold` | 進行方向の姿勢参照を更新する速度の下限[m/s] | `0.02` |
 | `guidance.rate` | `/gnc/trajectory_setpoint`発行レート[Hz] | `50.0` |
 | `guidance.velocity_estimate_rate` | Guidance側TF速度推定の更新レート[Hz] | `10.0` |

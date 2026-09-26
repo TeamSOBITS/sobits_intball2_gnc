@@ -104,7 +104,7 @@ class GuidanceNode(Node):
         # (docs/guidance_move_to_debug_2026-08-20.md).
         self.declare_parameter("trajectory_controller.max_force", [0.181, 0.0996, 0.122])
         self.declare_parameter("trajectory_controller.mass", 3.216, static_descriptor)
-        # Only used by replanning_minco_v3's heuristic segment times (a
+        # Only used by replan_minco's heuristic segment times (a
         # scalar 1-D model) -- the static/TOPP-RA path below uses the real
         # fan-derived wrench envelope instead (wrench_envelope below), see
         # docs/2026-08-28_constrained_trajectory_generation_research.md and

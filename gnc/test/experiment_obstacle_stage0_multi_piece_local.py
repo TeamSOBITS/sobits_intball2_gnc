@@ -1,7 +1,7 @@
 """Obstacle avoidance stage 0 (docs/2026-09-24_obstacle_avoidance_local_cost_plan.md):
 multi-piece local shape solve with unboxed interior points, no obstacles.
 
-Runs the production ReplanningMincoV3Tracker (face travel, production gains,
+Runs the production ReplanMincoTracker (face travel, production gains,
 ideal tracking, synchronous replans) with local_piece_length_m=None (current
 single-piece) vs EGO-Planner v2's 1.5 m pieces, and compares against it.
 """
@@ -10,8 +10,8 @@ import sys
 import numpy as np
 
 from sobits_intball2_gnc.control.utils.quat_math import quat_rotate
-from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
-    ReplanningMincoV3Tracker,
+from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import (
+    ReplanMincoTracker,
 )
 
 MARGIN = 0.7
@@ -60,7 +60,7 @@ def dist_to_polyline(p, wps):
 def run(wps, q0, piece_length):
     wps = np.asarray(wps, float)
     state = {"p": wps[0].copy(), "s": 0.0}
-    tr = ReplanningMincoV3Tracker(
+    tr = ReplanMincoTracker(
         wps[0], wps[-1], lambda: (state["p"], list(q0), state["s"]), lambda s: True, q0,
         TS, MA, route_waypoints=wps[1:-1], via_half_width=0.0,
         wrench_safety_margin=MARGIN, attitude_resample_spacing_m=SPACING,

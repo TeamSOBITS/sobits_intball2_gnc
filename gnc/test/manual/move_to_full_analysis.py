@@ -15,7 +15,7 @@ test/manual/README.md); this merges event-driven multi-topic recording
 (position/attitude vs setpoint) that neither of those scripts did.
 
 Works with any `guidance.trajectory_tracking_mode` value (``static``,
-``static_minco``, ``replanning_minco_v3``) -- pass
+``static_minco``, ``replan_minco``) -- pass
 `--set-mode` to set it first, or leave whatever is already configured.
 
 Usage:
@@ -273,7 +273,7 @@ def main():
     ap.add_argument("--set-mode", default=None,
                      help="set guidance.trajectory_tracking_mode before sending the goal "
                           "(any value the node accepts: static/static_minco/"
-                          "replanning_minco_v3); default: leave as-is")
+                          "replan_minco); default: leave as-is")
     ap.add_argument("--out-dir", default="/tmp/move_to_full_analysis")
     ap.add_argument("--tag", default="run")
     ap.add_argument("--timeout-sec", type=float, default=90.0,

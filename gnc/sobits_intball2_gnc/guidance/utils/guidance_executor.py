@@ -31,7 +31,7 @@ checkpoint chaining) is still out of scope here.
 import numpy as np
 
 from sobits_intball2_gnc.guidance.align.attitude_aligner import AttitudeAligner
-from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
+from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import (
     DEFAULT_LOCAL_REPLAN_PERIOD_S,
     DEFAULT_PLANNING_HORIZON_M,
 )
@@ -99,7 +99,7 @@ class GuidanceExecutor:
             stopping_wait_cancel: :meth:`brake`'s end conditions (JAXA
             ``ctl.tolerance_pos_stop``/``tolerance_att_stop``/
             ``duration_goal``/``wait_cancel``).
-        obstacle_map: optional ``ObstacleMap``; ``replanning_minco_v3`` goals
+        obstacle_map: optional ``ObstacleMap``; ``replan_minco`` goals
             with ``minco_obstacle_avoidance`` avoid its grid, and grids it
             rebuilds mid-goal are handed to the running tracker.
     """
@@ -130,7 +130,7 @@ class GuidanceExecutor:
         self._log = logger
         self._target_speed = float(target_speed)
         # Vehicle's achievable acceleration [m/s^2], e.g.
-        # trajectory_controller.max_force / mass -- replanning_minco_v3's
+        # trajectory_controller.max_force / mass -- replan_minco's
         # heuristic segment times must allow a rest-to-rest profile at it.
         self._max_accel = None if max_accel is None else float(max_accel)
         self._attitude_speed_threshold = float(attitude_speed_threshold)
@@ -274,14 +274,14 @@ class GuidanceExecutor:
     def execute(self, p_target, q_target, feedback_cb, is_cancel_requested,
                 face_travel=True, face_travel_camera="main",
                 align_at_arrival=True, pre_align=True, look_at_target_frame="",
-                align_at_arrival_camera="main", trajectory_tracking_mode="static",
+                align_at_arrival_camera="main", trajectory_tracking_mode="static_toppra",
                 via_waypoints=None, minco_via_half_width=0.3,
                 minco_attitude_resample_spacing_m=None,
                 minco_wrench_safety_margin=1.0, minco_freetime=False,
                 minco_local_replan_period=DEFAULT_LOCAL_REPLAN_PERIOD_S,
                 minco_planning_horizon_m=DEFAULT_PLANNING_HORIZON_M,
-                minco_v3_face_travel=False, minco_local_max_vel=None,
-                minco_v3_async_replan=False, minco_obstacle_avoidance=False,
+                minco_replan_face_travel=False, minco_local_max_vel=None,
+                minco_async_replan=False, minco_obstacle_avoidance=False,
                 minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2):
         """Run one move-to-target goal; returns a ``STATUS_*`` constant.
 
@@ -296,7 +296,7 @@ class GuidanceExecutor:
         initial facing direction (the first via point). ``None``/``[]``
         (default) reproduces the prior 2-waypoint behavior exactly.
 
-        ``minco_via_half_width``: ``"static_minco"``/``"replanning_minco_v3"``
+        ``minco_via_half_width``: ``"static_minco"``/``"replan_minco"``
         only -- forwarded to ``MincoTrajectory``'s ``via_half_width`` (see
         that class's docstring and ``docs/
         2026-08-30_static_minco_face_travel_gap.md`` 追記3). ``0.0`` pins
@@ -305,48 +305,48 @@ class GuidanceExecutor:
         by every other mode.
 
         ``minco_attitude_resample_spacing_m``: ``"static_minco"``/
-        ``"replanning_minco_v3"`` only -- forwarded to ``MincoTrajectory``'s
+        ``"replan_minco"`` only -- forwarded to ``MincoTrajectory``'s
         ``attitude_resample_spacing_m`` (docs/
         2026-08-30_static_minco_face_travel_gap.md 追記4). ``None``
         (default) reproduces prior behavior (attitude only seeded at the
         given waypoints). Ignored by every other mode.
 
         ``minco_wrench_safety_margin``: ``"static_minco"``/
-        ``"replanning_minco_v3"`` only -- forwarded to ``MincoTrajectory``'s
+        ``"replan_minco"`` only -- forwarded to ``MincoTrajectory``'s
         ``wrench_safety_margin`` (docs/
         2026-08-30_static_minco_face_travel_gap.md 追記2). ``1.0`` (default)
         reproduces prior behavior (envelope unshrunk). Ignored by every
         other mode.
 
-        ``minco_freetime``: ``"replanning_minco_v3"`` only -- if ``True``,
+        ``minco_freetime``: ``"replan_minco"`` only -- if ``True``,
         the (one-time) global build solves with
         ``target_speed=None, max_accel=None``
         (``MincoTrajectory``'s free-time ``plan_minco`` path -- segment
         times optimized jointly with waypoints, not fixed by a heuristic +
         analytic stretch) instead of this executor's configured
         ``target_speed``/``max_accel``. Bypasses the mode's own
-        ``max_accel``-required fallback-to-``"static"`` check (that check
+        ``max_accel``-required fallback-to-``"static_toppra"`` check (that check
         exists for the heuristic-time path, which needs ``max_accel`` to
         size its initial guess -- free-time doesn't). Ignored by every
         other mode. ``False`` (default) reproduces prior behavior.
 
         ``minco_local_replan_period``/``minco_planning_horizon_m``:
-        ``"replanning_minco_v3"`` only -- forwarded to
-        ``ReplanningMincoV3Tracker``'s ``local_replan_period``/
+        ``"replan_minco"`` only -- forwarded to
+        ``ReplanMincoTracker``'s ``local_replan_period``/
         ``planning_horizon_m``. Non-positive values fall back to
-        ``"static"``. Ignored by every other mode.
+        ``"static_toppra"``. Ignored by every other mode.
 
-        ``minco_v3_face_travel``/``minco_local_max_vel``: ``"replanning_minco_v3"``
+        ``minco_replan_face_travel``/``minco_local_max_vel``: ``"replan_minco"``
         only -- with ``face_travel`` also set, the tracker faces travel
-        (``ReplanningMincoV3Tracker``'s ``face_travel``/``local_max_vel``).
+        (``ReplanMincoTracker``'s ``face_travel``/``local_max_vel``).
         ``False`` (default) keeps the fixed-``q0`` behavior.
 
-        ``minco_v3_async_replan``: ``"replanning_minco_v3"`` only --
-        ``ReplanningMincoV3Tracker``'s ``async_replan`` (local solve off the
+        ``minco_async_replan``: ``"replan_minco"`` only --
+        ``ReplanMincoTracker``'s ``async_replan`` (local solve off the
         setpoint loop). ``False`` (default) solves inside ``sample()``.
 
         ``minco_obstacle_avoidance``/``minco_local_piece_length_m``/
-        ``minco_obstacle_clearance_soft``: ``"replanning_minco_v3"`` with face
+        ``minco_obstacle_clearance_soft``: ``"replan_minco"`` with face
         travel only -- the tracker avoids the ``obstacle_map`` grid (EGO-Planner
         v2 rebound, multi-piece local of this piece length) and emergency-stops
         along a ``StoppingProfile`` when a replan cannot clear a collision.
@@ -365,25 +365,25 @@ class GuidanceExecutor:
         camera_relative_quat`), i.e. "show me through a different camera
         whatever the main camera would have seen".
 
-        ``trajectory_tracking_mode``: ``"static"`` (default) samples a single
+        ``trajectory_tracking_mode``: ``"static_toppra"`` (default) samples a single
         open-loop TOPP-RA trajectory generated at goal start (needs
         ``wrench_envelope``/``mass``/``inertia``/``max_angular_rate``).
 
-        ``"static_minco"`` is like ``"static"`` (single open-loop trajectory,
+        ``"static_minco"`` is like ``"static_toppra"`` (single open-loop trajectory,
         no TF-driven re-planning) but backed by ``MincoTrajectory`` instead
         of TOPP-RA.
 
-        ``"replanning_minco_v3"`` (``docs/
+        ``"replan_minco"`` (``docs/
         2026-09-20_ego_v2_style_replan_migration_plan.md``): an
         EGO-Planner-v2-style global/local tracker (:class:`~sobits_
-        intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker.
-        ReplanningMincoV3Tracker`) where the global layer is solved **once**
+        intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker.
+        ReplanMincoTracker`) where the global layer is solved **once**
         and the local layer is a periodically (every ``local_replan_period``
         seconds) re-solved free-time segment, started from the previous
         local trajectory's reference state, that *is* the tracked
         trajectory. Attitude is out of scope for this mode (always commands
         ``q0``). Needs no ``velocity_fn``; needs ``max_accel`` unless
-        ``minco_freetime=True``. Falls back to ``"static"`` if ``max_accel``
+        ``minco_freetime=True``. Falls back to ``"static_toppra"`` if ``max_accel``
         is missing or the initial global/local solve is infeasible.
 
         Returns ``STATUS_PLANNING_FAILED`` (the caller brakes) when no
@@ -492,9 +492,9 @@ class GuidanceExecutor:
                 minco_freetime=minco_freetime,
                 minco_local_replan_period=minco_local_replan_period,
                 minco_planning_horizon_m=minco_planning_horizon_m,
-                minco_v3_face_travel=minco_v3_face_travel,
+                minco_replan_face_travel=minco_replan_face_travel,
                 minco_local_max_vel=minco_local_max_vel,
-                minco_v3_async_replan=minco_v3_async_replan,
+                minco_async_replan=minco_async_replan,
                 minco_obstacle_avoidance=minco_obstacle_avoidance,
                 minco_local_piece_length_m=minco_local_piece_length_m,
                 minco_obstacle_clearance_soft=minco_obstacle_clearance_soft,

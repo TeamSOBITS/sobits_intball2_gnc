@@ -4,7 +4,7 @@ BaseTrajectoryTracker implementation must satisfy).
 
 The property every tracker must share is simply "eventually converges to
 p_target" -- StaticTrajectoryTracker trivially so (it just samples a
-pre-built TOPP-RA trajectory), ReplanningMincoV3Tracker by construction (its last
+pre-built TOPP-RA trajectory), ReplanMincoTracker by construction (its last
 local trajectory touches the goal and ends at rest there).
 """
 import numpy as np
@@ -12,8 +12,8 @@ import pytest
 
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
 from sobits_intball2_gnc.guidance.trajectory.toppra_trajectory import ToppraTrajectory
-from sobits_intball2_gnc.guidance.trajectory_tracking.replanning_minco_v3_tracker import (
-    ReplanningMincoV3Tracker,
+from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import (
+    ReplanMincoTracker,
 )
 from sobits_intball2_gnc.guidance.trajectory_tracking.static_trajectory_tracker import (
     StaticTrajectoryTracker,
@@ -48,15 +48,15 @@ class _StaticFixture:
         pass
 
 
-class _MincoV3Fixture:
+class _ReplanMincoFixture:
     """Ideal tracking: the "TF" reports the tracker's own last setpoint,
-    since v3 replans from its reference state rather than a trajectory the
+    since replan_minco replans from its reference state rather than a trajectory the
     fixture could sample independently."""
 
     def __init__(self):
         pytest.importorskip("minco_native_py")
         self._t = 0.0
-        self.tracker = ReplanningMincoV3Tracker(
+        self.tracker = ReplanMincoTracker(
             P0, P_TARGET, self._pose_fn, tf_fresh_fn=lambda stamp: True,
             q0=[0.0, 0.0, 0.0, 1.0], target_speed=TARGET_SPEED,
             max_accel=MAX_ACCEL,
@@ -70,7 +70,7 @@ class _MincoV3Fixture:
         self._t = t
 
 
-FIXTURE_FACTORIES = [_StaticFixture, _MincoV3Fixture]
+FIXTURE_FACTORIES = [_StaticFixture, _ReplanMincoFixture]
 
 
 @pytest.mark.parametrize("make_fixture", FIXTURE_FACTORIES)

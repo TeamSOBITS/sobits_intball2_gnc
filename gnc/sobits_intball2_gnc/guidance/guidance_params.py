@@ -34,7 +34,7 @@ GUIDANCE_PARAM_DEFAULTS = {
     # as the other per-goal options here. [] (default) means no via
     # waypoints -- unchanged prior 2-waypoint behavior.
     "guidance.via_waypoints": [""],
-    # "static_minco"/"replanning_minco_v3" only: MincoTrajectory's via-point
+    # "static_minco"/"replan_minco" only: MincoTrajectory's via-point
     # free-variable box half-width [m] (docs/
     # 2026-08-30_static_minco_face_travel_gap.md 追記3 -- was a hardcoded
     # C++ constant in minco_solver.cpp, now tunable without a rebuild). 0.0
@@ -43,7 +43,7 @@ GUIDANCE_PARAM_DEFAULTS = {
     # hit exactly unless a goal explicitly opts into slack. Same Category B
     # per-goal latching as via_waypoints above.
     "guidance.minco_via_half_width": 0.0,
-    # "static_minco"/"replanning_minco_v3" only:
+    # "static_minco"/"replan_minco" only:
     # MincoTrajectory's attitude_resample_spacing_m (docs/
     # 2026-08-30_static_minco_face_travel_gap.md 追記4). 0.0 means "off"
     # (None -- attitude only seeded at the given waypoints, prior behavior);
@@ -56,10 +56,10 @@ GUIDANCE_PARAM_DEFAULTS = {
     "guidance.minco_attitude_resample_spacing_m": 0.3,
     "guidance.face_travel_camera": "main",
     "guidance.align_at_arrival_camera": "main",
-    # "static" (default), "static_minco" or "replanning_minco_v3". Category
+    # "static_toppra" (default), "static_minco" or "replan_minco". Category
     # B, like attitude_reference_mode -- latched at goal receipt in
     # goal_execute_kwargs below, not applied mid-trajectory.
-    "guidance.trajectory_tracking_mode": "static",
+    "guidance.trajectory_tracking_mode": "static_toppra",
     # q_des rate limit (docs/archive/achieved/
     # 2026-08-24_trajectory_state_carryover_design.md 3-4節). First-cut
     # default, not yet tuned against real tracking performance.
@@ -79,7 +79,7 @@ GUIDANCE_PARAM_DEFAULTS = {
     # docstring and docs/2026-08-28_toppra_static_path_attitude_overshoot_
     # incident.md "追記（2026-08-28 その5/6）"). Only read once at
     # wrench_envelope construction in guidance.py -- static like the fan geometry it's
-    # paired with. static_minco/replanning_minco_v3 reuse this same value,
+    # paired with. static_minco/replan_minco reuse this same value,
     # forwarded to MincoTrajectory's wrench_safety_margin each goal (docs/
     # 2026-08-30_static_minco_face_travel_gap.md 追記2) -- one physical
     # meaning (feedback headroom against the fan envelope), one parameter,
@@ -96,7 +96,7 @@ GUIDANCE_PARAM_DEFAULTS = {
     "guidance.stopping.tolerance_att": 1.0,
     "guidance.stopping.duration_goal": 3.0,
     "guidance.stopping.wait_cancel": 10.0,
-    # "replanning_minco_v3" only: forwarded to
+    # "replan_minco" only: forwarded to
     # GuidanceExecutor.execute()'s minco_freetime (see that method's
     # docstring). False (default, unchanged prior behavior) uses this
     # mode's configured target_speed/max_accel (plan_minco_heuristic_time)
@@ -105,14 +105,14 @@ GUIDANCE_PARAM_DEFAULTS = {
     # (docs/2026-09-20_minco_global_replan_freetime_switch_offline_
     # investigation.md).
     "guidance.minco_freetime": False,
-    # "replanning_minco_v3" only: forwarded to the tracker's
+    # "replan_minco" only: forwarded to the tracker's
     # local_replan_period/planning_horizon_m. Category B, latched per goal.
     "guidance.minco_local_replan_period": 1.0,
     "guidance.minco_planning_horizon_m": 4.0,
-    "guidance.minco_v3_face_travel": True,
+    "guidance.minco_replan_face_travel": True,
     "guidance.minco_local_max_vel": 0.15,
-    "guidance.minco_v3_async_replan": True,
-    # replanning_minco_v3 obstacle avoidance (docs/2026-09-24_obstacle_avoidance_
+    "guidance.minco_async_replan": True,
+    # replan_minco obstacle avoidance (docs/2026-09-24_obstacle_avoidance_
     # production_integration_plan.md). The map/grid ones are read once at startup;
     # the minco_* ones latch per goal like the rest.
     "guidance.obstacle_map_file": "jem_octomap.bt",  # relative = share/maps/; "" = no static map
@@ -166,9 +166,9 @@ _GOAL_EXECUTE_PARAMS = {
     "minco_freetime": ("minco_freetime", bool),
     "minco_local_replan_period": ("minco_local_replan_period", float),
     "minco_planning_horizon_m": ("minco_planning_horizon_m", float),
-    "minco_v3_face_travel": ("minco_v3_face_travel", bool),
+    "minco_replan_face_travel": ("minco_replan_face_travel", bool),
     "minco_local_max_vel": ("minco_local_max_vel", float),
-    "minco_v3_async_replan": ("minco_v3_async_replan", bool),
+    "minco_async_replan": ("minco_async_replan", bool),
     "minco_obstacle_avoidance": ("minco_obstacle_avoidance", bool),
     "minco_local_piece_length_m": ("minco_local_piece_length_m", float),
     "minco_obstacle_clearance_soft": ("minco_obstacle_clearance_soft", float),

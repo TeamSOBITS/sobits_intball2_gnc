@@ -7,7 +7,7 @@ import os
 
 import numpy as np
 
-from sobits_intball2_gnc.guidance.trajectory_tracking import replanning_minco_v3_tracker as v3
+from sobits_intball2_gnc.guidance.trajectory_tracking import replan_minco_tracker as tracker_module
 
 _spec = importlib.util.spec_from_file_location(
     "stage4", os.path.join(os.path.dirname(__file__), "experiment_obstacle_stage4_tracker.py"))
@@ -41,29 +41,29 @@ class _Threading:
 
 
 def run_async(boxes):
-    orig_threading = v3.threading
-    orig_init = v3.ReplanningMincoV3Tracker.__init__
+    orig_threading = tracker_module.threading
+    orig_init = tracker_module.ReplanMincoTracker.__init__
 
     def init(self, *a, **kw):
         SimTimedThread.owner = self
         orig_init(self, *a, async_replan=True, **kw)
 
-    v3.threading = _Threading
-    v3.ReplanningMincoV3Tracker.__init__ = init
-    orig_sample = v3.ReplanningMincoV3Tracker.sample
+    tracker_module.threading = _Threading
+    tracker_module.ReplanMincoTracker.__init__ = init
+    orig_sample = tracker_module.ReplanMincoTracker.sample
 
     def sample(self, t):
         for th in SimTimedThread.remaining:
             th._left -= stage4.DT
         return orig_sample(self, t)
 
-    v3.ReplanningMincoV3Tracker.sample = sample
+    tracker_module.ReplanMincoTracker.sample = sample
     try:
         return stage4.run(boxes)
     finally:
-        v3.threading = orig_threading
-        v3.ReplanningMincoV3Tracker.__init__ = orig_init
-        v3.ReplanningMincoV3Tracker.sample = orig_sample
+        tracker_module.threading = orig_threading
+        tracker_module.ReplanMincoTracker.__init__ = orig_init
+        tracker_module.ReplanMincoTracker.sample = orig_sample
         SimTimedThread.remaining.clear()
 
 
