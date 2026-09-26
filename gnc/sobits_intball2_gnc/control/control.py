@@ -21,7 +21,7 @@ regardless and allocates whatever reaches ``/ctl/wrench``, so
 ``control.thrust_allocation`` picks exactly one owner of ``/ctl/duty``:
 ``"builtin"`` (default) allocates here and never publishes ``/ctl/wrench``;
 ``"jaxa_fsm"`` publishes the total wrench to ``/ctl/wrench`` and no duty
-(docs/2026-09-26_jaxa_fsm_double_duty_issue.md).
+(docs/archive/achieved/2026-09-26_jaxa_fsm_double_duty_issue.md).
 """
 import rclpy
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult

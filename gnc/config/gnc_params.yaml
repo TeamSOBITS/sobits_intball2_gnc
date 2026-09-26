@@ -189,7 +189,7 @@
       status_log_period: 2.0
       # Who turns the wrench into /ctl/duty (startup only). "builtin": this node.
       # "jaxa_fsm": publish the total wrench to /ctl/wrench for JAXA's fsm, no duty;
-      # needs JAXA ctl_only in STAND_BY (NAV_OFF). docs/2026-09-26_jaxa_fsm_double_duty_issue.md
+      # needs JAXA ctl_only in STAND_BY (NAV_OFF). docs/archive/achieved/2026-09-26_jaxa_fsm_double_duty_issue.md
       thrust_allocation: builtin
 
     # Translation-only direction-vector control (control/utils/translation_direction_controller.py).

@@ -18,7 +18,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile
 
 # Not "/ctl/wrench": the bridge relays that to JAXA's fsm, which allocates it
-# into a second /ctl/duty (docs/2026-09-26_jaxa_fsm_double_duty_issue.md).
+# into a second /ctl/duty (docs/archive/achieved/2026-09-26_jaxa_fsm_double_duty_issue.md).
 WRENCH_CORRECTION_TOPIC = "/ctl/wrench_correction"
 # (IMU-law + correction), summed and clamped -- the exact wrench passed to
 # ThrustAllocator.allocate() each tick, as opposed to WRENCH_CORRECTION_TOPIC's
