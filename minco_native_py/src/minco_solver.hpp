@@ -93,7 +93,7 @@ constexpr int CONSTRAINT_POINTS_PER_PIECE = MINCO_CPS_PER_PIECE;
 // gnc/test/experiment_minco_native/bench_v4_analytic_stretch.cpp・
 // bench_v5_multiscenario.cppのsolveGlobal()を本番へ移植したもの）。
 // target_speed/max_accel: ヒューリスティックT計算にのみ使う
-// （HeuristicSegmentTimeAllocatorと同じ役割のパラメータ、必須・共に>0）。
+// （必須・共に>0）。
 PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
                                    const std::vector<double> &v0,
                                    const std::vector<double> &w0,

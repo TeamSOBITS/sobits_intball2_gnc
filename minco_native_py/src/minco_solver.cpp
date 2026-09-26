@@ -830,8 +830,7 @@ double trapezoidalTime(double distance, double vCap, double aMax)
 // trapezoidalTimeの結果を、head側の初速度（進行方向成分vParallel）に応じて
 // 補正する（v0=0前提の素朴な見積もりだと、巡航中の初速がある場合に時間が
 // 短すぎ／長すぎになりうる下限・上限で挟む）。
-// gnc/sobits_intball2_gnc/guidance/segment_time/
-// heuristic_segment_time_allocator.pyのv0-aware補正と同じ考え方だが、
+// 旧HeuristicSegmentTimeAllocator（Python、2026-09-26削除）のv0-aware補正と同じ考え方だが、
 // このC++側は経路全体を1本の速度プロファイルとして扱う
 // （bench_v5_multiscenario.cppと同じ式）。
 double v0AwareTime(double naiveT, double distance, double vParallel, double aMax)

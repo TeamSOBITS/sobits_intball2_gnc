@@ -124,7 +124,7 @@ class ToppraTrajectory:
     :class:`~sobits_intball2_gnc.guidance.trajectory_tracking.
     static_trajectory_tracker.StaticTrajectoryTracker` needs (``sample(t) ->
     (p, v, a, q)`` and a ``global_total_duration`` property). Used for the
-    ``static`` path only (see module docstring).
+    ``static_toppra`` path only (see module docstring).
 
     Args:
         position_waypoints: ``(n, 3)`` reference-frame positions.

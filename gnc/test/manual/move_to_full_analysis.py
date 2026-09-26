@@ -14,7 +14,7 @@ test/manual/README.md); this merges event-driven multi-topic recording
 (`/ctl/wrench_achieved` included) plus the actual error computation
 (position/attitude vs setpoint) that neither of those scripts did.
 
-Works with any `guidance.trajectory_tracking_mode` value (``static``,
+Works with any `guidance.trajectory_tracking_mode` value (``static_toppra``,
 ``static_minco``, ``replan_minco``) -- pass
 `--set-mode` to set it first, or leave whatever is already configured.
 

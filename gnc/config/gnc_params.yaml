@@ -103,8 +103,8 @@
       camera_forward_axis:
         main: [1.0, 0.0, 0.0]
         stereo: [0.0, 1.0, 0.0]
-      target_speed: 0.5        # cruise speed for HeuristicSegmentTimeAllocator [m/s]
-      attitude_speed_threshold: 0.02  # see trajectory.py
+      target_speed: 0.5        # cruise speed [m/s]: TOPP-RA max speed, replan_minco heuristic segment times
+      attitude_speed_threshold: 0.02  # see utils/attitude_reference.py
       align_tolerance_deg: 3.0     # pre-/post-alignment convergence tolerance [deg]
       align_timeout: 60.0          # pre-/post-alignment safety cap [s]
       # Minimum unbroken in-tolerance time before declaring convergence, so an

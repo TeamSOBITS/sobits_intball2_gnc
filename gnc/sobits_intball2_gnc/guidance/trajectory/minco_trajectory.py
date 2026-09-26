@@ -26,7 +26,7 @@ solveし、2回目はその1回目の解けた位置経路の実接線（``sampl
 姿勢waypointを再導出してsolveし直す。1回目だけだと、直線ベースで決め打ちした
 姿勢目標と、実際にMINCOが解く（コーナーを滑らかに丸めた）位置経路の接線が
 コーナー付近で一致せず、setpoint自身の姿勢がsetpoint自身の速度方向を
-最大60度近く向かない、という不具合になる（``static``/TOPP-RA側で過去に一度
+最大60度近く向かない、という不具合になる（``static_toppra``側で過去に一度
 見つかって直したのと同じ設計上のアンチパターンの再発、``docs/archive/achieved/
 2026-08-28_attitude_waypoint_premature_rotation_root_cause.md``）。2回目の
 solveで実測上は不動点に収束し、所要時間への影響は1%未満（オフライン検証は
@@ -97,7 +97,7 @@ class MincoTrajectory:
             時間は増える。
         wrench_safety_margin: ロード済みのwrench envelopeをこの係数
             （``(0, 1]``）で縮小してから制約評価する。``1.0``（既定）は
-            無効化（従来の挙動と同一）。``static``（TOPPRA）パスの
+            無効化（従来の挙動と同一）。``static_toppra``パスの
             ``guidance.wrench_envelope_safety_margin``と同じ、フィードバック
             余力確保のためのマージンをMINCO側にも適用できるようにしたもの
             （``docs/2026-08-30_static_minco_face_travel_gap.md`` 追記2）。

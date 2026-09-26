@@ -60,10 +60,10 @@ TOPP-RA側は`wrench_envelope_safety_margin=0.7`だが、MINCO側は既定`1.0`�
 
 ### [G] min_snap.py のコアロジック実装（別担当者、優先度低）
 Phase 2で契約は確定済みだがコア実装が未着手。pure functionとして実装（ROS import禁止）。理論: Mellinger & Kumar (2011)。入出力契約: `docs/minimum_snap/min_snap_interface_contract.md`。参考実装: https://github.com/The-SS/quadrotor_trajectory 、参考解説: https://dev10110.github.io/tech-notes/control-theory/min_snap.html
-成果物: `test_min_snap.py`に数値解検証テスト追加、`test_trajectory_generator_contract.py`の対象に`MinSnapTrajectoryGenerator`追加、`test_segment_time_to_trajectory_pipeline.py`を差し替えて統合確認。依存関係なし（他タスクと並行可）。`static`モードは既にTOPP-RA（`ToppraTrajectory`）で力/トルク制約を考慮した軌道生成に置き換わっているため、緊急度は下がっている。
+成果物: `test_min_snap.py`に数値解検証テスト追加、`test_trajectory_generator_contract.py`の対象に`MinSnapTrajectoryGenerator`追加、区間時間→軌道のパイプラインの統合テストを追加して確認。依存関係なし（他タスクと並行可）。`static_toppra`モードは既にTOPP-RA（`ToppraTrajectory`）で力/トルク制約を考慮した軌道生成に置き換わっているため、緊急度は下がっている。
 
 ### [C] 姿勢FFの既定ON化判断（残りの検証）
-`trajectory_controller.attitude_feedforward`は既定`false`のまま。`static`の1ルートではON時に移動中の姿勢誤差が最大3.23°→0.51°だったが、新コードでのOFF再計測と`static_minco`・`replan_minco`での検証が未実施。これらを済ませてから既定をONにするか決める。詳細: `docs/archive/achieved/2026-09-23_attitude_feedforward_implementation_and_sim_verification.md`
+`trajectory_controller.attitude_feedforward`は既定`false`のまま。`static_toppra`の1ルートではON時に移動中の姿勢誤差が最大3.23°→0.51°だったが、新コードでのOFF再計測と`static_minco`・`replan_minco`での検証が未実施。これらを済ませてから既定をONにするか決める。詳細: `docs/archive/achieved/2026-09-23_attitude_feedforward_implementation_and_sim_verification.md`
 
 ### [C] omega_errを数値微分から解析値へ置き換え
 現状50Hzの数値微分（`att_filter_alpha=1.0`で無フィルタ）でノイズと位相遅れを抱えている。姿勢FF導入（2026-09-23、`docs/archive/achieved/2026-09-23_attitude_feedforward_implementation_and_sim_verification.md`）で`w_des`が取れるようになったため、`omega_imu - R(qe)*w_des`で解析的に算出できる。詳細: `docs/arch/2026-09-20_jaxa_to_sobits_backport_candidates.md`（A-2）
@@ -72,7 +72,7 @@ Phase 2で契約は確定済みだがコア実装が未着手。pure functionと
 `lsq_linear`（反復ソルバ、計算時間が非決定的）に時間上限を設け、超過・失敗時はJAXA型の行列配分（事前計算行列の積と最小値減算のみ、固定時間）に落とす。詳細: 同上（B-4）
 
 ### [C] 追従誤差ガード（`Dtc`相当）の追加
-追従誤差が閾値を超えても軌道を中断しない。特に`static`モードは開ループのため機体位置に関わらず基準時刻が進み続け、外乱・衝突を検知できない。閾値超過で中断時制動（`GuidanceExecutor.brake()`、`docs/archive/achieved/2026-09-24_cancel_stopping_profile_implementation_and_sim_verification.md`）経由のholdへ落とすガードが必要。詳細: 同上（C-1）
+追従誤差が閾値を超えても軌道を中断しない。特に`static_toppra`・`static_minco`は開ループのため機体位置に関わらず基準時刻が進み続け、外乱・衝突を検知できない。閾値超過で中断時制動（`GuidanceExecutor.brake()`、`docs/archive/achieved/2026-09-24_cancel_stopping_profile_implementation_and_sim_verification.md`）経由のholdへ落とすガードが必要。詳細: 同上（C-1）
 
 ### [C] trajectory_controller のTF速度推定ノイズ調査
 move_to中に`f_des`が瞬間的に0.68N超まで跳ねる事象を観測、計画側（`a_des`/`v_des`）はほぼ無風

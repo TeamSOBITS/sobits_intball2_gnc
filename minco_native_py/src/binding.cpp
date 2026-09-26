@@ -171,8 +171,7 @@ PYBIND11_MODULE(minco_native_py, m) {
         "loop (EGO-Planner lengthenTime style, uniform whole-trajectory "
         "stretch, up to 15 iterations) applied "
         "when the heuristic times violate the wrench envelope. target_speed/"
-        "max_accel: used only for the heuristic time estimate (same role as "
-        "HeuristicSegmentTimeAllocator's parameters), both required > 0. "
+        "max_accel: used only for the heuristic time estimate, both required > 0. "
         "via_half_width/wrench_safety_margin: same meaning as plan_minco. "
         "Returns (success, error_code, segment_times, coeffs_flat, duration).");
 }

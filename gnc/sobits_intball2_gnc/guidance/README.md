@@ -1,6 +1,6 @@
 # Guidance
 
-waypoint列から、時間の関数としての滑らかな目標軌道（位置・速度・加速度・目標姿勢）を生成し、`/gnc/move_to`アクションとしてgoal駆動で機体を動かすモジュールです。実際に使われている軌道生成は`HermiteSplineTrajectoryGenerator`（C1連続のみ保証する劣化版）。min-snapのコアロジックは実装しない方針（2026-08-24決定）で、`min_snap_trajectory_generator.py`はスケルトンのまま残しています。それ以外（`guidance_node`本体・move-to統合含む）は実装済みです。
+waypoint列から、時間の関数としての滑らかな目標軌道（位置・速度・加速度・目標姿勢）を生成し、`/gnc/move_to`アクションとしてgoal駆動で機体を動かすモジュールです。軌道はファンで出せる力・トルクの範囲（wrench envelope）に収まるように作ります: TOPP-RA（`static_toppra`、既定）またはMINCO（`static_minco`・`replan_minco`）。軌道を作れないときはgoalをabortし、その場で止まります。
 
 ## 目次
 
@@ -19,53 +19,50 @@ guidance/
 ├── guidance.py                           # GuidanceNode（唯一のROSノード、1file1node）
 │                                          # /gnc/move_to（ib2_msgs/action/CtlCommand）を提供
 ├── guidance_params.py                    # GuidanceNodeのパラメータの既定値・読み取り専用の一覧・goalごとの読み取り
-├── align/                                # 事前/事後アラインメント（SLERP+台形角速度ランプ）
-│   ├── angular_trajectory.py                 # 角度台形プロファイル（角速度・角加速度上限からランプ軌道を生成）
-│   └── attitude_aligner.py                   # 現在姿勢->目標姿勢のSLERP+台形ランプ整列を駆動
-├── global_planner/                       # 大域経路計画（waypoint列の生成）
-│   ├── base_global_planner.py                # 共通インターフェース
-│   ├── astar_planner.py
-│   └── rrt_planner.py
-├── local_planner/                        # 障害物を見たlocalの計画
-│   ├── minco_local_planner.py                # replan_mincoのglobal/localの作り方（EGO-Planner v2のplanner_manager）
-│   └── obstacle_map.py                       # 静的な地図（OctoMap）＋仮想の箱から格子地図を作り直す
 ├── ros/                                  # ROS 入出力ラッパ
 │   ├── path_publisher.py                     # nav_msgs/Path をRVizへ可視化publish（/gnc/trajectory_path）
-│   ├── speed_path_publisher.py                # 速度で色分けしたLINE_STRIP MarkerをRVizへ可視化publish（表示のみ、制御には無関係）
+│   ├── speed_path_publisher.py               # 速度で色分けしたLINE_STRIP MarkerをRVizへ可視化publish（表示のみ、制御には無関係）
 │   ├── multi_dof_joint_trajectory_publisher.py  # /gnc/trajectory_setpoint へ発行（Control側が購読）
 │   ├── checkpoint_publisher.py               # /gnc/checkpoints へ発行（事前/到着時整列の静止保持）
 │   ├── marker_array_subscriber.py            # /guidance/virtual_obstacles（MarkerArrayのCUBE）を箱の変更にして渡す
 │   ├── marker_array_publisher.py             # 今の箱の一覧を /guidance/obstacles_active へ発行（RViz表示）
 │   ├── move_to_client.py                     # move_to_client CLI（名前付きTF地点へgoal送信、手動検証用）
 │   └── ctl_command_action_server.py          # ib2_msgs/action/CtlCommand（目標姿勢へのgoal駆動）
-├── segment_time/                         # 区間時間配分
-│   ├── base_segment_time_allocator.py
-│   ├── heuristic_segment_time_allocator.py   # distance/target_speed + 台形速度プロファイルの時間下限
-│   └── optimal_segment_time_allocator.py     # シグネチャ確定のみ、本体は未実装（min-snap前提のためスコープ外）
-├── trajectory_generation/                # waypoints+区間時間 -> 多項式係数
-│   ├── base_trajectory_generator.py
-│   ├── hermite_spline_trajectory_generator.py  # 劣化版（C1連続のみ保証）、実装済み・実際に使用中
-│   └── min_snap_trajectory_generator.py      # スケルトンのみ、コアロジックは実装しない方針（2026-08-24決定）
-├── trajectory/                           # 生成済み軌道の表現・サンプリング
-│   ├── trajectory.py                         # Trajectory: sample(t) -> (p, v, a, q_des)
+├── executor/                             # 1つのgoalの流れ
+│   ├── guidance_executor.py                  # GuidanceExecutor: pre-align→軌道追従→arrival-align、cancel・計画失敗後はbrake()で制動
+│   ├── tracker_builder.py                    # goalのtrajectory_tracking_modeに応じてtrackerを組み立てる（作れなければTrajectoryBuildError）
+│   └── cancel_brake.py                       # 停止プロファイルに沿って止め、止まった点で静止保持
+├── global_planner/                       # 大域経路計画（本番では未使用、単体テストのみ）
+│   ├── base_global_planner.py                # 共通インターフェース
+│   ├── astar_planner.py
+│   └── rrt_planner.py
+├── local_planner/                        # 障害物を見たlocalの計画
+│   ├── minco_local_planner.py                # replan_mincoのglobal/localの作り方（EGO-Planner v2のplanner_manager）
+│   └── obstacle_map.py                       # 静的な地図（OctoMap）＋仮想の箱から格子地図を作り直す
+├── trajectory/                           # 軌道の表現と生成
 │   ├── minco_trajectory.py                   # MINCO姿勢/トルク統合軌道（minco_native_py拡張のPythonラッパ）
-│   └── toppra_trajectory.py                  # TOPP-RAによる力/トルク制約付き時間割当済み軌道
-├── trajectory_tracking/                  # 生成済み軌道の追従方式（static_toppra/static_minco/replan_minco切替）
+│   ├── toppra_trajectory.py                  # TOPP-RAによる力/トルク制約付き時間割当済み軌道
+│   └── generation/                           # waypoints+区間時間 -> 多項式係数
+│       ├── base_trajectory_generator.py
+│       ├── hermite_spline_trajectory_generator.py  # C1連続のHermiteスプライン（TOPP-RAの幾何経路に使用）
+│       └── min_snap_trajectory_generator.py      # スケルトンのみ、コアロジックは実装しない方針（2026-08-24決定）
+├── trajectory_tracking/                  # 生成済み軌道の追従方式
 │   ├── base_trajectory_tracker.py            # 共通インターフェース
-│   ├── static_trajectory_tracker.py          # 開ループ単一軌道を最後まで追従（デフォルト）
-│   ├── replan_minco_tracker.py        # global MINCO軌道を一度だけ解き、local区間を一定周期で再計画しながら追従（衝突確認・非常停止）
-│   └── tracker_builder.py                    # goalのtrajectory_tracking_modeに応じてtrackerを組み立てる（フォールバックの順も）
-└── utils/                                # ROS非依存のロジック
+│   ├── static_trajectory_tracker.py          # 開ループ単一軌道を最後まで追従（static_toppra・static_minco）
+│   └── replan_minco_tracker.py               # global MINCO軌道を一度だけ解き、local区間を一定周期で再計画しながら追従（衝突確認・非常停止）
+├── align/                                # 事前/事後アラインメント（SLERP+台形角速度ランプ）
+│   ├── angular_trajectory.py                 # 角度台形プロファイル（角速度・角加速度上限からランプ軌道を生成）
+│   └── attitude_aligner.py                   # 現在姿勢->目標姿勢のSLERP+台形ランプ整列を駆動
+├── estimation/                           # 状態推定
+│   ├── velocity_estimator.py                 # TF位置列からのGuidance側速度推定（EMA平滑化）
+│   └── model_kf_estimator.py                 # 指令加速度で予測・観測位置で補正する定加速度カルマンフィルタ（現在未使用）
+├── constraints/                          # 機体の制約
+│   ├── actuation_envelope.py                 # 機体の達成可能wrench包絡域（wrench_envelope_halfspaces等）の算出
+│   └── wrench_envelope_constraint.py         # TOPP-RA用の経路非依存wrench包絡域制約（ToppraTrajectoryが使用）
+└── utils/                                # 数学の小道具
     ├── polynomial.py                         # 多項式（微分）評価
     ├── attitude_reference.py                 # v_des(t) -> q_des(t)（進行方向を向く姿勢参照）
-    ├── actuation_envelope.py                 # 機体の達成可能wrench包絡域（wrench_envelope_halfspaces等）の算出
-    ├── velocity_estimator.py                 # TF位置列からのGuidance側速度推定（EMA平滑化）
-    ├── model_kf_estimator.py                 # 指令加速度で予測・観測位置で補正する定加速度カルマンフィルタ（現在未使用）
-    ├── quintic_hermite.py                    # 両端の位置/速度/加速度から5次多項式を解析的に解く（現在未使用）
-    ├── wrench_envelope_constraint.py         # TOPP-RA用の経路非依存wrench包絡域制約（ToppraTrajectoryが使用）
-    ├── cancel_brake.py                       # cancel後の制動（停止プロファイルに沿って止め、止まった点で静止保持）
-    └── guidance_executor.py                  # GuidanceExecutor: 1件のCtlCommand goalを
-                                               # pre-align→軌道追従→arrival-alignで駆動、cancel後はbrake()で制動
+    └── quintic_hermite.py                    # 両端の位置/速度/加速度から5次多項式を解析的に解く（現在未使用）
 ```
 
 cancel後の制動プロファイルは`guidance/`の外、`common/utils/stopping_profile.py`（ROS非依存、JAXA `ctl_only`の`stoppingProfile()`の移植）にある。将来Control側からも使うため共通の場所に置いている。
@@ -159,10 +156,11 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 2. **軌道の追従**: `/gnc/trajectory_setpoint`へ参照を出す。方式は`trajectory_tracking_mode`で決まる
    - `static_toppra`: 力・トルクの制約付きで一度だけ計画した軌道（TOPP-RA）
    - `static_minco`: MINCOで一度だけ計画した軌道
-   - `replan_minco`: ゴールまでのglobal軌道を一度だけ作り、そこから先読み距離先までのlocal軌道を1秒ごとに作り直す（EGO-Planner v2と同じ構成）
+   - `replan_minco`: ゴールまでのglobal軌道を一度だけ作り、そこから先読み距離先までのlocal軌道を1秒ごとに作り直す（EGO-Planner v2と同じ構成）。最初のglobal軌道を作れなければ`static_toppra`で作り直す
+   - 軌道を作れないとき（TOPP-RA・MINCOが解けない、wrench envelope・質量・慣性・`max_angular_rate`が未設定）はgoalを`TERMINATE_ABORTED`で返し、下の4と同じ制動で止まる
    - 計画時間が過ぎても、位置誤差が`align_pos_tolerance_m`以下に`align_pos_settle_time`秒続くまで待つ（最大`align_pos_timeout`秒）
 3. **到着時の姿勢合わせ**（`align_at_arrival`）: 目標姿勢へ合わせる。`/gnc/checkpoints`で静止保持、最大`align_timeout`秒
-4. **cancelされたとき**（`GuidanceExecutor.brake()`、上のどの段階でも）: 結果を返したあと別スレッドで実行する。JAXA `ctl_only`と同じく、先に回転を止め（その間の並進は等速）、次に並進を一定の減速度で止める軌道を`/gnc/trajectory_setpoint`へ出す。減速度はファン1基あたり`wrench_envelope_safety_margin`倍までの推力で出せる値で、さらに各軸`hover_control.max_force`以下に抑える。軌道を最後まで出し、停止点から`stopping.tolerance_pos`・`stopping.tolerance_att`以内に`stopping.duration_goal`秒いたら（最大は軌道時間＋`stopping.wait_cancel`秒）、停止点を`/gnc/checkpoints`で静止保持にする。停止距離は速度の2乗に比例する（0.5 m/sから3〜6 m）。
+4. **cancelされたとき・軌道を作れなかったとき**（`GuidanceExecutor.brake()`）: 結果を返したあと別スレッドで実行する。JAXA `ctl_only`と同じく、先に回転を止め（その間の並進は等速）、次に並進を一定の減速度で止める軌道を`/gnc/trajectory_setpoint`へ出す。減速度はファン1基あたり`wrench_envelope_safety_margin`倍までの推力で出せる値で、さらに各軸`hover_control.max_force`以下に抑える。軌道を最後まで出し、停止点から`stopping.tolerance_pos`・`stopping.tolerance_att`以内に`stopping.duration_goal`秒いたら（最大は軌道時間＋`stopping.wait_cancel`秒）、停止点を`/gnc/checkpoints`で静止保持にする。停止距離は速度の2乗に比例する（0.5 m/sから3〜6 m）。
 
 `CtlCommand.action`にはオプションを渡すフィールドが無いため、goalごとの設定はすべてROSパラメータで渡す。
 
