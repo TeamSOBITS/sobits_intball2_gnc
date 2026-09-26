@@ -38,6 +38,8 @@ setup(
             # ros/ wrapper manual-test entry points.
             'fan_duty_publisher = sobits_intball2_gnc.control.ros.fan_duty_publisher:main',
             'imu_subscriber = sobits_intball2_gnc.control.ros.imu_subscriber:main',
+            'set_operation_type_client = '
+            'sobits_intball2_gnc.control.ros.set_operation_type_client:main',
             'tf_client = sobits_intball2_gnc.common.ros.tf_client:main',
             'pose_array_subscriber = sobits_intball2_gnc.control.ros.pose_array_subscriber:main',
             'multi_dof_joint_trajectory_subscriber = '

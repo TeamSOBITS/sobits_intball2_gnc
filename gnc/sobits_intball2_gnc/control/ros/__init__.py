@@ -5,6 +5,7 @@ from sobits_intball2_gnc.control.ros.multi_dof_joint_trajectory_subscriber impor
     MultiDOFJointTrajectorySubscriber,
 )
 from sobits_intball2_gnc.control.ros.pose_array_subscriber import PoseArraySubscriber
+from sobits_intball2_gnc.control.ros.set_operation_type_client import SetOperationTypeClient
 
 __all__ = [
     "CtlStatusSubscriber",
@@ -12,4 +13,5 @@ __all__ = [
     "ImuSubscriber",
     "MultiDOFJointTrajectorySubscriber",
     "PoseArraySubscriber",
+    "SetOperationTypeClient",
 ]

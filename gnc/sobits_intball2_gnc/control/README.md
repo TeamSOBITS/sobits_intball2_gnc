@@ -71,6 +71,9 @@ ros2 topic pub --once /gnc/checkpoints geometry_msgs/msg/PoseArray \
 # checkpoint配列を1つ先へ進める
 ros2 service call /gnc/advance_checkpoint std_srvs/srv/Trigger
 
+# JAXAのNavigationとctl_onlyをオン/オフ（fsmはどちらでも動き続ける）
+ros2 run sobits_intball2_gnc set_operation_type_client off   # on / off
+
 # control_nodeを止めた状態で、ファンを直接回す（NAV_OFFで）
 ros2 run sobits_intball2_gnc fan_duty_publisher --help
 ```
@@ -92,6 +95,7 @@ control/
 │   ├── imu_subscriber.py                          # /imu/imu（ib2_msgs/IMU）を購読し最新のジャイロ・加速度を保持
 │   ├── pose_array_subscriber.py                   # /gnc/checkpoints（止まる場所の配列）購読
 │   ├── multi_dof_joint_trajectory_subscriber.py   # /gnc/trajectory_setpoint（軌道追従の目標点）購読
+│   ├── set_operation_type_client.py               # JAXAのNAV_ON/NAV_OFF（/platform_manager/set_operation_type）を呼ぶ
 │   └── wrench_publisher.py                        # /ctl/wrench_correction・/ctl/wrench_total・/ctl/wrench_achieved へ
 │                                                   # 要求/合成/実現wrenchをpublish（可観測性強化用）。jaxa_fsm時は/ctl/wrenchも
 └── utils/        # ROS非依存のロジック（単体テスト可能）
