@@ -20,7 +20,8 @@ plain Python values, and drives the ``rclpy`` action-server state machine.
 
 ``execute_fn`` signature::
 
-    execute_fn(p_target, q_target, feedback_cb, is_cancel_requested) -> status
+    execute_fn(p_target, q_target, feedback_cb, is_cancel_requested,
+               relative) -> status
 
     p_target: [x, y, z]
     q_target: [x, y, z, w]
@@ -31,6 +32,9 @@ plain Python values, and drives the ``rclpy`` action-server state machine.
     is_cancel_requested: callable, returns True once the client has asked to
         cancel; ``execute_fn`` should stop and return promptly when this is
         True.
+    relative: True for ``MOVE_TO_RELATIVE_TARGET`` -- p_target/q_target are
+        then a body-frame offset from the pose at goal receipt
+        (``docs/archive/achieved/2026-09-29_move_relative_design.md``), not an absolute pose.
     status: one of the ``TERMINATE_*`` class constants below.
 
 Requires a callback group that allows ``execute_fn`` to run alongside other
@@ -38,6 +42,8 @@ callbacks (e.g. a ``MultiThreadedExecutor``, or a dedicated
 ``ReentrantCallbackGroup``) -- ``execute_fn`` is expected to run for the
 duration of the move, not return immediately.
 """
+import math
+
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -73,9 +79,10 @@ class CtlCommandActionServer:
             ``/gnc/move_to``) so a client can't send a goal to the real
             onboard controller by mistake.
         execute_fn: Callable implementing the move (see module docstring for
-            signature). Only ``CtlStatusType.MOVE_TO_ABSOLUTE_TARGET`` goals
-            are accepted; anything else is rejected before ``execute_fn``
-            runs (this server's scope, ``docs/archive/achieved/2026-08-20_future_design_notes.md`` 4).
+            signature). Only ``CtlStatusType.MOVE_TO_ABSOLUTE_TARGET`` and
+            ``MOVE_TO_RELATIVE_TARGET`` goals are accepted; anything else is
+            rejected before ``execute_fn`` runs (this server's scope,
+            ``docs/archive/achieved/2026-08-20_future_design_notes.md`` 4).
         expected_frame: Reference frame ``goal.target`` (a
             ``geometry_msgs/PoseStamped``) must be expressed in. An empty
             ``header.frame_id`` is accepted as "unspecified"; any other
@@ -88,15 +95,22 @@ class CtlCommandActionServer:
             duration of the move and must not block other callbacks).
         busy_fn: optional callable; while it returns True (e.g. the
             post-cancel brake is still running) new goals are rejected.
+        relative_frame: same as ``expected_frame``, for
+            ``MOVE_TO_RELATIVE_TARGET`` goals (JAXA's clients send ``body``).
+        max_relative_distance: ``MOVE_TO_RELATIVE_TARGET`` goals whose
+            translation norm exceeds this [m] are rejected (default: no limit).
     """
 
     def __init__(self, node: Node, action_name: str, execute_fn,
                  expected_frame: str = "", callback_group=None,
-                 busy_fn=None) -> None:
+                 busy_fn=None, relative_frame: str = "",
+                 max_relative_distance: float = math.inf) -> None:
         self._node = node
         self._execute_fn = execute_fn
         self._busy_fn = busy_fn
         self._expected_frame = expected_frame
+        self._relative_frame = relative_frame
+        self._max_relative_distance = max_relative_distance
         # Only one execute_fn may run at a time: it drives a shared
         # publisher/TF loop for the duration of the move, and this server's
         # own callback_group is Reentrant (so execute_fn doesn't block other
@@ -132,21 +146,36 @@ class CtlCommandActionServer:
                 "the previous goal's cancel"
             )
             return GoalResponse.REJECT
-        if goal_request.type.type != CtlStatusType.MOVE_TO_ABSOLUTE_TARGET:
+        goal_type = goal_request.type.type
+        if goal_type not in (CtlStatusType.MOVE_TO_ABSOLUTE_TARGET,
+                             CtlStatusType.MOVE_TO_RELATIVE_TARGET):
             self._node.get_logger().warn(
                 "[CtlCommandActionServer] rejecting goal: unsupported "
-                "CtlStatusType.type=%d (only MOVE_TO_ABSOLUTE_TARGET=%d is "
-                "served)" % (goal_request.type.type,
-                             CtlStatusType.MOVE_TO_ABSOLUTE_TARGET)
+                "CtlStatusType.type=%d (only MOVE_TO_ABSOLUTE_TARGET=%d and "
+                "MOVE_TO_RELATIVE_TARGET=%d are served)"
+                % (goal_type, CtlStatusType.MOVE_TO_ABSOLUTE_TARGET,
+                   CtlStatusType.MOVE_TO_RELATIVE_TARGET)
             )
             return GoalResponse.REJECT
+        relative = goal_type == CtlStatusType.MOVE_TO_RELATIVE_TARGET
+        expected_frame = self._relative_frame if relative else self._expected_frame
         frame = goal_request.target.header.frame_id
-        if self._expected_frame and frame and frame != self._expected_frame:
+        if expected_frame and frame and frame != expected_frame:
             self._node.get_logger().warn(
                 "[CtlCommandActionServer] rejecting goal: target frame '%s' "
-                "!= expected '%s'" % (frame, self._expected_frame)
+                "!= expected '%s'" % (frame, expected_frame)
             )
             return GoalResponse.REJECT
+        if relative:
+            p = goal_request.target.pose.position
+            distance = math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z)
+            if distance > self._max_relative_distance:
+                self._node.get_logger().warn(
+                    "[CtlCommandActionServer] rejecting goal: relative move "
+                    "%.3fm exceeds limit %.3fm"
+                    % (distance, self._max_relative_distance)
+                )
+                return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
     def _on_cancel(self, goal_handle) -> CancelResponse:
@@ -172,6 +201,7 @@ class CtlCommandActionServer:
             status = self._execute_fn(
                 p_target, q_target, feedback_cb,
                 lambda: goal_handle.is_cancel_requested,
+                goal_handle.request.type.type == CtlStatusType.MOVE_TO_RELATIVE_TARGET,
             )
         finally:
             self._executing = False
@@ -217,7 +247,8 @@ def main(args=None) -> None:
                         help="fake move duration in seconds (default: 5.0)")
     ns = parser.parse_args(remove_ros_args(args=argv)[1:])
 
-    def fake_execute_fn(p_target, q_target, feedback_cb, is_cancel_requested):
+    def fake_execute_fn(p_target, q_target, feedback_cb, is_cancel_requested,
+                        relative):
         start = time.monotonic()
         end = start + ns.move_duration
         while time.monotonic() < end:

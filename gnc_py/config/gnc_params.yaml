@@ -151,6 +151,7 @@
       # replan_minco (global/local MINCO re-planning). Latched at goal
       # receipt, like attitude_reference_mode.
       trajectory_tracking_mode: static_toppra
+      relative_move_max_distance: 10.0  # [m] MOVE_TO_RELATIVE_TARGET typo guard (not a collision check)
       minco_local_replan_period: 1.0  # [s] replan_minco local replan period
       minco_planning_horizon_m: 4.0   # [m] replan_minco local look-ahead (face travel needs ~4m)
       minco_replan_face_travel: true  # replan_minco faces travel (needs attitude_reference_mode face_travel); use horizon ~4m

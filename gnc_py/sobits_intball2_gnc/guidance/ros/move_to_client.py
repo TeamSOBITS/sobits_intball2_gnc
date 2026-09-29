@@ -64,8 +64,13 @@ class MoveToClient:
         return pos, quat
 
     def send_goal(self, pos, quat, feedback_cb=None, timeout_sec: float = 10.0,
-                  result_timeout_sec=None):
-        """Send a ``MOVE_TO_ABSOLUTE_TARGET`` goal and wait for the result.
+                  result_timeout_sec=None,
+                  goal_type: int = CtlStatusType.MOVE_TO_ABSOLUTE_TARGET,
+                  frame_id=None):
+        """Send a ``goal_type`` goal (default ``MOVE_TO_ABSOLUTE_TARGET``) and wait for the result.
+
+        ``frame_id`` defaults to the reference frame (``body`` for a
+        ``MOVE_TO_RELATIVE_TARGET`` goal, see ``move_relative_client.py``).
 
         ``timeout_sec`` bounds only the wait for the action server.
         ``result_timeout_sec`` (sim time, from goal acceptance) bounds the
@@ -83,13 +88,13 @@ class MoveToClient:
             return None
 
         goal = CtlCommand.Goal()
-        goal.target.header.frame_id = self._reference_frame
+        goal.target.header.frame_id = self._reference_frame if frame_id is None else frame_id
         goal.target.header.stamp = self._node.get_clock().now().to_msg()
         (goal.target.pose.position.x, goal.target.pose.position.y,
          goal.target.pose.position.z) = pos
         (goal.target.pose.orientation.x, goal.target.pose.orientation.y,
          goal.target.pose.orientation.z, goal.target.pose.orientation.w) = quat
-        goal.type.type = CtlStatusType.MOVE_TO_ABSOLUTE_TARGET
+        goal.type.type = goal_type
 
         send_future = self._client.send_goal_async(
             goal,
