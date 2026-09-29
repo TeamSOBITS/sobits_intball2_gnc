@@ -102,17 +102,17 @@ class TfClient:
         """True once at least one transform has been looked up successfully."""
         return self._ready
 
-    def get_transform(self, target_frame=None, source_frame=None):
-        """Return the latest buffered ``source_frame -> target_frame`` or None.
+    def get_transform(self, target_frame=None, source_frame=None, stamp=None):
+        """Return the buffered ``source_frame -> target_frame`` at ``stamp``
+        (a ``builtin_interfaces/Time``; None = latest) or None.
 
         Never waits: an unavailable transform is reported immediately.
         """
         target = target_frame or self.reference_frame
         source = source_frame or self.target_frame
+        at = rclpy.time.Time() if stamp is None else rclpy.time.Time.from_msg(stamp)
         try:
-            return self._buffer.lookup_transform(
-                target, source, rclpy.time.Time(), timeout=_NO_WAIT
-            )
+            return self._buffer.lookup_transform(target, source, at, timeout=_NO_WAIT)
         except (LookupException, ConnectivityException, ExtrapolationException) as exc:
             self._node.get_logger().debug(
                 "[TfClient] lookup %s <- %s failed: %s" % (target, source, exc)

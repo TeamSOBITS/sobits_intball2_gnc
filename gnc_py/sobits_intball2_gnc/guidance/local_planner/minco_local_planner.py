@@ -253,6 +253,9 @@ class MincoLocalPlanner:
                 obstacle_clearance_soft=self._obstacle_clearance_soft)
 
         obstacle_grid = self.obstacle_grid
+        if obstacle_grid is not None and hasattr(obstacle_grid, "snapshot"):
+            # A solve can take seconds; reading a copy keeps depth integration from waiting on it.
+            obstacle_grid = obstacle_grid.snapshot()
         if shape_seed is None:
             shape = solve(np.array([p0, target_pos]), np.array([np.zeros(3), target_pos - p0]), None,
                           obstacle_grid=obstacle_grid)

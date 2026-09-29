@@ -35,6 +35,8 @@ plan_minco(const std::vector<double>& waypoints_flat,
            double obstacle_clearance,
            double obstacle_clearance_soft,
            const sobits_intball2_gnc::mapping::OccupancyGrid* grid) {
+  std::shared_lock<std::shared_mutex> gridLock;
+  if (grid) gridLock = grid->readLock();
   const sobits_intball2_gnc::guidance::PlanResult result =
       sobits_intball2_gnc::guidance::planMinco(waypoints_flat, v0, w0, via_half_width, wrench_safety_margin,
                                warm_start_qvia, warm_start_T, a0, v_tail, rot_a0, rot_v_tail,
@@ -78,6 +80,7 @@ rebound_pairs(const sobits_intball2_gnc::mapping::OccupancyGrid& grid,
   const Eigen::VectorXd T = Eigen::Map<const Eigen::VectorXd>(segment_times.data(), K);
   auto pairs = sobits_intball2_gnc::guidance::pairsFromFlat(
       obstacle_pairs, K * sobits_intball2_gnc::guidance::CONSTRAINT_POINTS_PER_PIECE + 1);
+  const auto gridLock = grid.readLock();
   const sobits_intball2_gnc::guidance::ReboundResult result = sobits_intball2_gnc::guidance::finelyCheckAndSetConstraintPoints(
       grid, coeffsPos, T, max_vel, touch_goal, pairs);
   return std::make_tuple(static_cast<int>(result), sobits_intball2_gnc::guidance::pairsToFlat(pairs));
@@ -121,22 +124,83 @@ py::array_t<float> render_depth(const perception::DepthRenderer& renderer,
 PYBIND11_MODULE(sobits_intball2_gnc_cpp, m) {
   m.doc() = "C++ core of sobits_intball2_gnc (MINCO planner, rebound, occupancy grid)";
   m.attr("CONSTRAINT_POINTS_PER_PIECE") = sobits_intball2_gnc::guidance::CONSTRAINT_POINTS_PER_PIECE;
-  py::class_<sobits_intball2_gnc::mapping::OccupancyGrid>(m, "OccupancyGrid",
-      "EGO-Planner v2 style occupancy grid with cube inflation.")
+  namespace mapping = sobits_intball2_gnc::mapping;
+  py::class_<mapping::OccupancyGrid>(m, "OccupancyGrid",
+      "Occupancy grid with cube inflation: a static layer (add_box/add_points) plus an optional "
+      "log-odds layer fed by depth images inside a fixed box (enable_depth_layer/integrate_depth).")
       .def(py::init<double, double>(), py::arg("resolution"), py::arg("inflation"))
-      .def_property_readonly("resolution", &sobits_intball2_gnc::mapping::OccupancyGrid::resolution)
-      .def("add_box", [](sobits_intball2_gnc::mapping::OccupancyGrid& g, const std::vector<double>& center,
+      .def_property_readonly("resolution", &mapping::OccupancyGrid::resolution)
+      .def("add_box", [](mapping::OccupancyGrid& g, const std::vector<double>& center,
                          const std::vector<double>& half_extent) {
              g.addBox(Eigen::Vector3d(center[0], center[1], center[2]),
                       Eigen::Vector3d(half_extent[0], half_extent[1], half_extent[2]));
            }, py::arg("center"), py::arg("half_extent"))
-      .def("add_points", [](sobits_intball2_gnc::mapping::OccupancyGrid& g, const std::vector<double>& points_flat) {
+      .def("add_points", [](mapping::OccupancyGrid& g, const std::vector<double>& points_flat) {
              for (size_t k = 0; k + 2 < points_flat.size(); k += 3)
                g.addPoint(Eigen::Vector3d(points_flat[k], points_flat[k + 1], points_flat[k + 2]));
            }, py::arg("points_flat"))
-      .def("inflated_occupied", [](const sobits_intball2_gnc::mapping::OccupancyGrid& g, const std::vector<double>& p) {
+      .def("inflated_occupied", [](const mapping::OccupancyGrid& g, const std::vector<double>& p) {
+             const auto lock = g.readLock();
              return g.inflatedOccupied(Eigen::Vector3d(p[0], p[1], p[2]));
-           }, py::arg("point"));
+           }, py::arg("point"))
+      .def("enable_depth_layer", [](mapping::OccupancyGrid& g, const std::vector<double>& lower,
+                                    const std::vector<double>& upper, double p_hit, double p_miss, double p_min,
+                                    double p_max, double p_occ, double min_range, double max_range, int skip_pixel) {
+             g.enableDepthLayer(vec3(lower), vec3(upper),
+                                {p_hit, p_miss, p_min, p_max, p_occ, min_range, max_range, skip_pixel});
+           }, py::arg("lower"), py::arg("upper"), py::arg("p_hit") = 0.65, py::arg("p_miss") = 0.35,
+           py::arg("p_min") = 0.12, py::arg("p_max") = 0.90, py::arg("p_occ") = 0.80,
+           py::arg("min_range") = 0.25, py::arg("max_range") = 3.0, py::arg("skip_pixel") = 1,
+           "Allocate the depth layer over the box [lower, upper] (grid frame); cells start at p_min "
+           "(unknown = free) and are occupied while their probability >= p_occ.")
+      .def("clear_depth_layer", &mapping::OccupancyGrid::clearDepthLayer,
+           py::call_guard<py::gil_scoped_release>())
+      .def("integrate_depth", [](mapping::OccupancyGrid& g,
+                                 py::array_t<float, py::array::c_style | py::array::forcecast> depth,
+                                 double fx, double fy, double cx, double cy,
+                                 py::array_t<double, py::array::c_style | py::array::forcecast> rotation,
+                                 const std::vector<double>& origin) {
+             if (depth.ndim() != 2) throw std::invalid_argument("depth must be (height, width)");
+             const Eigen::Matrix3d r = rowMajor3(std::vector<double>(rotation.data(), rotation.data() + rotation.size()));
+             const Eigen::Vector3d t = vec3(origin);
+             const int height = static_cast<int>(depth.shape(0)), width = static_cast<int>(depth.shape(1));
+             const float* data = depth.data();
+             mapping::DepthIntegrationStats stats;
+             {
+               py::gil_scoped_release release;
+               stats = g.integrateDepth(data, width, height, fx, fy, cx, cy, r, t);
+             }
+             return std::make_tuple(stats.points, stats.cells_updated, stats.cells_flipped);
+           }, py::arg("depth"), py::arg("fx"), py::arg("fy"), py::arg("cx"), py::arg("cy"),
+           py::arg("rotation"), py::arg("origin"),
+           "Integrate one (height, width) z-depth image in the optical frame (REP 117: -inf too close, "
+           "+inf nothing within max_range, NaN invalid). rotation: optical -> grid frame, row-major; "
+           "rotation may also be 3x3; origin: camera position. Returns (points, cells_updated, cells_flipped).")
+      .def("snapshot", [](const mapping::OccupancyGrid& g) {
+             py::gil_scoped_release release;
+             return g.snapshot();
+           }, "Consistent copy for a long read (a solve), so depth integration is not blocked meanwhile.")
+      .def("last_integration_timing", [](const mapping::OccupancyGrid& g) {
+             const auto lock = g.readLock();
+             return g.lastIntegrationTiming();
+           }, "(lock_wait_s, integrate_s) of the last integrate_depth (steady clock).")
+      .def("depth_occupied", [](const mapping::OccupancyGrid& g, const std::vector<double>& p) {
+             const auto lock = g.readLock();
+             return g.depthOccupied(vec3(p));
+           }, py::arg("point"), "Depth-layer occupancy of the cell containing point, without inflation.")
+      .def("depth_occupied_cells", [](const mapping::OccupancyGrid& g) {
+             std::vector<Eigen::Vector3d> centers;
+             {
+               py::gil_scoped_release release;
+               const auto lock = g.readLock();
+               centers = g.depthOccupiedCellCenters();
+             }
+             py::array_t<double> out({static_cast<py::ssize_t>(centers.size()), static_cast<py::ssize_t>(3)});
+             auto view = out.mutable_unchecked<2>();
+             for (size_t i = 0; i < centers.size(); i++)
+               for (int k = 0; k < 3; k++) view(i, k) = centers[i](k);
+             return out;
+           }, "(N, 3) centers of the depth-occupied cells.");
   py::class_<perception::DepthRenderer>(m, "DepthRenderer",
       "Pinhole depth rendering by voxel ray traversal against a static map, voxel shapes and boxes.")
       .def(py::init<>())

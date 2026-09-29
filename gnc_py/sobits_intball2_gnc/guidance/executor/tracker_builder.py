@@ -120,6 +120,10 @@ class TrackerBuilder:
                     async_replan=minco_async_replan,
                     **obstacle_kwargs,
                 )
+                if getattr(replan_tracker, "initial_local_collides", False):
+                    self._log.warn(
+                        "[TrackerBuilder] initial local crosses an obstacle -- holding "
+                        "and replanning from rest before departure")
                 if obstacle_kwargs:
                     self._obstacle_tracker = replan_tracker
                     if self._obstacle_map.grid is not obstacle_kwargs["obstacle_grid"]:
@@ -127,8 +131,9 @@ class TrackerBuilder:
                 traj = replan_tracker.trajectory
                 self._log.info(
                     "[TrackerBuilder] initial replan_minco global "
-                    "solve took %.2fs (%d waypoints)"
-                    % (traj.solve_wall_seconds, traj.num_waypoints)
+                    "solve took %.2fs (%d waypoints), initial local solve took %.2fs"
+                    % (traj.solve_wall_seconds, traj.num_waypoints,
+                       replan_tracker.last_replan_solve_seconds)
                 )
             except (MincoInfeasibleError, ValueError) as exc:
                 self._log.warn(
@@ -216,6 +221,8 @@ class TrackerBuilder:
         }
         if self._stop_profile_fn is not None:
             kwargs["stop_profile_fn"] = self._stop_profile_fn
+            if self._obstacle_map.sensor_fresh_fn is not None:
+                kwargs["sensor_fresh_fn"] = self._obstacle_map.sensor_fresh_fn
         else:
             self._log.warn("[TrackerBuilder] no allocator/mass/inertia -- obstacle "
                            "avoidance replans without an emergency stop")

@@ -629,3 +629,53 @@ def test_stop_drops_a_solve_started_before_it():
     assert not tracker.last_replan_occurred
     assert tracker._pending_is_brake_replan
     _join_pending(tracker)
+
+
+def test_sensor_stale_stops_and_holds_without_replanning_until_fresh_again():
+    tf = _IdealTrackingTf()
+    sensor = {"fresh": True}
+    tracker = _make_tracker(tf, local_replan_period=0.5,
+                            stop_profile_fn=lambda p, v, q, omega: _HoldStop(p),
+                            sensor_fresh_fn=lambda: sensor["fresh"])
+    t = 0.0
+    for _ in range(10):
+        t = _tick(tracker, tf, t)
+    assert tracker.emergency_stops == 0
+
+    sensor["fresh"] = False
+    t = _tick(tracker, tf, t)
+    assert tracker.emergency_stops == 1
+    assert tracker.last_fallback_reason == "sensor_stale"
+    for _ in range(int((_HoldStop.duration + 3.0) / DT)):
+        t = _tick(tracker, tf, t)
+    assert tracker._stop_profile is not None
+    assert tracker.emergency_stops == 1
+
+    sensor["fresh"] = True
+    for _ in range(int(1.0 / DT)):
+        t = _tick(tracker, tf, t)
+    assert tracker._stop_profile is None
+    assert not tracker.replanning_stopped
+
+
+def test_rest_replan_into_an_obstacle_is_not_adopted():
+    tf = _IdealTrackingTf()
+    tracker = _make_tracker(tf, local_replan_period=0.5,
+                            stop_profile_fn=lambda p, v, q, omega: _HoldStop(p))
+    tracker._planner.obstacle_grid = _FreeGrid()
+    tracker._start_emergency_stop(_HoldStop(tf.pos))
+    tracker._local_collides = lambda local, touches_goal: True
+    t = 0.0
+    for _ in range(int((_HoldStop.duration + 2.0) / DT)):
+        t = _tick(tracker, tf, t)
+    assert tracker._stop_profile is not None
+    assert tracker._rest_replan_failures > 0
+
+    tracker._local_collides = lambda local, touches_goal: False
+    for _ in range(int(1.0 / DT)):
+        t = _tick(tracker, tf, t)
+        if tracker._stop_profile is None:
+            break
+    assert tracker._stop_profile is None
+    assert tracker.last_replan_source == "rest"
+    assert tracker.last_replan_collides is False

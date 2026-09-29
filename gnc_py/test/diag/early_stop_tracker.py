@@ -33,10 +33,10 @@ class EarlyStopTracker(ReplanMincoTracker):
             return self._wait_fallback_s
         return self._wait_margin * max(self._recent_waits)
 
-    def _adopt_local(self, result, lag):
+    def _adopt_local(self, result, lag, source=None):
         if self._async_replan and lag > 0.0:
             self._recent_waits.append(lag)
-        super()._adopt_local(result, lag)
+        super()._adopt_local(result, lag, source)
 
     # ---- B-1 ----
     def _check_collision(self):
@@ -142,7 +142,7 @@ class EarlyStopTracker(ReplanMincoTracker):
             self._brake_switch = None
             self._stop_profile = None
             self._rest_replan_failures = 0
-            ReplanMincoTracker._adopt_local(self, result, t_now - t_switch)
+            ReplanMincoTracker._adopt_local(self, result, t_now - t_switch, "brake")
             self.brake_resumes += 1
             p, v, a, q = self._local_trajectory.sample(self._local_elapsed)
             self.last_body_angular = self._local_trajectory.sample_body_angular(self._local_elapsed)

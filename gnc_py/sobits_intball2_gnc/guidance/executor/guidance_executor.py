@@ -632,10 +632,12 @@ class GuidanceExecutor:
             if getattr(tracker, "last_replan_occurred", False):
                 self._log.info(
                     "[GuidanceExecutor] replanning: re-planned trajectory at "
-                    "t=%.2fs (solve=%.3fs, lag=%.3fs)"
+                    "t=%.2fs (solve=%.3fs, lag=%.3fs, source=%s, collides=%s)"
                     % (sample_t, getattr(tracker, "last_replan_solve_seconds", None)
                        or float("nan"),
-                       getattr(tracker, "last_replan_lag_seconds", None) or 0.0)
+                       getattr(tracker, "last_replan_lag_seconds", None) or 0.0,
+                       getattr(tracker, "last_replan_source", None),
+                       getattr(tracker, "last_replan_collides", None))
                 )
                 if self._speed_path_pub is not None:
                     self._publish_speed_path_preview(tracker.trajectory)
