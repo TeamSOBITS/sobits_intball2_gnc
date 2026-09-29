@@ -143,6 +143,10 @@ class ReplanMincoTracker:
             uses the stop profile's own duration (EGO's fixed 1 s assumes a drone
             that brakes in a fraction of a second). With ``async_replan`` see the
             module docstring for stopping early and resuming while braking.
+        sensor_fresh_fn: ``() -> bool`` for a map fed by a sensor (with ``obstacle_grid``
+            and ``stop_profile_fn``): while it is False the vehicle plays the stop
+            profile and holds without replanning, since the map can no longer see
+            new obstacles.
         async_replan: see module docstring. ``False`` solves inside
             ``sample()`` (deterministic, for offline/unit use).
 
@@ -163,7 +167,8 @@ class ReplanMincoTracker:
                  local_max_vel=None, async_replan=False, local_piece_length_m=None,
                  obstacle_grid=None, obstacle_clearance_soft=0.5, stop_profile_fn=None,
                  emergency_time_s=None,
-                 collision_check_period=DEFAULT_COLLISION_CHECK_PERIOD_S):
+                 collision_check_period=DEFAULT_COLLISION_CHECK_PERIOD_S,
+                 sensor_fresh_fn=None):
         if (target_speed is None) != (max_accel is None):
             raise ValueError(
                 "target_speed and max_accel must be given together (both "
@@ -187,6 +192,7 @@ class ReplanMincoTracker:
         self._local_replan_period = float(local_replan_period)
         self._async_replan = bool(async_replan)
         self._stop_profile_fn = stop_profile_fn
+        self._sensor_fresh_fn = sensor_fresh_fn
         self._emergency_time_s = None if emergency_time_s is None else float(emergency_time_s)
         self._collision_check_period = float(collision_check_period)
         self._since_collision_check = 0.0
@@ -212,6 +218,8 @@ class ReplanMincoTracker:
         self.last_local_fallback = False
         self.last_replan_solve_seconds = None
         self.last_replan_lag_seconds = None
+        self.last_replan_source = None
+        self.last_replan_collides = None
 
         self._planner = MincoLocalPlanner(
             p0, v0, p_target, self._q0, target_speed, max_accel, route_waypoints,
@@ -231,6 +239,16 @@ class ReplanMincoTracker:
         p_out, v_out, a_out, q_out = self._local_trajectory.sample(0.0)
         self._last_output = (p_out, v_out, a_out, q_out)
         self.last_body_angular = self._local_trajectory.sample_body_angular(0.0)
+
+        # The planner only checks the local's first 2/3 of constraint points, which can be far
+        # less than 2/3 of its time (a collapsed piece), so the very first local can cross an
+        # obstacle: hold at rest and replan like after an emergency stop instead of flying it.
+        self.initial_local_collides = (obstacle_grid is not None
+                                       and self._local_collides(self._local_trajectory,
+                                                                self._local_touches_goal))
+        if self.initial_local_collides and stop_profile_fn is not None:
+            self._start_emergency_stop(self._stop_profile_at_reference())
+            self.last_fallback_reason = "initial_local_collides"
 
     @property
     def replanning_stopped(self):
@@ -262,8 +280,13 @@ class ReplanMincoTracker:
             p_ref, v_ref, _a, _q = self._local_trajectory.sample(self._local_elapsed)
             if self._planner.move_goal_out_of_obstacle(p_ref, v_ref):
                 self.last_goal_moved_out_of_obstacle = True
+        sensor_stale = (self._sensor_fresh_fn is not None and self._stop_profile_fn is not None
+                        and not self._sensor_fresh_fn())
+        if sensor_stale and self._stop_profile is None:
+            self._start_emergency_stop(self._stop_profile_at_reference())
+            self.last_fallback_reason = "sensor_stale"
         if self._stop_profile is not None:
-            return self._sample_emergency_stop(dt)
+            return self._sample_emergency_stop(dt, allow_resume=not sensor_stale)
         if self._planner.obstacle_grid is not None:
             self._since_collision_check += dt
             if self._since_collision_check >= self._collision_check_period:
@@ -276,7 +299,7 @@ class ReplanMincoTracker:
             if not self._pending_thread.is_alive():
                 self._pending_thread = None
                 self._recent_replan_waits.append(self._pending_lag)
-                self._adopt_local(self._pending_result, self._pending_lag)
+                self._adopt_local(self._pending_result, self._pending_lag, "async")
                 if self._collision_replan_pending:
                     self._resolve_collision_replan()
                     if self._stop_profile is not None:
@@ -288,7 +311,7 @@ class ReplanMincoTracker:
             if self._async_replan:
                 self._start_background_replan()
             else:
-                self._adopt_local(self._try_build_local(self._reference_start_state()), 0.0)
+                self._adopt_local(self._try_build_local(self._reference_start_state()), 0.0, "periodic")
 
         p_out, v_out, a_out, q_out = self._local_trajectory.sample(self._local_elapsed)
         self.last_body_angular = self._local_trajectory.sample_body_angular(
@@ -344,7 +367,7 @@ class ReplanMincoTracker:
             return
         result = self._try_build_local(self._reference_start_state())
         if result is not None:
-            self._adopt_local(result, 0.0)
+            self._adopt_local(result, 0.0, "collision")
             self._since_replan_attempt = 0.0
             return
         self._emergency_stop_if_collision_close()
@@ -414,10 +437,10 @@ class ReplanMincoTracker:
         if self.last_collision_ahead_s < emergency_time:
             self._start_emergency_stop(profile)
 
-    def _sample_emergency_stop(self, dt):
+    def _sample_emergency_stop(self, dt, allow_resume=True):
         """Play the stop profile, then hold its end and replan from rest every period.
         With ``async_replan``, keep replanning while braking and switch to a collision-free
-        result instead of stopping."""
+        result instead of stopping. ``allow_resume=False`` only brakes and holds."""
         t_now = self._stop_elapsed + dt
         if self._pending_thread is not None:
             if self._pending_thread.is_alive():
@@ -425,10 +448,12 @@ class ReplanMincoTracker:
                 self._since_replan_attempt = 0.0
             else:
                 self._take_brake_replan_result(t_now)
+        if not allow_resume:
+            self._brake_switch = None
         if self._brake_switch is not None and t_now >= self._brake_switch[0]:
             return self._switch_from_brake(t_now)
-        if (self._async_replan and self._pending_thread is None and self._brake_switch is None
-                and t_now < self._stop_profile.duration):
+        if (allow_resume and self._async_replan and self._pending_thread is None
+                and self._brake_switch is None and t_now < self._stop_profile.duration):
             self._start_brake_replan(t_now)
         self._stop_elapsed = t_now
         profile = self._stop_profile
@@ -436,16 +461,18 @@ class ReplanMincoTracker:
         p, v, a, q, omega, alpha = profile.sample(t)
         self.last_body_angular = (np.asarray(omega), np.asarray(alpha))
         self._last_output = (p, v, a, q)
-        if self._stop_elapsed >= profile.duration:
+        if allow_resume and self._stop_elapsed >= profile.duration:
             if self._since_replan_attempt >= self._local_replan_period:
                 self._since_replan_attempt = 0.0
                 rv = quat_log(quat_mul(quat_conj(self._q0), np.asarray(q, dtype=float)))
                 result = self._try_build_local(
                     (np.asarray(p), np.zeros(3), np.zeros(3), rv, np.zeros(3), np.zeros(3), None, 0.0))
-                if result is not None:
+                # Like a brake replan, a rest replan must not resume into an obstacle.
+                if result is not None and not (self._planner.obstacle_grid is not None
+                                               and self._local_collides(*result)):
                     self._stop_profile = None
                     self._rest_replan_failures = 0
-                    self._adopt_local(result, 0.0)
+                    self._adopt_local(result, 0.0, "rest")
                 else:
                     self._rest_replan_failures += 1
         return self._last_output
@@ -479,7 +506,7 @@ class ReplanMincoTracker:
         self._brake_switch = None
         self._stop_profile = None
         self._rest_replan_failures = 0
-        self._adopt_local(result, t_now - t_switch)
+        self._adopt_local(result, t_now - t_switch, "brake")
         p_out, v_out, a_out, q_out = self._local_trajectory.sample(self._local_elapsed)
         self.last_body_angular = self._local_trajectory.sample_body_angular(self._local_elapsed)
         self._last_output = (p_out, v_out, a_out, q_out)
@@ -501,7 +528,7 @@ class ReplanMincoTracker:
         except Exception as exc:  # re-raised on the sampling thread in _adopt_local
             self._pending_result = exc
 
-    def _adopt_local(self, result, lag):
+    def _adopt_local(self, result, lag, source):
         if isinstance(result, Exception):
             raise result
         if result is None:
@@ -515,6 +542,9 @@ class ReplanMincoTracker:
         self.last_replan_occurred = True
         self.last_replan_solve_seconds = self._local_trajectory.solve_wall_seconds
         self.last_replan_lag_seconds = lag
+        self.last_replan_source = source
+        self.last_replan_collides = (self._planner.obstacle_grid is not None
+                                     and self._local_collides(*result))
 
     @property
     def total_duration(self):

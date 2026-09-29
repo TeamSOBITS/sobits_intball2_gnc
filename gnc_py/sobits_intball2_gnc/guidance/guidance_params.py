@@ -125,6 +125,21 @@ GUIDANCE_PARAM_DEFAULTS = {
     "guidance.minco_obstacle_avoidance": False,
     "guidance.minco_local_piece_length_m": 1.5,
     "guidance.minco_obstacle_clearance_soft": 0.2,
+    # Obstacles from boxes (/guidance/virtual_obstacles) or the depth camera
+    # (docs/archive/2026-09-28_virtual_camera_depth_mapping_plan.md). Read once at startup.
+    "guidance.obstacle_source": "boxes",
+    "guidance.depth.topic": "/virtual_camera/main/depth",
+    # No integrated frame for this long (on the TF stamps' clock) -> stop and hold.
+    "guidance.depth.timeout": 1.0,
+    "guidance.depth.skip_pixel": 1,
+    "guidance.depth.min_range": 0.25,
+    "guidance.depth.max_range": 3.0,
+    "guidance.depth.p_hit": 0.65,
+    "guidance.depth.p_miss": 0.35,
+    "guidance.depth.p_min": 0.12,
+    "guidance.depth.p_max": 0.90,
+    "guidance.depth.p_occ": 0.80,
+    "guidance.depth.marker_period": 1.0,
 }
 
 # Timer periods are only ever read at node construction (guidance.py), so
@@ -148,9 +163,15 @@ STATIC_PARAMS = frozenset({
     "guidance.stopping.tolerance_pos", "guidance.stopping.tolerance_att",
     "guidance.stopping.duration_goal", "guidance.stopping.wait_cancel",
     "guidance.obstacle_map_file", "guidance.obstacle_grid_resolution",
-    "guidance.obstacle_grid_inflation",
+    "guidance.obstacle_grid_inflation", "guidance.obstacle_source",
+    "guidance.depth.topic", "guidance.depth.timeout", "guidance.depth.skip_pixel",
+    "guidance.depth.min_range", "guidance.depth.max_range", "guidance.depth.p_hit",
+    "guidance.depth.p_miss", "guidance.depth.p_min", "guidance.depth.p_max",
+    "guidance.depth.p_occ", "guidance.depth.marker_period",
     "guidance.relative_move_max_distance",
 })
+
+OBSTACLE_SOURCES = frozenset({"boxes", "depth"})
 
 ATTITUDE_REFERENCE_MODES = frozenset({"fixed", "face_travel", "look_at"})
 CAMERA_NAMES = frozenset({"main", "stereo"})

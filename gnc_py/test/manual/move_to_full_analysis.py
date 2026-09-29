@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """One-shot move_to verification: drives a real move_to goal (MoveToClient)
 while recording everything relevant, event-driven (TF, `/gnc/trajectory_setpoint`,
-`/gnc/checkpoints`, `/ctl/wrench_correction`, `/ctl/wrench_achieved`, `/ctl/duty`), then computes and prints a
+`/gnc/checkpoints`, `/ctl/wrench_correction`, `/ctl/wrench_achieved`, `/ctl/duty`, and every published
+global/local path preview `/gnc/trajectory_path_speed(_local)`), then computes and prints a
 single tracking-quality report -- position/attitude tracking error, fan-duty
 saturation, wrench desired-vs-achieved, and final arrival accuracy -- without
 needing a separate script per metric or manual CSV post-processing.
@@ -33,7 +34,7 @@ stale trajectory attitude.
 the goal is canceled and whatever was recorded is analyzed.
 
 Raw per-topic CSVs are still written to `--out-dir` (tf/setpoint/checkpoint/
-wrench/wrench_achieved/duty/tracking_error) for deeper inspection, but are
+wrench/wrench_achieved/duty/tracking_error/global_path/local_path) for deeper inspection, but are
 written even on Ctrl-C/exception (not only on clean completion).
 """
 import argparse
@@ -57,6 +58,7 @@ from std_msgs.msg import Float64MultiArray
 from tf2_msgs.msg import TFMessage
 from tf2_ros import ConnectivityException, ExtrapolationException, LookupException
 from trajectory_msgs.msg import MultiDOFJointTrajectory
+from visualization_msgs.msg import Marker
 
 from sobits_intball2_gnc.control.utils.quat_math import quat_conj, quat_mul
 from sobits_intball2_gnc.guidance.ros.move_to_client import MoveToClient
@@ -78,6 +80,12 @@ TF_QOS = QoSProfile(
 )
 RELIABLE_QOS = QoSProfile(
     depth=200, durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.RELIABLE,
+)
+# SpeedPathPublisher is transient-local; a volatile reader would still work, but
+# depth must cover a burst of replans between spins.
+PATH_QOS = QoSProfile(
+    depth=50, durability=DurabilityPolicy.TRANSIENT_LOCAL,
     history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.RELIABLE,
 )
 
@@ -154,6 +162,22 @@ class CheckpointRecorder:
         tr, q = pose.position, pose.orientation
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         self.rows.append((stamp, tr.x, tr.y, tr.z, q.x, q.y, q.z, q.w))
+
+
+class PathRecorder:
+    """Records every speed-path preview (a ``LINE_STRIP`` marker) as numbered paths,
+    so the planned shape (not just the sampled setpoint) can be inspected afterwards."""
+
+    def __init__(self, node, topic):
+        self.rows = []  # (t_sim, path_id, point_idx, x, y, z)
+        self._count = 0
+        node.create_subscription(Marker, topic, self._on_msg, PATH_QOS)
+
+    def _on_msg(self, msg):
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        for i, pt in enumerate(msg.points):
+            self.rows.append((stamp, self._count, i, pt.x, pt.y, pt.z))
+        self._count += 1
 
 
 class WrenchRecorder:
@@ -292,6 +316,8 @@ def main():
     wrench_rec = WrenchRecorder(node, "/ctl/wrench_correction")
     wrench_achieved_rec = WrenchRecorder(node, "/ctl/wrench_achieved")
     duty_rec = DutyRecorder(node)
+    global_path_rec = PathRecorder(node, "/gnc/trajectory_path_speed")
+    local_path_rec = PathRecorder(node, "/gnc/trajectory_path_speed_local")
     move_client = MoveToClient(node)
 
     if args.set_mode is not None:
@@ -330,6 +356,9 @@ def main():
               ["t_sim", "fx", "fy", "fz", "tx", "ty", "tz"], wrench_rec.rows)
     write_csv(os.path.join(args.out_dir, "%s_wrench_achieved.csv" % args.tag),
               ["t_sim", "fx", "fy", "fz", "tx", "ty", "tz"], wrench_achieved_rec.rows)
+    for name, rec in (("global_path", global_path_rec), ("local_path", local_path_rec)):
+        write_csv(os.path.join(args.out_dir, "%s_%s.csv" % (args.tag, name)),
+                  ["t_sim", "path_id", "point_idx", "px", "py", "pz"], rec.rows)
     n_fans = (len(duty_rec.rows[0]) - 1) if duty_rec.rows else 8
     write_csv(os.path.join(args.out_dir, "%s_duty.csv" % args.tag),
               ["t_sim"] + ["duty%d" % i for i in range(n_fans)], duty_rec.rows)

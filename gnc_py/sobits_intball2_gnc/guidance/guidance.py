@@ -16,7 +16,7 @@ import threading
 import numpy as np
 import rclpy
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -36,6 +36,7 @@ from sobits_intball2_gnc.guidance.constraints.actuation_envelope import (
 from sobits_intball2_gnc.guidance.guidance_params import (
     ATTITUDE_REFERENCE_MODES,
     CAMERA_NAMES,
+    OBSTACLE_SOURCES,
     RELATIVE_GOAL_OVERRIDES,
     declare_guidance_params,
     goal_execute_kwargs,
@@ -52,6 +53,8 @@ from sobits_intball2_gnc.guidance.ros.multi_dof_joint_trajectory_publisher impor
 )
 from sobits_intball2_gnc.guidance.ros.marker_array_publisher import MarkerArrayPublisher
 from sobits_intball2_gnc.guidance.ros.marker_array_subscriber import MarkerArraySubscriber
+from sobits_intball2_gnc.guidance.ros.marker_publisher import MarkerPublisher
+from sobits_intball2_gnc.guidance.ros.depth_image_subscriber import DepthImageSubscriber
 from sobits_intball2_gnc.guidance.ros.speed_path_publisher import SpeedPathPublisher
 from sobits_intball2_gnc.guidance.executor.tracker_builder import (
     TRAJECTORY_TRACKING_MODES,
@@ -73,6 +76,8 @@ TF_STARTUP_TIMEOUT = 5.0
 # kill as a child and answered /gnc/move_to alongside the new one,
 # corrupting goal feedback.
 GUIDANCE_LOCK_PATH = "/tmp/intball2_guidance_node.lock"
+DEPTH_LOCK_WAIT_WARN_S = 0.2
+DEPTH_TIMING_LOG_PERIOD_S = 10.0
 
 class GuidanceNode(Node):
     """Single orchestrator node: wire wrappers to logic and serve the action."""
@@ -183,9 +188,19 @@ class GuidanceNode(Node):
         self._imu = ImuSubscriber(self)
         self._braking = False
 
+        obstacle_source = str(g("obstacle_source"))
+        if obstacle_source not in OBSTACLE_SOURCES:
+            self.get_logger().error(
+                "[GuidanceNode] unknown obstacle_source '%s' -- using 'boxes'" % obstacle_source)
+            obstacle_source = "boxes"
+        depth_params = None
+        if obstacle_source == "depth":
+            depth_params = {name: float(g("depth." + name)) for name in (
+                "p_hit", "p_miss", "p_min", "p_max", "p_occ", "min_range", "max_range")}
+            depth_params["skip_pixel"] = int(g("depth.skip_pixel"))
         self._obstacle_map = self._load_obstacle_map(
             str(g("obstacle_map_file")), float(g("obstacle_grid_resolution")),
-            float(g("obstacle_grid_inflation")))
+            float(g("obstacle_grid_inflation")), depth_params)
 
         self._executor_logic = GuidanceExecutor(
             self._tf, self._setpoint_pub, self._checkpoint_pub,
@@ -248,7 +263,29 @@ class GuidanceNode(Node):
             stopping_wait_cancel=float(g("stopping.wait_cancel")),
             obstacle_map=self._obstacle_map,
         )
-        if self._obstacle_map is not None:
+        if self._obstacle_map is not None and self._obstacle_map.uses_depth:
+            self._depth_timeout = float(g("depth.timeout"))
+            self._depth_frames = 0
+            self._depth_timing_max = (0.0, 0.0)
+            self._obstacle_map.sensor_fresh_fn = self._depth_fresh
+            depth_group = MutuallyExclusiveCallbackGroup()
+            self._depth_timing_timer = self.create_timer(
+                DEPTH_TIMING_LOG_PERIOD_S, self._log_depth_timing, callback_group=depth_group)
+            self._depth_sub = DepthImageSubscriber(
+                self, self._tf, self._on_depth, depth_topic=str(g("depth.topic")),
+                callback_group=depth_group)
+            self._depth_marker_pub = MarkerPublisher(
+                self, float(g("obstacle_grid_resolution")), reference_frame=reference_frame)
+            self._depth_marker_timer = self.create_timer(
+                float(g("depth.marker_period")),
+                lambda: self._depth_marker_pub.publish(self._obstacle_map.depth_occupied_cells()),
+                callback_group=depth_group)
+            self.get_logger().info(
+                "[GuidanceNode] obstacles from depth '%s' (layer %s..%s, timeout %.1fs); "
+                "/guidance/virtual_obstacles is ignored"
+                % (g("depth.topic"), np.round(self._obstacle_map.depth_bounds[0], 2),
+                   np.round(self._obstacle_map.depth_bounds[1], 2), self._depth_timeout))
+        elif self._obstacle_map is not None:
             self._active_obstacle_pub = MarkerArrayPublisher(self, reference_frame=reference_frame)
             self._obstacle_map.add_listener(
                 lambda _grid: self._active_obstacle_pub.publish(self._obstacle_map.boxes()))
@@ -299,12 +336,43 @@ class GuidanceNode(Node):
             "[GuidanceNode] %d virtual obstacle box(es) in the obstacle map"
             % len(self._obstacle_map.boxes()))
 
-    def _load_obstacle_map(self, map_file, resolution, inflation):
+    def _on_depth(self, depth, fx, fy, cx, cy, rotation, origin, stamp) -> None:
+        points, cells_updated, _flipped = self._obstacle_map.integrate_depth(
+            depth, fx, fy, cx, cy, rotation, origin, stamp)
+        lock_wait, integrate = self._obstacle_map.grid.last_integration_timing()
+        self._depth_timing_max = (max(self._depth_timing_max[0], lock_wait),
+                                  max(self._depth_timing_max[1], integrate))
+        if lock_wait > DEPTH_LOCK_WAIT_WARN_S:
+            self.get_logger().warn(
+                "[GuidanceNode] depth frame stamp=%.3f waited %.3fs for the grid lock"
+                % (stamp, lock_wait))
+        self._depth_frames += 1
+        if self._depth_frames == 1:
+            self.get_logger().info(
+                "[GuidanceNode] first depth frame integrated (%dx%d, %d points, %d cells updated)"
+                % (depth.shape[1], depth.shape[0], points, cells_updated))
+
+    def _log_depth_timing(self) -> None:
+        self.get_logger().info(
+            "[GuidanceNode] last %.0fs: grid lock wait max %.3fs, integrate max %.3fs"
+            % ((DEPTH_TIMING_LOG_PERIOD_S,) + self._depth_timing_max))
+        self._depth_timing_max = (0.0, 0.0)
+
+    def _depth_fresh(self) -> bool:
+        pose = self._tf.get_pose()
+        fresh = pose is not None and self._obstacle_map.depth_fresh(pose[2], self._depth_timeout)
+        if not fresh:
+            self.get_logger().warn(
+                "[GuidanceNode] no depth frame within %.1fs -- holding" % self._depth_timeout,
+                throttle_duration_sec=2.0)
+        return fresh
+
+    def _load_obstacle_map(self, map_file, resolution, inflation, depth_params=None):
         if map_file and not os.path.isabs(map_file):
             map_file = os.path.join(
                 get_package_share_directory("sobits_intball2_gnc"), "maps", map_file)
         try:
-            obstacle_map = ObstacleMap(resolution, inflation, map_file or None)
+            obstacle_map = ObstacleMap(resolution, inflation, map_file or None, depth_params)
         except Exception as exc:  # noqa: BLE001 -- guidance must still serve goals without it
             self.get_logger().error(
                 "[GuidanceNode] obstacle map '%s' failed to load (%r) -- obstacle "

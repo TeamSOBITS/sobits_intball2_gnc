@@ -104,6 +104,7 @@ public:
         const double rate_hz = declare_parameter<double>("virtual_camera.rate_hz", 10.0);
         min_range_ = declare_parameter<double>("virtual_camera.min_range", 0.25);
         max_range_ = declare_parameter<double>("virtual_camera.max_range", 3.0);
+        frustum_depth_ = declare_parameter<double>("virtual_camera.frustum_depth", 1.0);
         threads_ = declare_parameter<int>("virtual_camera.threads", 4);
         publish_points_ = declare_parameter<bool>("virtual_camera.publish_points", false);
         reference_frame_ = declare_parameter<std::string>("virtual_camera.reference_frame", "iss_body");
@@ -383,7 +384,7 @@ private:
             p.z = z;
             return p;
         };
-        const double near = std::max(min_range_, 0.02), far = max_range_;
+        const double near = std::max(min_range_, 0.02), far = std::min(frustum_depth_, max_range_);
         for (int i = 0; i < 4; ++i) {
             for (double z : {near, far}) m.points.insert(m.points.end(), {corner(i, z), corner((i + 1) % 4, z)});
             m.points.insert(m.points.end(), {corner(i, near), corner(i, far)});
@@ -407,7 +408,7 @@ private:
     std::vector<std::string> instance_names_, box_names_;
     gazebo_msgs::msg::ModelStates::ConstSharedPtr model_states_;
     std::string reference_frame_;
-    double min_range_ = 0.0, max_range_ = 10.0;
+    double min_range_ = 0.0, max_range_ = 10.0, frustum_depth_ = 1.0;
     int threads_ = 4;
     bool publish_points_ = false;
     rclcpp::Subscription<gazebo_msgs::msg::ModelStates>::SharedPtr model_states_sub_;
