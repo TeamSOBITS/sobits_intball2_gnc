@@ -284,7 +284,7 @@ TEST(Penalties, SmoothHinge)
     double f, df;
     EXPECT_FALSE(guidance::smoothHinge(-0.1, 0.01, f, df));
     ASSERT_TRUE(guidance::smoothHinge(0.005, 0.01, f, df));
-    EXPECT_NEAR(f, 0.005 * 0.005 / 0.02, 1e-15);
+    EXPECT_NEAR(f, (0.01 - 0.0025) * 0.125, 1e-15);
     EXPECT_NEAR(df, 0.5, 1e-15);
     ASSERT_TRUE(guidance::smoothHinge(1.0, 0.01, f, df));
     EXPECT_NEAR(f, 0.995, 1e-15);

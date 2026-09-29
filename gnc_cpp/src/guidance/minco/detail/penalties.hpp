@@ -9,7 +9,8 @@
 namespace sobits_intball2_gnc::guidance
 {
 
-// Huber-type hinge: 0 for x < 0 (returns false), x^2/(2 mu) up to mu, then x - mu/2.
+// Smoothed hinge (GCOPTER smoothedL1): 0 for x < 0 (returns false), (mu - x/2)(x/mu)^3 up to
+// mu, then x - mu/2.
 inline bool smoothHinge(double x, double mu, double &f, double &df)
 {
     if (x < 0.0)
@@ -18,8 +19,9 @@ inline bool smoothHinge(double x, double mu, double &f, double &df)
     }
     if (x <= mu)
     {
-        f = x * x / (2.0 * mu);
-        df = x / mu;
+        const double r = x / mu;
+        f = (mu - 0.5 * x) * r * r * r;
+        df = r * r * (3.0 - 2.0 * r);
     }
     else
     {

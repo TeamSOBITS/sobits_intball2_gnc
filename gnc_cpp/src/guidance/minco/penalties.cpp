@@ -30,8 +30,8 @@ double hardClearanceCost(double shortfall, double &dCost)
     return shortfall * shortfall * shortfall;
 }
 
-// Soft clearance: pseudo-Huber whose slope saturates at 1, so a few-cm shortfall still pushes
-// with nearly full force (Addendum B7).
+// Soft clearance: pseudo-Huber whose slope saturates at SOFT_HUBER_RADIUS. A slope saturating
+// at 1 (20x stronger) made the local plans detour widely around obstacles in the sim.
 double softClearanceCost(double shortfall, double &dCost)
 {
     if (shortfall <= 0.0)
@@ -41,8 +41,8 @@ double softClearanceCost(double shortfall, double &dCost)
     }
     const double r = shortfall / SOFT_HUBER_RADIUS;
     const double root = std::sqrt(1.0 + r * r);
-    dCost = r / root;
-    return SOFT_HUBER_RADIUS * (root - 1.0);
+    dCost = SOFT_HUBER_RADIUS * r / root;
+    return SOFT_HUBER_RADIUS * SOFT_HUBER_RADIUS * (root - 1.0);
 }
 
 double pointObstacleCost(const Vector3d &q, const std::vector<ObstaclePair> &pairs, double clearance,

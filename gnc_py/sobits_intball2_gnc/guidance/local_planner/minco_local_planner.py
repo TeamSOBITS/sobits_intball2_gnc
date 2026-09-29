@@ -176,17 +176,16 @@ class MincoLocalPlanner:
     def _shape_seed(self, p0, target_pos, prev_local, prev_elapsed, prev_target_global_t,
                     rest_failures):
         """Initial ``(inner_points, inner_directions, piece_times)`` of the multi-piece shape
-        solve, or ``None`` without ``local_piece_length_m``: the rest of ``prev_local`` joined
-        with the global trajectory up to the new target, cut into equal times."""
+        solve, or ``None`` without ``local_piece_length_m``: the rest of ``prev_local`` (if any)
+        joined with the global trajectory up to the new target, cut into equal times."""
         if self._local_piece_length_m is None:
             return None
         p0 = np.asarray(p0, dtype=float)
         target_pos = np.asarray(target_pos, dtype=float)
         n_pieces = max(2, math.ceil(np.linalg.norm(target_pos - p0) / self._local_piece_length_m))
-        if prev_local is None:
-            return self._rest_shape_seed(p0, target_pos, n_pieces, rest_failures)
 
-        prev_span = max(prev_local.global_total_duration - prev_elapsed, 0.0)
+        prev_span = 0.0 if prev_local is None else max(
+            prev_local.global_total_duration - prev_elapsed, 0.0)
         global_span = max(self._global_search_t - prev_target_global_t, 0.0)
         total_span = prev_span + global_span
         if total_span <= 0.0:
