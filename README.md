@@ -44,9 +44,9 @@ ROS2 Humble に対応しています．
 
 | 役割 | 内容 |
 |---|---|
-| **[Guidance](gnc/sobits_intball2_gnc/guidance/README.md)** | 目標軌道 `p_des(t), v_des(t), a_des(t), q_des(t)` を生成 |
-| **[Navigation](gnc/sobits_intball2_gnc/navigation/README.md)** | 自己位置推定，移動先地点配信 | 
-| **[Control](gnc/sobits_intball2_gnc/control/README.md)** | 目標軌道を追従する force/torque を計算し，8 duty へ配分 |
+| **[Guidance](gnc_py/sobits_intball2_gnc/guidance/README.md)** | 目標軌道 `p_des(t), v_des(t), a_des(t), q_des(t)` を生成 |
+| **[Navigation](gnc_py/sobits_intball2_gnc/navigation/README.md)** | 自己位置推定，移動先地点配信 | 
+| **[Control](gnc_py/sobits_intball2_gnc/control/README.md)** | 目標軌道を追従する force/torque を計算し，8 duty へ配分 |
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
@@ -54,9 +54,10 @@ ROS2 Humble に対応しています．
 
 ```
 sobits_intball2_gnc/                 # gitリポジトリルート（colconパッケージを2つ内包）
-├── gnc/                             # メインパッケージ（ament_python）
+├── gnc_py/                          # パッケージ sobits_intball2_gnc: メインパッケージ（ament_python）
 │   ├── config/
-│   │   └── gnc_params.yaml          # GNC パラメータ（ROS2 param 形式：ファン配置・推力モデル・制御ゲイン）
+│   │   ├── gnc_params.yaml          # GNC パラメータ（ROS2 param 形式：ファン配置・推力モデル・制御ゲイン）
+│   │   └── virtual_camera.yaml      # 仮想カメラのパラメータ（カメラ・解像度・距離・メッシュ対応表）
 │   ├── maps/
 │   │   └── iss_location.yaml        # 登録済みロケーション一覧（27地点）
 │   ├── sobits_intball2_gnc/
@@ -67,10 +68,13 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
 │   ├── package.xml
 │   ├── setup.py
 │   └── setup.cfg
-└── minco_native_py/                 # MINCO姿勢/トルク統合軌道生成のpybind11拡張（ament_cmake）
+└── gnc_cpp/                         # パッケージ sobits_intball2_gnc_cpp: C++実装とそのpybind11拡張（ament_cmake）
     ├── package.xml
     ├── CMakeLists.txt
-    └── src/
+    ├── include/sobits_intball2_gnc_cpp/  # 公開ヘッダ（common/ mapping/ guidance/ perception/）
+    ├── src/                         # 実装（includeと同じ並び）。perception/virtual_camera_node.cppは仮想カメラのROSノード
+    ├── python/                      # pybind11バインディング
+    └── config/                      # wrench envelope CSV
 ```
 
 
@@ -112,7 +116,7 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
 5. パッケージをビルドします．
    ```sh
    cd ~/colcon_ws/
-   colcon build --packages-select minco_native_py sobits_intball2_gnc
+   colcon build --packages-select sobits_intball2_gnc_cpp sobits_intball2_gnc
    source ~/colcon_ws/install/setup.bash
    ```
 
@@ -120,25 +124,79 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
 
 ## 実行方法
 
-- [gnc_bringup.launch.py](gnc/launch/gnc_bringup.launch.py)を起動し，移動先地点を配信します．
+- [gnc_bringup.launch.py](gnc_py/launch/gnc_bringup.launch.py)を起動し，移動先地点の配信と現在位置・姿勢の保持（[control.launch.py](gnc_py/launch/control.launch.py)を含む）を行います．
     ```
     ros2 launch sobits_intball2_gnc gnc_bringup.launch.py
     ```
-- [hover_control.launch.py](gnc/launch/hover_control.launch.py)を起動し，現在位置・姿勢の保持を行います．
-    ```
-    ros2 launch sobits_intball2_gnc hover_control.launch.py
-    ```
-- [guidance.py](gnc/sobits_intball2_gnc/guidance/guidance.py)を起動し，目標軌道の生成・追従を行います．
+    `control_node`を別に起動する場合は`use_control:=false`を付け，`ros2 launch sobits_intball2_gnc control.launch.py`を起動します．
+- [guidance.py](gnc_py/sobits_intball2_gnc/guidance/guidance.py)を起動し，目標軌道の生成・追従を行います．
     ```
     ros2 launch sobits_intball2_gnc guidance.launch.py
     ```
-    詳細は[guidance/README.md](gnc/sobits_intball2_gnc/guidance/README.md)を参照してください．
+    詳細は[guidance/README.md](gnc_py/sobits_intball2_gnc/guidance/README.md)を参照してください．
+
+### 仮想カメラ（シム専用）
+
+機体のカメラから見える深度を，既知の地図（`jem_octomap.bt`）とGazeboに置いた障害物から幾何で作り，実物の深度カメラと同じ形（`32FC1`の深度画像＋`CameraInfo`，光学座標，REP 117の±inf）で出します．
+設計と実測の根拠は[仮想カメラの要件](docs/archive/achieved/2026-09-26_virtual_obstacle_sensor_requirements.md)・[ステレオカメラの実測](docs/archive/achieved/2026-09-28_stereo_camera_measurement.md)を参照してください．
+
+1. `gnc_bringup.launch.py`（TF）が動いている状態で，仮想カメラを起動します．
+    ```sh
+    ros2 launch sobits_intball2_gnc virtual_camera.launch.py
+    ```
+    | 出力トピック | 内容 |
+    | --- | --- |
+    | `/virtual_camera/<カメラ>/depth` | `32FC1`の深度画像（光軸方向の距離[m]，何も当たらない・`max_range`より先は`+inf`，`min_range`より近いと`-inf`） |
+    | `/virtual_camera/<カメラ>/camera_info` | 内部パラメータ（歪みなし） |
+    | `/virtual_camera/<カメラ>/points` | 深度から作った点群（`publish_points: true`のときだけ，確認用） |
+    | `/virtual_camera/<カメラ>/frustum` | 視野の錐（`min_range`〜`max_range`） |
+    | `/virtual_camera/obstacles` | 仮想カメラが描いている障害物（人はメッシュ，箱は直方体，`iss_body`） |
+2. 障害物を置きます（見た目だけ，衝突なし）．`add`はISSに対して位置を保ち続けるため起動したままになるので，バックグラウンドで実行します．
+    ```sh
+    cd gnc_py/test/manual
+    python3 spawn_obstacle.py add --ahead 1.5 &                          # メインカメラの前1.5mに箱（0.5×0.3×1.7m）
+    python3 spawn_obstacle.py add --at 11.0 -6.4 5.0 --model float_blue --id 1 &   # 人（iss_body座標）
+    python3 spawn_obstacle.py list
+    python3 spawn_obstacle.py clear                                     # 置いた物を全部消す（addのプロセスも止める）
+    ```
+    箱は`vbox_<幅>x<奥行>x<高さ>_<id>`，メッシュは`<モデル名>_<id>`という名前で置かれ，仮想カメラは名前から形を決めます（`/gazebo/model_states`は形を流さないため）．
+    `intball2_programs`の`spawn_model`で名前を省略して置いた人・CTBも描かれます．
+3. RVizの`gnc.rviz`に仮想カメラの視野の錐・障害物・点群（奥行きで色分け，近い＝赤・遠い＝青，0〜3m）・深度画像の表示があります（深度画像・`spawn_model`のマーカー・本物のステレオの点群は初期状態で非表示）．
+
+主なパラメータ（`config/virtual_camera.yaml`）:
+
+| パラメータ | 既定値 | 内容 |
+| --- | --- | --- |
+| `virtual_camera.enabled_cameras` | `[main]` | 描くカメラ（`stereo`＝左カメラ1台，`main`）．`[stereo, main]`で2台を同じ姿勢・同じ障害物の配置で同時に描き，同じスタンプで出す．`<カメラ>`はこの名前 |
+| `virtual_camera.downsample` | `4` | 描く解像度＝カメラの仕様÷n（`1`で800×800，`2`で400×400，`4`で200×200）．視野角は変わらない．**解像度を変えるときはこれだけを変える** |
+| `virtual_camera.rate_hz` | `10.0` | 周期（sim時間） |
+| `virtual_camera.min_range` / `max_range` | `0.25` / `3.0` | 検出距離[m]．ステレオの実測に合わせた値（0.25m未満は測れない，3mまでは誤差の90%点が約0.3m） |
+| `virtual_camera.threads` | `4` | 描画のスレッド数 |
+| `virtual_camera.publish_points` | `false` | 確認用の点群を出す |
+
+- `virtual_camera.cameras.<stereo|main>.width/height/horizontal_fov`は本物のカメラ（Gazebo）の仕様（800×800，80°）で，焦点距離と`camera_info`の計算に使う．カメラ自体が変わらない限り触らない
+- 点群（`/virtual_camera/<カメラ>/points`）は深度画像の有限の画素を3次元に戻しただけのもので，点の数は最大で解像度の画素数．点の間隔は`downsample: 4`で1m先0.8cm・4m先3.4cm
+- 重さ: 200×200（既定の`downsample: 4`）・10Hzで約0.4コア（2台`[stereo, main]`で約0.6コア）．800×800（`downsample: 1`）では約3.8コアで，シムのRTFが目に見えて下がる
+- 実物の効果（近すぎると奥に出る・穴・距離の誤差など）はまだ入っていない理想カメラです
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
 ## マイルストーン
 
 現時点のバグや新規機能の依頼を確認するために[Issueページ](https://github.com/TeamSOBITS/sobits_intball2_gnc/issues)をご覧ください．
+
+<p align="right">(<a href="#readme-top">上に戻る</a>)</p>
+
+## 第三者コードとライセンス
+
+本リポジトリはBSD-3-Clause（`LICENSE`）。以下の第三者由来の部分は元のライセンスに従う。
+
+| 対象 | 出典 | ライセンス |
+|---|---|---|
+| `gnc_py/sobits_intball2_gnc/common/utils/stopping_profile.py` | [JAXA Int-Ball2 platform works](https://github.com/jaxa/int-ball2_platform_works) `ctl_only`（改変あり） | Apache-2.0（`licenses/Apache-2.0.txt`） |
+| 機体の物理パラメータ（ファン配置・推力係数・質量・慣性、`gnc_params.yaml`・`thrust_allocator.py`）、そこから生成した`gnc_cpp/config/wrench_envelope.csv` | JAXA Int-Ball2 の`ctl.yaml`・`sim.yaml` | Apache-2.0 |
+| `gnc_py/maps/iss_octomap.bt`・`jem_octomap.bt` | [JAXA Int-Ball2 simulator](https://github.com/jaxa/int-ball2_simulator)のISSメッシュから生成 | Apache-2.0 |
+| GCOPTERヘッダ（`install.sh`で取得、ビルド成果物に含まれる）、`gnc_py/test/experiment_minco_native/main.cpp`の一部 | [GCOPTER](https://github.com/ZJU-FAST-Lab/GCOPTER) | MIT（`licenses/GCOPTER-MIT.txt`） |
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 

@@ -1,0 +1,39 @@
+# Virtual (ideal) depth camera parameters, loaded by virtual_camera.launch.py.
+# Design and measured basis: docs/archive/achieved/2026-09-26_virtual_obstacle_sensor_requirements.md
+
+/**:
+  ros__parameters:
+    virtual_camera:
+      enabled_cameras: [main]      # any of stereo (left camera only), main; e.g. [stereo, main] renders both
+                                   # from the same pose/obstacles each tick -> /virtual_camera/<camera>/...
+      # Real camera specs (the Gazebo cameras); change only if the camera itself changes.
+      # Rendered resolution is width/downsample x height/downsample -- tune downsample, not these.
+      cameras:
+        stereo: {link_frame: cameraL_link, optical_frame: cameraL_optical_frame, width: 800, height: 800, horizontal_fov: 1.396263}
+        main: {link_frame: cameraF_link, optical_frame: cameraF_optical_frame, width: 800, height: 800, horizontal_fov: 1.396263}
+      downsample: 4                # rendered = spec / n: 1 -> 800x800, 2 -> 400x400, 4 -> 200x200 (FOV unchanged)
+      rate_hz: 10.0                # sim time
+      min_range: 0.25              # [m] closer -> -inf (REP 117); measured stereo limit (docs/archive/achieved/2026-09-28_stereo_camera_measurement.md)
+      max_range: 3.0               # [m] nothing hit within -> +inf; stereo |error| p90 ~0.3 m up to 3 m
+      threads: 4
+      publish_points: false        # /virtual_camera/points for RViz checks
+      map_file: jem_octomap.bt     # relative = share/sobits_intball2_gnc/maps/; "" = no static map
+      mesh_resolution: 0.02        # [m]
+
+      # Same meshes, visual rpy and scale as intball2_programs/spawn/sim_models.py (keep in sync).
+      # Instances in /gazebo/model_states are matched by name prefix.
+      mesh_models: [float_blue, float_orange, float_purple, float2_blue, float2_green, float2_orange, float2_purple,
+                    ctb_1023, ctb_1456, ctb_2305, ctb_2789, ctb_4678]
+      mesh:
+        float_blue: {uri: "package://intball2_programs/media/meshes/human_obstacles/float_blue.dae", rpy: [3.14159, 0.0, 0.0], scale: 1.0}
+        float_orange: {uri: "package://intball2_programs/media/meshes/human_obstacles/float_orange.dae", rpy: [3.14159, 0.0, 0.0], scale: 1.0}
+        float_purple: {uri: "package://intball2_programs/media/meshes/human_obstacles/float_purple.dae", rpy: [3.14159, 0.0, 0.0], scale: 1.0}
+        float2_blue: {uri: "package://intball2_programs/media/meshes/human_obstacles/float2_blue.dae", rpy: [3.14159, 0.0, 0.0], scale: 1.0}
+        float2_green: {uri: "package://intball2_programs/media/meshes/human_obstacles/float2_green.dae", rpy: [3.14159, 0.0, 0.0], scale: 1.0}
+        float2_orange: {uri: "package://intball2_programs/media/meshes/human_obstacles/float2_orange.dae", rpy: [3.14159, 0.0, 0.0], scale: 1.0}
+        float2_purple: {uri: "package://intball2_programs/media/meshes/human_obstacles/float2_purple.dae", rpy: [3.14159, 0.0, 0.0], scale: 1.0}
+        ctb_1023: {uri: "package://intball2_programs/media/meshes/portable_objects/CTB_1023/CTB_1023.dae", rpy: [3.14, 0.0, 0.0], scale: 0.3}
+        ctb_1456: {uri: "package://intball2_programs/media/meshes/portable_objects/CTB_1456/CTB_1456.dae", rpy: [3.14, 0.0, 0.0], scale: 0.3}
+        ctb_2305: {uri: "package://intball2_programs/media/meshes/portable_objects/CTB_2305/CTB_2305.dae", rpy: [3.14, 0.0, 0.0], scale: 0.3}
+        ctb_2789: {uri: "package://intball2_programs/media/meshes/portable_objects/CTB_2789/CTB_2789.dae", rpy: [3.14, 0.0, 0.0], scale: 0.3}
+        ctb_4678: {uri: "package://intball2_programs/media/meshes/portable_objects/CTB_4678/CTB_4678.dae", rpy: [3.14, 0.0, 0.0], scale: 0.3}

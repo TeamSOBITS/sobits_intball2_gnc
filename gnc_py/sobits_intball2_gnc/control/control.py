@@ -1,0 +1,511 @@
+#!/usr/bin/env python3
+"""Control orchestrator node for IntBall2 (the single control-system node).
+
+This is the only ``rclpy`` node in the control system (1-file-1-node rule). It
+wires the ROS I/O wrappers (``control/ros``) to the ROS-agnostic control logic
+(``control/utils``) via dependency injection and drives the control loop:
+
+    IMU (+ TF pose) --> HoverController --> ThrustAllocator --> FanDutyPublisher
+
+Configuration comes from the ROS2 parameter system (``config/gnc_params.yaml``).
+This node does not read individual algorithm parameters; each module declares
+and reads its own parameters through its ``from_node`` factory. The parameters
+this node reads directly are the ones it uses itself: the hover mode, the
+control loop rate, the TF frame names and the checkpoint topic name.
+
+Self-position comes from the TF tree (``iss_body`` <- ``body``), which the
+simulator publishes with Navigation OFF. Nothing here touches
+``/sensor_fusion/navigation``; with Navigation OFF the JAXA ``ctl_only``
+controller stays in STAND_BY. JAXA's ``fsm`` (thrust allocation) keeps running
+regardless and allocates whatever reaches ``/ctl/wrench``, so
+``control.thrust_allocation`` picks exactly one owner of ``/ctl/duty``:
+``"builtin"`` (default) allocates here and never publishes ``/ctl/wrench``;
+``"jaxa_fsm"`` publishes the total wrench to ``/ctl/wrench`` and no duty
+(docs/archive/achieved/2026-09-26_jaxa_fsm_double_duty_issue.md).
+"""
+import rclpy
+from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
+from rclpy.node import Node
+from rclpy.parameter import Parameter
+from std_srvs.srv import Trigger
+
+from sobits_intball2_gnc.common.ros.tf_client import TfClient
+from sobits_intball2_gnc.control.ros.ctl_status_subscriber import CtlStatusSubscriber
+from sobits_intball2_gnc.control.ros.fan_duty_publisher import (
+    DUTY_TOPIC,
+    FanDutyPublisher,
+)
+from sobits_intball2_gnc.control.ros.imu_subscriber import ImuSubscriber, IMU_TOPIC
+from sobits_intball2_gnc.control.ros.multi_dof_joint_trajectory_subscriber import (
+    MultiDOFJointTrajectorySubscriber,
+)
+from sobits_intball2_gnc.control.ros.pose_array_subscriber import PoseArraySubscriber
+from sobits_intball2_gnc.control.utils.hover_controller import (
+    HOVER_MODES,
+    HoverController,
+)
+from sobits_intball2_gnc.control.ros.wrench_publisher import (
+    JAXA_FSM_WRENCH_TOPIC, WrenchPublisher, WRENCH_TOTAL_TOPIC, WRENCH_ACHIEVED_TOPIC,
+)
+from sobits_intball2_gnc.control.utils.singleton_lock import (
+    SingletonLockError,
+    acquire_singleton_lock,
+)
+from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
+
+# Phase 1: manually step the hold target to the next
+# checkpoint. A service (not a topic) so the caller gets an explicit
+# success/failure back -- False means the array was already on its last
+# checkpoint (or none was ever received), so the caller can tell "no-op"
+# apart from "advanced".
+ADVANCE_CHECKPOINT_SERVICE = "/gnc/advance_checkpoint"
+
+# Period of the periodic "who owns the fans" status log [s] (0 disables it).
+DEFAULT_STATUS_LOG_PERIOD = 2.0
+# Node name the ROS1 bridge (parameter_bridge) registers as when relaying a
+# topic to ROS2 -- confirmed live via `ros2 topic info /ctl/duty --verbose`.
+BRIDGE_NODE_NAME = "ros_bridge"
+# How long to wait for the configured TF frames at startup [s].
+TF_STARTUP_TIMEOUT = 5.0
+THRUST_ALLOCATIONS = ("builtin", "jaxa_fsm")
+# /ctl/status arrives at 10 Hz from ROS1, but the bridge can drop rates 5-15x
+# under CPU load [s, sim time].
+JAXA_CTL_STATUS_TIMEOUT = 3.0
+
+# Category-A dynamic parameters
+# (docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md):
+# pure gains/clamps/thresholds that can be changed at runtime without
+# restarting the node, because they don't change the control law's structure
+# and aren't baked into any other derived/precomputed state (unlike, e.g.,
+# thrust_allocator's fan geometry -> self.A, or hover_control.mode, which are
+# category C). Keys are the part of the parameter name after the first ".".
+HOVER_DYNAMIC_KEYS = frozenset(
+    {"kd_w", "kp_a", "deadband_w", "deadband_a", "acc_bias_alpha",
+     "max_force", "max_torque"}
+)
+TF_CORRECTION_DYNAMIC_KEYS = frozenset(
+    {"kp_pos", "kd_pos", "kp_att_align", "kd_att_align",
+     "kp_att_hold", "kd_att_hold", "vel_filter_alpha",
+     "att_filter_alpha", "max_corr_force", "max_corr_torque",
+     "torque_direction_preserving", "timeout",
+     "align_tolerance_deg", "align_settle_time", "align_gain_max_duration"}
+)
+TRAJECTORY_DYNAMIC_KEYS = frozenset(
+    {"kp_pos", "kd_pos", "vel_filter_alpha", "max_force", "kp_att", "kd_att",
+     "att_filter_alpha", "max_torque", "torque_direction_preserving", "timeout",
+     "attitude_feedforward"}
+)
+THRUST_ALLOCATOR_DYNAMIC_KEYS = frozenset(
+    {"force_weight_ref", "torque_weight_ref", "torque_axis_balance", "minimax_objective"}
+)
+
+
+class ControlNode(Node):
+    """Single orchestrator node: wire wrappers to logic and run the loop."""
+
+    def __init__(self) -> None:
+        # Default use_sim_time=True, matching guidance_node
+        # (guidance/guidance.py): this node's TF-stamp-based dt math
+        # (trajectory_controller.py's compute()/compute_attitude()) assumes
+        # self.get_clock() is sim time. Previously this was only ever true
+        # because control.launch.py injects use_sim_time as a launch
+        # parameter -- a bare `ros2 run sobits_intball2_gnc control` (bypassing
+        # the launch file) silently defaulted to wall-clock, asymmetric with
+        # guidance_node's code-level default. A parameter_override is a
+        # default, not a lock: an explicit `--ros-args -p use_sim_time:=false`
+        # (or the launch file's own override) still wins over it.
+        super().__init__(
+            "control_node",
+            parameter_overrides=[Parameter("use_sim_time", Parameter.Type.BOOL, True)],
+        )
+
+        self.declare_parameter("control.thrust_allocation", "builtin",
+                               ParameterDescriptor(read_only=True))
+        self._thrust_allocation = str(
+            self.get_parameter("control.thrust_allocation").value)
+        if self._thrust_allocation not in THRUST_ALLOCATIONS:
+            raise ValueError(
+                "invalid control.thrust_allocation %r: expected one of %s"
+                % (self._thrust_allocation, ", ".join(THRUST_ALLOCATIONS))
+            )
+        allocate_here = self._thrust_allocation == "builtin"
+
+        # --- ROS I/O wrappers (attach to this node; none is itself a Node) ---
+        self._fan = FanDutyPublisher(self, active=allocate_here)
+        self._imu = ImuSubscriber(self, IMU_TOPIC)
+
+        # --- control logic (parameters read by each module's from_node) ------
+        self._allocator = ThrustAllocator.from_node(self)
+        # declare_parameters() must run before we read hover_control.mode and
+        # the TF frame names below; from_node() calls it again idempotently.
+        HoverController.declare_parameters(self)
+
+        # This node owns the mode decision: it picks which ROS interfaces to
+        # create, then injects the result. The logic layer only sees whether it
+        # was handed a TF client.
+        mode = str(self.get_parameter("hover_control.mode").value)
+        if mode not in HOVER_MODES:
+            raise ValueError(
+                "invalid hover_control.mode %r: expected one of %s"
+                % (mode, ", ".join(HOVER_MODES))
+            )
+        self._mode = mode
+
+        self._tf = None
+        if mode == "tf_imu":
+            self._tf = TfClient(
+                self,
+                str(self.get_parameter("tf_correction.reference_frame").value),
+                str(self.get_parameter("tf_correction.target_frame").value),
+            )
+            # Diagnose a bad frame name at startup rather than silently never
+            # correcting. A failure is not fatal: the node degrades to pure IMU
+            # hover and recovers if TF appears later.
+            if not self._tf.wait_for_frame(TF_STARTUP_TIMEOUT):
+                self.get_logger().warn(
+                    "TF frames unavailable at startup; hovering on IMU alone "
+                    "until they appear"
+                )
+
+        # Trajectory setpoint interface (Phase 3a, openspec/changes/
+        # add-trajectory-following): only meaningful alongside TF, same as
+        # the pose corrector.
+        self._trajectory_sub = None
+        if self._tf is not None:
+            self._trajectory_sub = MultiDOFJointTrajectorySubscriber(
+                self,
+                expected_frame=str(
+                    self.get_parameter("tf_correction.reference_frame").value
+                ),
+            )
+
+        self._hover = HoverController.from_node(
+            self, self._imu, self._fan, self._allocator, self._tf,
+            self._trajectory_sub,
+        )
+
+        # Requested (pre-clamp/pre-allocation) wrench, for diagnosing
+        # saturation independent of the realized /ctl/duty
+        # ("[C] Controller内部値の可観測性強化" task). Meaningful in any mode
+        # (mirrors last_force_corr/last_torque_corr in imu-only mode, where
+        # both are always zero).
+        self._wrench_pub = WrenchPublisher(self)
+        # (IMU-law + correction), summed and clamped -- the exact wrench
+        # ThrustAllocator.allocate() actually receives each tick, for
+        # diagnosing where a request becomes axis-dominant (docs/
+        # 2026-08-27_thrust_allocator_single_axis_saturation_findings.md).
+        self._wrench_total_pub = WrenchPublisher(self, topic=WRENCH_TOTAL_TOPIC)
+        # Achieved wrench is derived from our own allocation, meaningless when
+        # JAXA's fsm allocates.
+        self._wrench_achieved_pub = (
+            WrenchPublisher(self, topic=WRENCH_ACHIEVED_TOPIC) if allocate_here else None)
+        self._fsm_wrench_pub = None
+        self._ctl_status = None
+        self._fsm_wrench_tx = 0
+        self._fsm_wrench_held = 0
+        if not allocate_here:
+            self._fsm_wrench_pub = WrenchPublisher(self, topic=JAXA_FSM_WRENCH_TOPIC)
+            self._ctl_status = CtlStatusSubscriber(self)
+
+        # Checkpoint array interface (poses in the TF reference frame).
+        self._path = PoseArraySubscriber(
+            self,
+            str(self.get_parameter("tf_correction.checkpoint_topic").value),
+            on_path=self._hover.set_checkpoints,
+            expected_frame=str(
+                self.get_parameter("tf_correction.reference_frame").value
+            ),
+        )
+
+        # Manual checkpoint advance (Phase 1): no prior
+        # ROS interface called ControlNode.advance_checkpoint() at all.
+        self._advance_srv = self.create_service(
+            Trigger, ADVANCE_CHECKPOINT_SERVICE, self._on_advance_checkpoint
+        )
+
+        # Loop rate is owned/used here; it was declared by HoverController.
+        self._rate = float(self.get_parameter("hover_control.control_rate").value)
+        self._timer = self.create_timer(1.0 / self._rate, self._on_timer)
+        # Effective use_sim_time, logged at startup: a mismatch between this
+        # node's and guidance_node's use_sim_time silently desyncs their
+        # clocks (an epoch offset only became apparent by accident from a CSV
+        # timestamp mismatch during the 2026-08-25 investigation, docs/
+        # archive/achieved/2026-08-25_guidance_attitude_saturation_investigation.md
+        # -- this log is meant to surface that immediately instead).
+        self.get_logger().info(
+            "ControlNode up: mode=%s, thrust_allocation=%s, subscribing %s, "
+            "publishing %s at %.1f Hz, use_sim_time=%s"
+            % (mode, self._thrust_allocation, IMU_TOPIC,
+               DUTY_TOPIC if allocate_here else JAXA_FSM_WRENCH_TOPIC, self._rate,
+               self.get_parameter("use_sim_time").value)
+        )
+
+        # Periodic "do we actually own the fans?" status log.
+        self.declare_parameter("control.status_log_period",
+                               DEFAULT_STATUS_LOG_PERIOD)
+        period = float(self.get_parameter("control.status_log_period").value)
+        if period > 0.0:
+            self._last_duty_tx = 0
+            self._status_timer = self.create_timer(period, self._on_status_log)
+
+        # Dynamic reconfiguration for Category-A parameters (gains/clamps/
+        # thresholds; see
+        # docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md).
+        # Every other declared parameter (geometry, mass, loop rates, mode,
+        # frame names, ...) is Category B/C and is intentionally left unhandled
+        # below -- rclpy accepts the value (there is no read_only guard) but
+        # nothing re-reads it, matching "static, restart to change".
+        self.add_on_set_parameters_callback(self._on_set_parameters)
+
+    def _set_status_log_period(self, period: float) -> None:
+        """Change the status-log timer's period, or disable/re-enable it.
+
+        The subscription/counters the status log needs are only created at
+        startup when the initial period is > 0 (see ``__init__``); enabling
+        the log from a startup value of 0.0 would be missing that
+        infrastructure, so it is rejected rather than silently no-op'd.
+        """
+        if not hasattr(self, "_status_timer"):
+            if period > 0.0:
+                raise ValueError(
+                    "control.status_log_period was 0.0 (disabled) at "
+                    "startup; enabling it requires a restart"
+                )
+            return
+        if period <= 0.0:
+            self.destroy_timer(self._status_timer)
+            del self._status_timer
+            return
+        self.destroy_timer(self._status_timer)
+        self._status_timer = self.create_timer(period, self._on_status_log)
+
+    def _on_set_parameters(self, params) -> SetParametersResult:
+        """Route Category-A parameter changes to the relevant setter.
+
+        Runs on the same (single-threaded, ``rclpy.spin``) thread as the
+        control-loop timer, so there is no data race with ``_on_timer``; see
+        docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md.
+        """
+        for p in params:
+            prefix, _, key = p.name.partition(".")
+            try:
+                if prefix == "hover_control" and key in HOVER_DYNAMIC_KEYS:
+                    self._hover.set_hover_gains(**{key: p.value})
+                elif prefix == "tf_correction" and key in TF_CORRECTION_DYNAMIC_KEYS:
+                    self._hover.set_tf_correction_gains(**{key: p.value})
+                elif prefix == "trajectory_controller" and key in TRAJECTORY_DYNAMIC_KEYS:
+                    self._hover.set_trajectory_gains(**{key: p.value})
+                elif prefix == "thrust_allocator" and key in THRUST_ALLOCATOR_DYNAMIC_KEYS:
+                    self._allocator.set_weights(**{key: p.value})
+                elif p.name == "control.status_log_period":
+                    self._set_status_log_period(float(p.value))
+                # Any other declared parameter is Category B/C (latched or
+                # static) -- accepted (rclpy still stores the new value) but
+                # intentionally not applied to any running object.
+            except (ValueError, TypeError) as exc:
+                return SetParametersResult(successful=False, reason=str(exc))
+        return SetParametersResult(successful=True)
+
+    def advance_checkpoint(self) -> bool:
+        """Step the hover hold target to the next checkpoint (free-path hook)."""
+        return self._hover.advance_checkpoint()
+
+    def _on_advance_checkpoint(self, request, response):
+        """Trigger callback for ADVANCE_CHECKPOINT_SERVICE (Phase 1)."""
+        advanced = self.advance_checkpoint()
+        response.success = advanced
+        response.message = (
+            "advanced to next checkpoint" if advanced
+            else "no checkpoints received yet, or already on the last one"
+        )
+        return response
+
+    def _on_status_log(self) -> None:
+        """Periodically report whether this node actually drives the fans.
+
+        Classifies other publishers on DUTY_TOPIC by *node name*
+        (``get_publishers_info_by_topic``) rather than by duty content:
+        content-based detection was tried and discarded (2026-08-27) -- the
+        bidirectional ROS1 bridge (no ``direction`` override in
+        bridge_topics.yaml) echoes every duty we publish back to us under
+        node name "ros_bridge", live-measured with a multi-second round trip
+        under the bridge's normal CPU load, so no fixed history window could
+        reliably tell "our own echo" apart from "genuinely new content"
+        without false positives. Node identity is simpler and doesn't depend
+        on timing at all:
+          - other publisher named exactly our own node name -> a duplicate
+            control_node instance (flagged regardless of content, since two
+            instances computing the same control law could plausibly agree
+            on values -- content-matching would hide exactly this case).
+          - other publisher named "ros_bridge" -> expected (our own commands
+            echoing back, or -- per this package's Navigation-OFF invariant,
+            see module docstring -- the JAXA controller's STAND_BY heartbeat);
+            not treated as contested.
+          - any other name -> genuinely unexplained, flagged as CONTESTED.
+        """
+        if self._fsm_wrench_pub is not None:
+            self._log_jaxa_fsm_status()
+            return
+        tx = self._fan.publish_count
+        tx_delta = tx - self._last_duty_tx
+        self._last_duty_tx = tx
+
+        pub_infos = self.get_publishers_info_by_topic(DUTY_TOPIC)
+        own_name = self.get_name()
+        name_counts = {}
+        for info in pub_infos:
+            name_counts[info.node_name] = name_counts.get(info.node_name, 0) + 1
+        duplicate_control_nodes = max(0, name_counts.get(own_name, 0) - 1)
+        unknown_names = sorted(
+            n for n in name_counts if n not in (own_name, BRIDGE_NODE_NAME)
+        )
+        other_pubs = max(0, len(pub_infos) - 1)
+        if duplicate_control_nodes > 0:
+            self.get_logger().error(
+                "DUPLICATE %s DETECTED: %d other publisher(s) named %r on %s "
+                "-- is control.launch.py running twice (possibly on "
+                "another host/container sharing this ROS_DOMAIN_ID)? Detected "
+                "by publisher identity, not duty content, so it won't be "
+                "hidden even if both instances happen to command the same "
+                "values." % (own_name, duplicate_control_nodes, own_name, DUTY_TOPIC)
+            )
+
+        # Phase 0 diagnosis: force/torque split by source, pre-combination, to
+        # see whether the TF correction and the IMU law cancel each other out.
+        f_imu = ", ".join("%.4f" % v for v in self._hover.last_force_imu)
+        f_corr = ", ".join("%.4f" % v for v in self._hover.last_force_corr)
+        t_imu = ", ".join("%.4f" % v for v in self._hover.last_torque_imu)
+        t_corr = ", ".join("%.4f" % v for v in self._hover.last_torque_corr)
+        summary = (
+            "fan-control: ours=%d msgs, other publishers=%d (%s), "
+            "mode=%s, imu=%s, tf=%s, trajectory_active=%s, duty=[%s], "
+            "force_imu=[%s], force_corr=[%s], torque_imu=[%s], torque_corr=[%s]"
+            % (tx_delta, other_pubs, ", ".join(sorted(name_counts)) or "none",
+               self._mode,
+               "ok" if self._imu.ready else "WAITING",
+               self._hover.tf_status, self._hover.trajectory_active,
+               ", ".join("%.2f" % d for d in self._fan.duties),
+               f_imu, f_corr, t_imu, t_corr)
+        )
+        if unknown_names:
+            self.get_logger().warn(
+                summary + "  <-- unrecognized publisher(s) %s on %s: fan "
+                "control is CONTESTED" % (unknown_names, DUTY_TOPIC)
+            )
+        elif tx_delta == 0:
+            self.get_logger().warn(
+                summary + "  <-- we published nothing this period"
+            )
+        else:
+            self.get_logger().info(summary + "  <-- fan control is OURS")
+
+    def _log_jaxa_fsm_status(self) -> None:
+        tx, held = self._fsm_wrench_tx, self._fsm_wrench_held
+        self._fsm_wrench_tx = self._fsm_wrench_held = 0
+        summary = (
+            "fan-control: thrust_allocation=jaxa_fsm, %s msgs=%d, held=%d, "
+            "jaxa ctl status type=%s, imu=%s, tf=%s, trajectory_active=%s, "
+            "force_total=[%s], torque_total=[%s]"
+            % (JAXA_FSM_WRENCH_TOPIC, tx, held, self._ctl_status.type,
+               "ok" if self._imu.ready else "WAITING",
+               self._hover.tf_status, self._hover.trajectory_active,
+               ", ".join("%.4f" % v for v in self._hover.last_force_total),
+               ", ".join("%.4f" % v for v in self._hover.last_torque_total))
+        )
+        if held > 0:
+            self.get_logger().warn(
+                summary + "  <-- JAXA ctl_only not confirmed idle (status missing, "
+                "stale, or >= KEEP_POSE): not publishing %s" % JAXA_FSM_WRENCH_TOPIC)
+        else:
+            self.get_logger().info(summary + "  <-- JAXA fsm allocates OUR wrench")
+
+    def _publish_fsm_wrench(self, now: float) -> None:
+        if not self._ctl_status.jaxa_ctl_idle(now, JAXA_CTL_STATUS_TIMEOUT):
+            self._fsm_wrench_held += 1
+            return
+        self._fsm_wrench_pub.publish(self._hover.last_force_total,
+                                     self._hover.last_torque_total)
+        self._fsm_wrench_tx += 1
+
+    def _on_timer(self) -> None:
+        # self.get_clock().now() (not time.monotonic()) so this loop's own
+        # notion of elapsed time is on the same clock as the TF stamps it
+        # compares itself against: with use_sim_time=true and /clock bridged
+        # from the simulator, both are sim time, so a Gazebo real-time-factor
+        # drop under CPU load no longer desyncs "how much time we think
+        # passed" from "how far the vehicle actually got to move" -- see
+        # docs/archive/achieved/2026-08-19_recording_cpu_load_control_degradation.md.
+        now = self.get_clock().now().nanoseconds * 1e-9
+        self._hover.step(now)
+        self._wrench_pub.publish(self._hover.last_force_raw, self._hover.last_torque_raw)
+        self._wrench_total_pub.publish(self._hover.last_force_total, self._hover.last_torque_total)
+        if self._wrench_achieved_pub is not None:
+            self._wrench_achieved_pub.publish(self._hover.last_force_achieved,
+                                              self._hover.last_torque_achieved)
+        if self._fsm_wrench_pub is not None:
+            self._publish_fsm_wrench(now)
+
+
+def main(args=None) -> None:
+    """Run the control orchestrator node.
+
+    Configuration is supplied through the ROS2 parameter system (not positional
+    arguments); ``-h`` documents how to pass the parameter file.
+    """
+    import argparse
+    import sys
+    from rclpy.utilities import remove_ros_args
+
+    argv = sys.argv if args is None else args
+    parser = argparse.ArgumentParser(
+        prog="control",
+        description=(
+            "IntBall2 control orchestrator (the single control-system node): "
+            "TF-corrected IMU hover. Subscribes /imu/imu (and, in tf_imu mode, "
+            "the TF tree and /gnc/checkpoints) and publishes 8 fan duties to "
+            "/ctl/duty. Runs with Navigation OFF."
+        ),
+        epilog=(
+            "Parameters are provided via the ROS2 parameter system, not CLI "
+            "arguments. Examples:\n"
+            "  # tuned gains from the installed parameter file:\n"
+            "  ros2 run sobits_intball2_gnc control --ros-args --params-file "
+            "$(ros2 pkg prefix sobits_intball2_gnc)"
+            "/share/sobits_intball2_gnc/config/gnc_params.yaml\n"
+            "  # or, more simply:\n"
+            "  ros2 launch sobits_intball2_gnc control.launch.py\n"
+            "  # IMU-only hover (no TF lookups):\n"
+            "  ros2 run sobits_intball2_gnc control --ros-args "
+            "-p hover_control.mode:=imu\n"
+            "Inspect live values with: ros2 param list /control_node"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # No functional flags (configuration is via ROS2 parameters); parsing the
+    # non-ROS args still provides `-h` and rejects unknown arguments.
+    parser.parse_args(remove_ros_args(args=argv)[1:])
+
+    # Refuse to start a second control_node in this container: a leftover
+    # process silently fighting the new one over /ctl/duty caused a real
+    # incident (docs/archive/achieved/2026-08-19_trajectory_force_duration_investigation.md 6-1).
+    # Held for the whole process lifetime; released automatically on exit.
+    try:
+        lock_file = acquire_singleton_lock()  # noqa: F841
+    except SingletonLockError as exc:
+        print("control: %s" % exc, file=sys.stderr)
+        sys.exit(1)
+
+    rclpy.init(args=argv)
+    node = ControlNode()
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

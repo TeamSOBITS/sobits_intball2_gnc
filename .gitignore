@@ -76,15 +76,16 @@ CLAUDE.md
 /docs/*
 !/docs/issue.md
 # GCOPTERヘッダ（MITライセンス）。ベンダリングせずinstall.shでclone取得する
-/minco_native_py/third_party/
+/gnc_cpp/third_party/
 
 # gen_*.py生成物・ビルド成果物（regenerable）
-/gnc/test/experiment_minco_native/minco_attitude_native
-/gnc/test/experiment_minco_native/compare_heuristic_vs_ego_v2_segment_time_allocator
+/gnc_py/test/experiment_minco_native/minco_attitude_native
+/gnc_py/test/experiment_minco_native/compare_heuristic_vs_ego_v2_segment_time_allocator
 
 # bench_*.cppをその場でg++ビルドした実行ファイル（regenerable、ソースの.cppは除外しない）
-/gnc/test/experiment_minco_native/bench_*
-!/gnc/test/experiment_minco_native/bench_*.cpp
+/gnc_py/test/experiment_minco_native/bench_*
+!/gnc_py/test/experiment_minco_native/bench_*.cpp
 
 # CSVは全て除外対象
 *.csv
+!/gnc_cpp/config/wrench_envelope.csv
