@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+"""Moving-target translation controller (ROS-agnostic, testable).
+
+Follows a Guidance-published trajectory setpoint (p_des, v_des, a_des,
+reference frame) with a feedforward + feedback force law:
+
+    F_des = m * a_des + Kp * (p_des - p_now) - Kd * (v_now - v_des)
+
+The feedback term reuses
+:func:`~sobits_intball2_gnc.control.utils.pose_control_law.position_error_to_force`
+(same P+D math `PoseCorrector` uses for checkpoint holding) so the two modes
+share a single, already-validated implementation of "position/velocity error
+-> body-frame force". See ``openspec/changes/add-trajectory-following`` and
+``docs/phase3.md`` for the full interface contract this implements
+(mutual exclusivity with ``PoseCorrector``'s checkpoint hold is owned by the
+caller, e.g. :class:`HoverController` -- this class only computes a force
+given a setpoint and the current state, with no notion of "is this setpoint
+live").
+
+Velocity is estimated independently of ``PoseCorrector`` (TF position finite
+difference + EMA low-pass, same technique as ``PoseCorrector.kd_pos`` uses)
+because ``PoseCorrector``'s own estimate tracks velocity relative to its
+checkpoint hold target, not relative to a moving trajectory setpoint.
+
+Phase 3b adds a parallel attitude path (:meth:`compute_attitude`): while a
+trajectory setpoint is live, the desired orientation is Guidance's ``q_des(t)``
+rather than ``PoseCorrector``'s static hold/checkpoint quaternion. It reuses
+:func:`~sobits_intball2_gnc.control.utils.pose_control_law.attitude_error_to_torque`
+and estimates its own relative tracking-rate (``omega_err``) the same way
+``PoseCorrector`` does for its checkpoint attitude loop, for the same reason
+the translation velocity estimate above is kept independent: the target is
+moving, so an estimate relative to a static hold target would be wrong.
+"""
+import numpy as np
+
+from sobits_intball2_gnc.control.utils.pose_control_law import (
+    attitude_error_to_torque,
+    clamp_torque,
+    position_error_to_force,
+)
+from sobits_intball2_gnc.control.utils.quat_math import (
+    quat_conj,
+    quat_mul,
+    quat_rotate,
+)
+
+DEFAULT_TRAJECTORY = {
+    # Ground-truth sim mass (docs/arch/2026-08-27_sim_ground_truth_params.md),
+    # matches config/gnc_params.yaml's trajectory_controller.mass.
+    "mass": 3.216,
+    # Per-axis theoretical max, derived from the fan model (4 saturating
+    # fans dedicated to that axis), not a uniform scalar -- see
+    # docs/archive/achieved/2026-08-27_max_force_anisotropy_from_fan_model.md.
+    "max_force": [0.181, 0.0996, 0.122],
+    "timeout": 0.2,
+    # Reuses the same theoretically-designed position gains as the checkpoint
+    # hold loop (tf_correction.kp_pos/kd_pos, docs/archive/achieved/2026-08-19_phase0_findings.md
+    # observation 7 + attendant 2nd-order design): the underlying mass-
+    # spring-damper physics of "drive position/velocity error to zero" is the
+    # same whether the target is static or moving.
+    "kp_pos": [0.89, 0.89, 0.89],
+    "kd_pos": [3.6, 3.6, 3.6],
+    # EMA low-pass on this controller's own finite-difference velocity
+    # estimate, same technique and default as PoseCorrector.vel_filter_alpha.
+    "vel_filter_alpha": 0.3,
+    # Attitude gains, seeded from tf_correction.kp_att/kd_att (Phase 3b): the
+    # checkpoint-hold gains are the only ones this vehicle has been tuned
+    # against so far. Re-tuning against moving-setpoint tracking error is
+    # deferred (Phase 3b "追加の宿題").
+    "kp_att": [0.01, 0.01, 0.01],
+    "kd_att": [0.0, 0.0, 0.0],
+    "att_filter_alpha": 1.0,
+    "max_torque": 0.01,
+    # Off by default (matches prior per-axis-independent clamp behavior).
+    # See pose_control_law.attitude_error_to_torque's preserve_direction
+    # docstring and docs/archive/achieved/2026-08-27_align_hold_gain_oscillation_investigation.md
+    # -- flip live via `ros2 param set` to A/B test without a node restart
+    # (Category A dynamic parameter, see TRAJECTORY_DYNAMIC_KEYS in control.py).
+    "torque_direction_preserving": False,
+    "inertia": 0.0136,
+    "attitude_feedforward": False,
+}
+
+
+class TrajectoryController:
+    """Feedforward + feedback translation controller for a moving setpoint.
+
+    Args:
+        mass: Vehicle mass [kg] for the feedforward term.
+        kp_pos: Position-error -> force gain [N/m], 3 elements.
+        kd_pos: Velocity-error -> force gain [N/(m/s)], 3 elements.
+        vel_filter_alpha: EMA blend weight for this controller's own
+            finite-difference velocity estimate (1.0 = no filtering).
+        max_force: Output force clamp [N], scalar or 3-element per-axis
+            vector (body frame).
+        kp_att: Quaternion-error -> torque gain, 3 elements.
+        kd_att: Relative tracking-rate -> torque gain, 3 elements.
+        att_filter_alpha: EMA blend weight for this controller's own
+            finite-difference omega_err estimate (1.0 = no filtering).
+        max_torque: Output torque clamp (per axis) [N*m].
+        torque_direction_preserving: When True, scale all torque axes
+            uniformly instead of clamping each independently -- see
+            :func:`~sobits_intball2_gnc.control.utils.pose_control_law.attitude_error_to_torque`.
+        inertia: Isotropic vehicle inertia [kg*m^2] for the attitude
+            feedforward term.
+        attitude_feedforward: When True, :meth:`compute_attitude` adds
+            ``inertia * alpha_des`` (rotated into the current body frame).
+    """
+
+    def __init__(
+        self,
+        mass=DEFAULT_TRAJECTORY["mass"],
+        kp_pos=DEFAULT_TRAJECTORY["kp_pos"],
+        kd_pos=DEFAULT_TRAJECTORY["kd_pos"],
+        vel_filter_alpha=DEFAULT_TRAJECTORY["vel_filter_alpha"],
+        max_force=DEFAULT_TRAJECTORY["max_force"],
+        kp_att=DEFAULT_TRAJECTORY["kp_att"],
+        kd_att=DEFAULT_TRAJECTORY["kd_att"],
+        att_filter_alpha=DEFAULT_TRAJECTORY["att_filter_alpha"],
+        max_torque=DEFAULT_TRAJECTORY["max_torque"],
+        torque_direction_preserving=DEFAULT_TRAJECTORY["torque_direction_preserving"],
+        inertia=DEFAULT_TRAJECTORY["inertia"],
+        attitude_feedforward=DEFAULT_TRAJECTORY["attitude_feedforward"],
+    ) -> None:
+        self.mass = float(mass)
+        self.kp_pos = np.asarray(kp_pos, dtype=float)
+        self.kd_pos = np.asarray(kd_pos, dtype=float)
+        self.vel_filter_alpha = float(vel_filter_alpha)
+        self.max_force = np.asarray(max_force, dtype=float)
+        self.kp_att = np.asarray(kp_att, dtype=float)
+        self.kd_att = np.asarray(kd_att, dtype=float)
+        self.att_filter_alpha = float(att_filter_alpha)
+        self.max_torque = float(max_torque)
+        self.torque_direction_preserving = bool(torque_direction_preserving)
+        self.inertia = float(inertia)
+        self.attitude_feedforward = bool(attitude_feedforward)
+
+        # Velocity estimate: finite difference of the TF position between
+        # successive compute() calls, independent of PoseCorrector's own
+        # estimate (see module docstring).
+        self._last_pos = None
+        self._last_t = None
+        self._vel_filtered = np.zeros(3)
+
+        # Relative angular-rate estimate for kd_att: finite difference of the
+        # quaternion error's vector part between successive compute_attitude()
+        # calls, independent of PoseCorrector's own estimate (see module
+        # docstring) since the target here is moving.
+        self._last_qe_vec = None
+        self._last_att_t = None
+        self._omega_filtered = np.zeros(3)
+
+        # Last-tick observability state ("[C] Controller
+        # 内部値の可観測性強化" task): the pre-clamp requested force/torque (what
+        # this controller *wanted*, before compute()/compute_attitude()'s
+        # final clamp) and the raw P/D inputs, so a caller can tell "clamped"
+        # apart from "the law itself asked for something small" and inspect
+        # the P term (qe_vec) separately from the D term (omega_err).
+        self._last_force_raw = np.zeros(3)
+        self._last_torque_raw = np.zeros(3)
+
+    def reset(self) -> None:
+        """Forget the velocity/rate estimates (e.g. after a setpoint gap)."""
+        self._last_pos = None
+        self._last_t = None
+        self._vel_filtered = np.zeros(3)
+        self._last_qe_vec = None
+        self._last_att_t = None
+        self._omega_filtered = np.zeros(3)
+        self._last_force_raw = np.zeros(3)
+        self._last_torque_raw = np.zeros(3)
+
+    @property
+    def last_force_raw(self) -> list:
+        """Last tick's requested body-frame force [Fx,Fy,Fz] [N], BEFORE the
+        final ``max_force`` clamp in :meth:`compute`."""
+        return self._last_force_raw.tolist()
+
+    @property
+    def last_torque_raw(self) -> list:
+        """Last tick's requested body-frame torque [Tx,Ty,Tz] [N*m], BEFORE
+        the final ``max_torque`` clamp in :meth:`compute_attitude`."""
+        return self._last_torque_raw.tolist()
+
+    @property
+    def last_qe_vec(self) -> list:
+        """Last tick's quaternion-error vector part (P-term input to
+        :meth:`compute_attitude`'s torque law)."""
+        if self._last_qe_vec is None:
+            return [0.0, 0.0, 0.0]
+        return self._last_qe_vec.tolist()
+
+    @property
+    def last_omega_err(self) -> list:
+        """Last tick's filtered relative angular-rate estimate (D-term input
+        to :meth:`compute_attitude`'s torque law)."""
+        return self._omega_filtered.tolist()
+
+    def compute(self, stamp, pos_now, quat_now, p_des, v_des, a_des):
+        """Return a clamped body-frame force toward the moving setpoint.
+
+        ``stamp`` is the TF pose's own timestamp (seconds), NOT the caller's
+        wall-clock time: velocity is a finite difference of ``pos_now``, which
+        is itself timestamped by the TF publisher, so the ``dt`` used to
+        divide it must come from that same clock. Using wall-clock ``dt``
+        instead diverges from the TF-clock position delta whenever the two
+        clocks drift apart under scheduling delay (e.g. CPU contention
+        stalling this process while TF delivery bursts once it catches up),
+        producing spurious velocity spikes -- see
+        docs/archive/achieved/2026-08-19_recording_cpu_load_control_degradation.md. ``pos_now``/
+        ``quat_now`` are the current TF pose (reference frame position,
+        reference-frame -> body-frame orientation). ``p_des``/``v_des``/
+        ``a_des`` are the setpoint (reference-frame position/velocity/
+        acceleration).
+        """
+        pos_now = np.asarray(pos_now, dtype=float)
+        quat_now = np.asarray(quat_now, dtype=float)
+        p_des = np.asarray(p_des, dtype=float)
+        v_des = np.asarray(v_des, dtype=float)
+        a_des = np.asarray(a_des, dtype=float)
+
+        # TF (~42Hz) is slower than this loop (50Hz): a repeated stamp carries no
+        # new motion, and feeding it as zero velocity biased v_filt ~20% low.
+        if self._last_pos is None:
+            self._last_pos, self._last_t = pos_now, stamp
+        elif stamp - self._last_t > 1e-6:
+            vel_now = (pos_now - self._last_pos) / (stamp - self._last_t)
+            self._last_pos, self._last_t = pos_now, stamp
+            self._vel_filtered = (
+                self.vel_filter_alpha * vel_now
+                + (1.0 - self.vel_filter_alpha) * self._vel_filtered
+            )
+
+        # position_error_to_force computes `-kd_pos * vel`; passing the
+        # velocity ERROR (now - desired) here yields the intended
+        # `+kd_pos * (v_des - v_now)` damping-toward-the-setpoint term. Clamp
+        # is left effectively open here (np.inf) so the feedforward term can
+        # be added before the single final clamp below -- reusing this
+        # function purely for its P+D-in-body-frame math, not its clamp.
+        vel_err_for_kd = self._vel_filtered - v_des
+        feedback_body = position_error_to_force(
+            self.kp_pos, self.kd_pos, p_des, pos_now, vel_err_for_kd,
+            quat_now, max_force=np.inf,
+        )
+
+        feedforward_ref = self.mass * a_des
+        feedforward_body = quat_rotate(quat_conj(quat_now), feedforward_ref)
+
+        force_body = feedback_body + feedforward_body
+        self._last_force_raw = force_body
+        return np.clip(force_body, -self.max_force, self.max_force).tolist()
+
+    def compute_attitude(self, stamp, quat_now, q_des, alpha_des=None):
+        """Return a clamped body-frame torque toward the moving ``q_des(t)``.
+
+        ``alpha_des`` is ``q_des``'s angular acceleration expressed in the
+        ``q_des`` body frame; used only when ``attitude_feedforward`` is on.
+        No ``omega_des`` feedforward is needed: ``omega_err`` differentiates
+        the error quaternion, so it is already relative to ``q_des``'s rate.
+
+        ``stamp`` is the TF pose's own timestamp (seconds), for the same
+        reason :meth:`compute` takes a TF stamp rather than wall-clock time:
+        ``omega_err`` is a finite difference of ``quat_now``-derived
+        ``qe_vec``, so its ``dt`` must be measured on the same clock that
+        stamped ``quat_now``. ``quat_now`` is the current TF orientation
+        (reference frame -> body frame). ``q_des`` is Guidance's desired
+        orientation (reference frame), held fixed by
+        :func:`~sobits_intball2_gnc.guidance.utils.attitude_reference.compute_q_des`
+        below its speed threshold -- ``omega_err`` settles to zero once
+        tracking is locked, same steady-state behavior as
+        :class:`~sobits_intball2_gnc.control.utils.pose_corrector.PoseCorrector`'s
+        checkpoint attitude hold.
+        """
+        quat_now = np.asarray(quat_now, dtype=float)
+        q_des = np.asarray(q_des, dtype=float)
+
+        qe = quat_mul(quat_conj(q_des), quat_now)
+        sign = np.sign(qe[3] if qe[3] != 0.0 else 1.0)
+        qe_vec = sign * qe[:3]
+
+        # Same repeated-TF-stamp handling as compute().
+        if self._last_qe_vec is None:
+            self._last_qe_vec, self._last_att_t = qe_vec, stamp
+        elif stamp - self._last_att_t > 1e-6:
+            omega_err = (qe_vec - self._last_qe_vec) / (stamp - self._last_att_t)
+            self._last_qe_vec, self._last_att_t = qe_vec, stamp
+            self._omega_filtered = (
+                self.att_filter_alpha * omega_err
+                + (1.0 - self.att_filter_alpha) * self._omega_filtered
+            )
+
+        # Requested torque BEFORE the clamp (max_torque=inf), so a caller can
+        # tell "the P+D law wanted more than the clamp allows" apart from
+        # "the law itself asked for something small" ("[C]
+        # Controller内部値の可観測性強化" task).
+        self._last_torque_raw = attitude_error_to_torque(
+            self.kp_att, self.kd_att, q_des, quat_now, self._omega_filtered,
+            np.inf,
+        )
+        if self.attitude_feedforward and alpha_des is not None:
+            alpha_body = quat_rotate(quat_conj(qe), np.asarray(alpha_des, dtype=float))
+            self._last_torque_raw = self._last_torque_raw + self.inertia * alpha_body
+        torque = clamp_torque(
+            self._last_torque_raw, self.max_torque,
+            preserve_direction=self.torque_direction_preserving,
+        )
+        return torque.tolist()
+
+    def set_gains(self, kp_pos=None, kd_pos=None, vel_filter_alpha=None,
+                  max_force=None, kp_att=None, kd_att=None,
+                  att_filter_alpha=None, max_torque=None,
+                  torque_direction_preserving=None,
+                  attitude_feedforward=None) -> None:
+        """Update gains/clamps in place (dynamic reconfiguration).
+
+        Any argument left as ``None`` keeps its current value. Does not touch
+        ``mass`` (measured physical constant, see
+        docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md category C) or the
+        velocity/rate finite-difference state (``reset()`` clears that
+        separately, e.g. on a new trajectory).
+        """
+        if kp_pos is not None:
+            self.kp_pos = np.asarray(kp_pos, dtype=float)
+        if kd_pos is not None:
+            self.kd_pos = np.asarray(kd_pos, dtype=float)
+        if vel_filter_alpha is not None:
+            self.vel_filter_alpha = float(vel_filter_alpha)
+        if max_force is not None:
+            self.max_force = np.asarray(max_force, dtype=float)
+        if kp_att is not None:
+            self.kp_att = np.asarray(kp_att, dtype=float)
+        if kd_att is not None:
+            self.kd_att = np.asarray(kd_att, dtype=float)
+        if att_filter_alpha is not None:
+            self.att_filter_alpha = float(att_filter_alpha)
+        if max_torque is not None:
+            self.max_torque = float(max_torque)
+        if torque_direction_preserving is not None:
+            self.torque_direction_preserving = bool(torque_direction_preserving)
+        if attitude_feedforward is not None:
+            self.attitude_feedforward = bool(attitude_feedforward)

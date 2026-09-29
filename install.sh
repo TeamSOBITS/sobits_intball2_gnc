@@ -5,19 +5,20 @@ echo "Updating package list..."
 
 sudo apt-get install -y \
     zenity \
-    pybind11-dev
+    pybind11-dev \
+    ros-humble-gazebo-msgs  # virtual_camera_node (/gazebo/model_states)
 
 # 力/トルク制約付き軌道の時間割当（TOPP-RA）用
 pip3 install toppra
 
-# MINCO姿勢/トルク統合軌道生成（minco_native_pyパッケージ、本リポジトリ直下に
-# gnc/と並ぶ別colconパッケージとして配置）用のgcopterヘッダ取得
+# C++実装パッケージ（sobits_intball2_gnc_cpp、本リポジトリ直下のgnc_cpp/に
+# gnc_py/と並ぶ別colconパッケージとして配置）のMINCO軌道最適化用gcopterヘッダ取得
 # MITライセンス（Copyright Zhepei Wang, Fei Gao）、colcon buildには含めずここで取得のみ行う
-MINCO_NATIVE_PY_DIR="$(dirname "$0")/minco_native_py"
-GCOPTER_DIR="$MINCO_NATIVE_PY_DIR/third_party/gcopter"
+GNC_CPP_DIR="$(dirname "$0")/gnc_cpp"
+GCOPTER_DIR="$GNC_CPP_DIR/third_party/gcopter"
 GCOPTER_COMMIT="e0444f6d47b84f972ced91746b05feb36ce1fd4f"
 
-if [ -d "$MINCO_NATIVE_PY_DIR" ] && [ ! -d "$GCOPTER_DIR" ]; then
+if [ -d "$GNC_CPP_DIR" ] && [ ! -d "$GCOPTER_DIR" ]; then
     git clone https://github.com/ZJU-FAST-Lab/GCOPTER.git "$GCOPTER_DIR"
     git -C "$GCOPTER_DIR" checkout "$GCOPTER_COMMIT"
 fi
