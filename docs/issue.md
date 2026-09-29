@@ -134,6 +134,9 @@ JAXAは`ki`と飽和付き積分器（`fi_max=0.02`）が配線済み（現状`k
 ### [N] 実機用の自己位置・姿勢推定（IMU単独）
 実機にTFは存在しない（TFはシム限定のオラクル）。並進はIMU二重積分で誤差が時間の2乗で発散し長時間精度維持が原理的に困難。姿勢はジャイロ一重積分でより現実的だが、無重力下では加速度計による重力基準補正が使えない。`navigation/utils/`を新設する方針で合意済みだが着手時期・優先度は未定。詳細: `docs/archive/achieved/2026-08-19_phase0_findings.md`（観測13）
 
+### [運用] GPL由来のrebound一式を書き直してBSD-3を保つ
+rebound・障害物コスト・再計画ループ・A*補助関数がEGO v2（GPLv3）のほぼ逐語的な移植で、BSD-3の公開と食い違う。論文から書き直し、履歴も書き換える。深度→格子の後に着手。詳細: `docs/archive/2026-09-28_gpl_derived_code_rewrite_plan.md`
+
 ### [運用] シム/bridge/gnc_bringup起動順序によるホバー保持不能の再発調査
 シム・ROS1↔ROS2ブリッジ・`gnc_bringup.launch.py`の起動順序やタイミングのズレが原因と思われる、ホバー保持ができなくなる現象が複数回再発している（`/ctl/duty`のforeign publisher競合は原因ではないと確認済み）。`control_node`再起動で復帰することは確認済みだが（ただし`control_node`だけの再起動でも機体が流れて回転した例がある、`docs/archive/achieved/2026-09-23_replanning_minco_v3_remaining_tasks.md`§10）、根本原因（起動順・タイミング依存の何か）は未特定。再現条件の特定と恒久対策が必要。TFのデータや時間が汚染され自己位置が汚染される可能性。シム起動→bridge起動→ホバー制御（`control.launch.py`）起動、のタイミングが早すぎる（TF/センサーデータが安定する前に`control_node`が動き出す）と、機体が急速旋回し続ける現象を確認。再現条件の有力候補: `control_node`（ホバー）起動済みの状態でシム・bridgeを再起動すると発生する。各起動ステップ間に十分な待機・データ安定確認を挟む運用ルールが必要。
 
@@ -166,7 +169,7 @@ GNC最小構成（`/clock`・`/tf`・`/tf_static`・`/imu/imu`・`/gnc/body_pose
 理想カメラ（`virtual_camera.launch.py`）は完成・シム検証済み。実物に近づけるため、実測で分かった効果を1つずつ入り切りできる形で足す: 近すぎると穴でなく奥に出る（0.18mで58%が奥）、端の欠け（左32px・右約100px）、z²に比例する距離の誤差、穴、暗い床の偽の手前の点、縁の飛び点、周期・遅延（実物は約3Hz）。あわせて障害物の何割が写ったかのログ。詳細: `docs/archive/achieved/2026-09-26_virtual_obstacle_sensor_requirements.md`「実物の効果」、根拠は同じ場所の`2026-09-28_stereo_camera_measurement.md`
 
 ### [将来] 計画側で仮想カメラの深度を使う
-guidance_nodeは今も`/guidance/virtual_obstacles`（箱をそのまま）を読んでおり、視野の外・陰・裏側まで分かっている。`/virtual_camera/<camera>/depth`を受けて格子に投影する形に変える: `ObstacleMap`を点で受ける、記憶（ずっと覚える／見通せたら消す／N秒で忘れる、既知の地図と見えた点の層を分ける）、`OccupancyGrid`に消す機能（作り直すかC++に足すか）、地図が10〜30Hzで変わる前提でのtrackerの解き直しの扱い、未観測を空きとみなすか。検出距離（既定0.25〜3.0m）と止まれる距離（約0.65m）の関係も確かめる。詳細: 同上の文書
+guidance_nodeは今も`/guidance/virtual_obstacles`（箱をそのまま）を読んでおり、視野の外・陰・裏側まで分かっている。`/virtual_camera/<camera>/depth`を受けて格子に投影する形に変える: `ObstacleMap`を点で受ける、記憶（ずっと覚える／見通せたら消す／N秒で忘れる、既知の地図と見えた点の層を分ける）、`OccupancyGrid`に消す機能（作り直すかC++に足すか）、地図が10〜30Hzで変わる前提でのtrackerの解き直しの扱い、未観測を空きとみなすか。検出距離（既定0.25〜3.0m）と止まれる距離（約0.65m）の関係も確かめる。方針はEGO v2と同じ（log-odds＋レイキャスト）で、既知の地図の層・ロック・固定範囲の3点だけ変える。詳細: `docs/archive/2026-09-28_virtual_camera_depth_mapping_plan.md`
 
 ### [将来] MPCC姿勢/トルク統合の実行可能性課題
 並進のみのMPCCはprogress stall解決済み・強擾乱250〜1000tickでinfeasible/予算超過ゼロを確認済み。しかし姿勢/トルク統合プロトタイプでは、弱擾乱時にACADOS_MINSTEPで解が不可解になる、強擾乱時は並進と姿勢が8ファンの推力予算を奪い合い並進収束が4mm→407mmへ悪化する、という新課題が判明。ソルバ時間も13〜15ms/tickに増加（100ms予算内ではある）。本番導入するか自体が未定。詳細: `docs/archive/2026-08-29_mpcc_attitude_torque_integration_plan.md`
