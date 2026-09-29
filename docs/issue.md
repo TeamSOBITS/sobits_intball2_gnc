@@ -134,8 +134,11 @@ JAXAは`ki`と飽和付き積分器（`fi_max=0.02`）が配線済み（現状`k
 ### [N] 実機用の自己位置・姿勢推定（IMU単独）
 実機にTFは存在しない（TFはシム限定のオラクル）。並進はIMU二重積分で誤差が時間の2乗で発散し長時間精度維持が原理的に困難。姿勢はジャイロ一重積分でより現実的だが、無重力下では加速度計による重力基準補正が使えない。`navigation/utils/`を新設する方針で合意済みだが着手時期・優先度は未定。詳細: `docs/archive/achieved/2026-08-19_phase0_findings.md`（観測13）
 
-### [運用] GPL由来のrebound一式を書き直してBSD-3を保つ
-rebound・障害物コスト・再計画ループ・A*補助関数がEGO v2（GPLv3）のほぼ逐語的な移植で、BSD-3の公開と食い違う。論文から書き直し、履歴も書き換える。深度→格子の後に着手。詳細: `docs/archive/2026-09-28_gpl_derived_code_rewrite_plan.md`
+### [障害物] 出発時に最初のローカルが交差 → 停止状態からの解き直しで暴れる
+`initial_local_collides`で出発を止めた後、停止状態からの解き直し（ランダムな初期形状）で長さ14 m・z=1.43 mまで潜るローカルが1回採用された（ほぼ動く前に置き換わり実害は小）。関連: `test_obstacle_map_depth.py::test_first_local_through_a_depth_seen_obstacle_starts_held`が失敗（修正で最初のローカルが突き抜けなくなり前提の状況が作れない、テストの作り直しが必要）。経緯は`archive/achieved/2026-09-28_gpl_derived_code_rewrite_plan.md`の末尾
+
+### [運用] move_toのgoal responseがタイムアウトする
+ゴール受付中に最初のローカル計画（約1 s）を解いている間に`failed to send response (timeout)`、クライアントが結果を受け取れない（09-29に3回）
 
 ### [運用] シム/bridge/gnc_bringup起動順序によるホバー保持不能の再発調査
 シム・ROS1↔ROS2ブリッジ・`gnc_bringup.launch.py`の起動順序やタイミングのズレが原因と思われる、ホバー保持ができなくなる現象が複数回再発している（`/ctl/duty`のforeign publisher競合は原因ではないと確認済み）。`control_node`再起動で復帰することは確認済みだが（ただし`control_node`だけの再起動でも機体が流れて回転した例がある、`docs/archive/achieved/2026-09-23_replanning_minco_v3_remaining_tasks.md`§10）、根本原因（起動順・タイミング依存の何か）は未特定。再現条件の特定と恒久対策が必要。TFのデータや時間が汚染され自己位置が汚染される可能性。シム起動→bridge起動→ホバー制御（`control.launch.py`）起動、のタイミングが早すぎる（TF/センサーデータが安定する前に`control_node`が動き出す）と、機体が急速旋回し続ける現象を確認。再現条件の有力候補: `control_node`（ホバー）起動済みの状態でシム・bridgeを再起動すると発生する。各起動ステップ間に十分な待機・データ安定確認を挟む運用ルールが必要。
