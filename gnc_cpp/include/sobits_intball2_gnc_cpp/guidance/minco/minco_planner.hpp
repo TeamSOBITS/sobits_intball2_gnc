@@ -51,11 +51,11 @@ struct PlanResult
 // 成否判定はwrenchのみ）。<=0で無効（従来挙動）。
 // q0: 回転ベクトルの基準姿勢[x,y,z,w]。渡すとwrench envelope（機体座標）を機体座標の力で評価する。
 // nulloptなら従来通りreference系の加速度をそのまま当てる。
-// obstacle_pairs: EGO-Planner v2のreboundの組を[制約点id, 基準点xyz, 向きxyz]×n（フラット）で渡す。
+// obstacle_pairs: reboundの組（Zhou et al., RA-L 2021の{p,v}）を[制約点id, 基準点xyz, 向きxyz]×n（フラット）で渡す。
 // 制約点は各区間をCONSTRAINT_POINTS_PER_PIECE等分した点（区間の境目は共有、計K*CONSTRAINT_POINTS_PER_PIECE+1点）。
 // localの最初の2/3の点だけにかける（obstacle_touch_goalなら全点）。nulloptなら無効（従来挙動）。
-// obstacle_clearance(_soft): EGO-Planner v2のobstacle_clearance(_soft)と同じ[m]、既定もEGO v2の値。
-// grid: 渡すとEGO-Planner v2のreboundReplan＋optimizeTrajectoryと同じく、初期軌道の衝突確認→組→最適化
+// obstacle_clearance(_soft): 障害物コストの硬い・柔らかい安全距離[m]。
+// grid: 渡すとRA-L 2021のAlg. 2に基づき、初期軌道の衝突確認→組→最適化
 // （途中のrebound最大20回、細かい確認で衝突したらやり直し最大3回）を行う。衝突が残ればerror_code=2。
 PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       const std::vector<double> &v0,

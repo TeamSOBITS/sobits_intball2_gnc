@@ -289,7 +289,7 @@ PYBIND11_MODULE(sobits_intball2_gnc_cpp, m) {
         "Plan a MINCO trajectory with segment times fixed via a heuristic "
         "(arc-length-proportional, v0-aware trapezoidal/triangular profile) "
         "instead of solved as free variables, with an analytic time-stretch "
-        "loop (EGO-Planner lengthenTime style, uniform whole-trajectory "
+        "loop (uniform whole-trajectory "
         "stretch, up to 15 iterations) applied "
         "when the heuristic times violate the wrench envelope. target_speed/"
         "max_accel: used only for the heuristic time estimate, both required > 0. "

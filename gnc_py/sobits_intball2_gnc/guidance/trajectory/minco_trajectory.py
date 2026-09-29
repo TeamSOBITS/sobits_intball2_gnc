@@ -196,8 +196,8 @@ class MincoTrajectory:
         ``rotvecs`` (``rotvecs[0]`` is the head attitude) and head rotvec
         rate/accel, for a segment that starts mid-rotation (the constructor
         always starts at ``q0`` at rest). ``max_vel=None`` disables the speed cap.
-        ``obstacle_grid`` (``sobits_intball2_gnc_cpp.OccupancyGrid``) runs EGO-Planner v2's
-        rebound loop in the solve; a collision left over raises ``MincoInfeasibleError``."""
+        ``obstacle_grid`` (``sobits_intball2_gnc_cpp.OccupancyGrid``) runs the rebound loop
+        (Zhou et al., RA-L 2021) in the solve; a collision left over raises ``MincoInfeasibleError``."""
         position_waypoints = np.asarray(position_waypoints, dtype=float)
         rotvecs = np.asarray(rotvecs, dtype=float)
         if position_waypoints.ndim != 2 or position_waypoints.shape[1] != 3 \
