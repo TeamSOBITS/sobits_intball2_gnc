@@ -50,6 +50,10 @@ STATUS_ABORTED = "aborted"
 STATUS_CANCELED = "canceled"
 STATUS_PLANNING_FAILED = "planning_failed"
 
+# Below this, a goal is an in-place reorientation: TOPP-RA can't parameterize a
+# zero-length path, and face_travel would chase sensor noise's direction.
+IN_PLACE_TRANSLATION_M = 0.01
+
 DEFAULT_CAMERA_FORWARD_AXIS = {
     "main": (1.0, 0.0, 0.0),
     "stereo": (0.0, 1.0, 0.0),
@@ -402,6 +406,17 @@ class GuidanceExecutor:
             return STATUS_ABORTED
         via_waypoints = [] if via_waypoints is None else list(via_waypoints)
 
+        translation = np.linalg.norm(np.asarray(p_target, dtype=float) - np.asarray(p0, dtype=float))
+        if not via_waypoints and translation < IN_PLACE_TRANSLATION_M:
+            self._log.info(
+                "[GuidanceExecutor] translation %.1fmm < %.0fmm, reorienting in place"
+                % (translation * 1e3, IN_PLACE_TRANSLATION_M * 1e3)
+            )
+            if not align_at_arrival:
+                return STATUS_SUCCESS
+            return self._align_at_arrival(
+                p_target, q_target, align_at_arrival_camera, is_cancel_requested)
+
         forward_axis = self._camera_forward_axis.get(face_travel_camera)
         if face_travel and forward_axis is None:
             self._log.warn(
@@ -513,25 +528,28 @@ class GuidanceExecutor:
         p_arrival = _goal_position(tracker, p_target)
 
         if align_at_arrival:
-            current = self._tf.get_pose()
-            cur_quat = (
-                current[1]
-                if current is not None and self._tf_pose_fresh(current[2])
-                else q_target
-            )
-            arrival_target_quat = self._resolve_arrival_target_quat(
-                q_target, align_at_arrival_camera,
-            )
-            if self._aligner.needs_align(cur_quat, arrival_target_quat):
-                self._log.info(
-                    "[GuidanceExecutor] aligning to target attitude on arrival"
-                )
-                status = self._aligner.align_to(
-                    p_arrival, arrival_target_quat, is_cancel_requested
-                )
-                if status != STATUS_SUCCESS:
-                    return status
+            return self._align_at_arrival(
+                p_arrival, q_target, align_at_arrival_camera, is_cancel_requested)
+        return STATUS_SUCCESS
 
+    def _align_at_arrival(self, p_arrival, q_target, align_at_arrival_camera,
+                          is_cancel_requested):
+        current = self._tf.get_pose()
+        cur_quat = (
+            current[1]
+            if current is not None and self._tf_pose_fresh(current[2])
+            else q_target
+        )
+        arrival_target_quat = self._resolve_arrival_target_quat(
+            q_target, align_at_arrival_camera,
+        )
+        if self._aligner.needs_align(cur_quat, arrival_target_quat):
+            self._log.info(
+                "[GuidanceExecutor] aligning to target attitude on arrival"
+            )
+            return self._aligner.align_to(
+                p_arrival, arrival_target_quat, is_cancel_requested
+            )
         return STATUS_SUCCESS
 
     def brake(self):

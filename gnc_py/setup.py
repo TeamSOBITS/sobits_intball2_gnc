@@ -55,6 +55,8 @@ setup(
             'sobits_intball2_gnc.guidance.ros.checkpoint_publisher:main',
             'move_to_client = '
             'sobits_intball2_gnc.guidance.ros.move_to_client:main',
+            'move_relative_client = '
+            'sobits_intball2_gnc.guidance.ros.move_relative_client:main',
             # Guidance-system orchestrator (the single guidance node).
             'guidance = sobits_intball2_gnc.guidance.guidance:main',
         ],

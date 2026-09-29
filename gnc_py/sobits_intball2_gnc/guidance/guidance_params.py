@@ -43,6 +43,9 @@ GUIDANCE_PARAM_DEFAULTS = {
     # hit exactly unless a goal explicitly opts into slack. Same Category B
     # per-goal latching as via_waypoints above.
     "guidance.minco_via_half_width": 0.0,
+    # MOVE_TO_RELATIVE_TARGET translation limit [m]: a typo guard, not a
+    # collision check (docs/archive/achieved/2026-09-29_move_relative_design.md).
+    "guidance.relative_move_max_distance": 10.0,
     # "static_minco"/"replan_minco" only:
     # MincoTrajectory's attitude_resample_spacing_m (docs/
     # 2026-08-30_static_minco_face_travel_gap.md 追記4). 0.0 means "off"
@@ -146,6 +149,7 @@ STATIC_PARAMS = frozenset({
     "guidance.stopping.duration_goal", "guidance.stopping.wait_cancel",
     "guidance.obstacle_map_file", "guidance.obstacle_grid_resolution",
     "guidance.obstacle_grid_inflation",
+    "guidance.relative_move_max_distance",
 })
 
 ATTITUDE_REFERENCE_MODES = frozenset({"fixed", "face_travel", "look_at"})
@@ -172,6 +176,18 @@ _GOAL_EXECUTE_PARAMS = {
     "minco_obstacle_avoidance": ("minco_obstacle_avoidance", bool),
     "minco_local_piece_length_m": ("minco_local_piece_length_m", float),
     "minco_obstacle_clearance_soft": ("minco_obstacle_clearance_soft", float),
+}
+
+
+# Relative goals are simple teleop: hold attitude and go straight, whatever the
+# move_to options are (docs/archive/achieved/2026-09-29_move_relative_design.md). face_travel is
+# forced off separately; replan_minco's obstacle avoidance requires it.
+RELATIVE_GOAL_OVERRIDES = {
+    "trajectory_tracking_mode": "static_toppra",
+    "pre_align": False,
+    "align_at_arrival": True,
+    "align_at_arrival_camera": "main",
+    "minco_obstacle_avoidance": False,
 }
 
 

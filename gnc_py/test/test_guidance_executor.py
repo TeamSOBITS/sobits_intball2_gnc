@@ -712,6 +712,47 @@ def test_execute_align_at_arrival_camera_main_uses_target_orientation_as_is():
     assert np.allclose(published_quat, [0.0, 0.0, 0.0, 1.0])
 
 
+@pytest.mark.parametrize("face_travel", [False, True])
+def test_execute_zero_translation_reorients_in_place_without_a_trajectory(face_travel):
+    setpoint_pub = FakeSetpointPublisher()
+    checkpoint_pub = FakeCheckpointPublisher()
+    p0 = [1.0, 2.0, 3.0]
+    q_target = [0.0, 0.0, 0.7071067811865476, 0.7071067811865476]
+    executor = _make_executor(
+        FakeTf(p0, [0.0, 0.0, 0.0, 1.0]), setpoint_pub, checkpoint_pub,
+        *_make_clock(dt_per_spin=0.1), FakeLogger(),
+        align_tolerance_deg=3.0, align_timeout=0.2, align_pos_timeout=0.1,
+    )
+    status = executor.execute(
+        [1.003, 2.0, 3.0], q_target,
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=face_travel, align_at_arrival=True,
+    )
+    assert status == STATUS_SUCCESS
+    assert setpoint_pub.calls == []
+    assert len(checkpoint_pub.published) == 1
+    pos, quat = checkpoint_pub.published[0]
+    assert np.allclose(pos, [1.003, 2.0, 3.0])
+    assert np.allclose(quat, q_target)
+
+
+def test_execute_zero_translation_without_align_at_arrival_does_nothing():
+    setpoint_pub = FakeSetpointPublisher()
+    checkpoint_pub = FakeCheckpointPublisher()
+    executor = _make_executor(
+        FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), setpoint_pub, checkpoint_pub,
+        *_make_clock(), FakeLogger(),
+    )
+    status = executor.execute(
+        [0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=False,
+    )
+    assert status == STATUS_SUCCESS
+    assert setpoint_pub.calls == []
+    assert checkpoint_pub.published == []
+
+
 def test_execute_align_at_arrival_camera_stereo_offsets_from_target_orientation():
     checkpoint_pub = FakeCheckpointPublisher()
     tf = FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0])  # far from either candidate
@@ -777,7 +818,7 @@ def test_execute_aborts_when_initial_tf_pose_is_stale():
     # completes normally -- staleness can only be judged relative to a
     # prior sighting.
     first_status = executor.execute(
-        [0.001, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        [0.1, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
         feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
         face_travel=False, align_at_arrival=False,
     )

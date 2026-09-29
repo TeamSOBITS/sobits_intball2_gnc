@@ -36,6 +36,7 @@ from sobits_intball2_gnc.guidance.constraints.actuation_envelope import (
 from sobits_intball2_gnc.guidance.guidance_params import (
     ATTITUDE_REFERENCE_MODES,
     CAMERA_NAMES,
+    RELATIVE_GOAL_OVERRIDES,
     declare_guidance_params,
     goal_execute_kwargs,
 )
@@ -62,6 +63,7 @@ from sobits_intball2_gnc.guidance.executor.guidance_executor import (
     GuidanceExecutor,
 )
 from sobits_intball2_gnc.guidance.estimation.velocity_estimator import VelocityEstimator
+from sobits_intball2_gnc.guidance.utils.relative_target import compose_relative_target
 
 ACTION_NAME = "/gnc/move_to"
 TRAJECTORY_SPEED_PATH_TOPIC = "/gnc/trajectory_path_speed"
@@ -260,6 +262,8 @@ class GuidanceNode(Node):
             expected_frame=reference_frame,
             callback_group=ReentrantCallbackGroup(),
             busy_fn=lambda: self._braking,
+            relative_frame=str(self.get_parameter("tf_correction.target_frame").value),
+            max_relative_distance=float(g("relative_move_max_distance")),
         )
         # Effective use_sim_time, logged at startup (same reasoning as
         # control.py's equivalent log): this node's default-True
@@ -384,7 +388,8 @@ class GuidanceNode(Node):
             # static) -- accepted but intentionally not applied at runtime.
         return SetParametersResult(successful=True)
 
-    def _execute_fn(self, p_target, q_target, feedback_cb, is_cancel_requested):
+    def _execute_fn(self, p_target, q_target, feedback_cb, is_cancel_requested,
+                    relative=False):
         """``CtlCommandActionServer``'s ``execute_fn`` (module docstring).
 
         All mode/option params are read from ``guidance.*`` here, at goal
@@ -394,7 +399,7 @@ class GuidanceNode(Node):
         rather than reacting to a change mid-trajectory.
         """
         mode = str(self.get_parameter("guidance.attitude_reference_mode").value)
-        if mode == "look_at":
+        if mode == "look_at" and not relative:
             self.get_logger().warn(
                 "[GuidanceNode] attitude_reference_mode=look_at is not yet "
                 "implemented; falling back to face_travel"
@@ -405,6 +410,27 @@ class GuidanceNode(Node):
             name for name in self.get_parameter("guidance.via_waypoints").value
             if name
         ]
+        if relative:
+            pose = self._tf.get_pose()
+            if pose is None:
+                self.get_logger().error(
+                    "[GuidanceNode] no current pose for the relative goal, "
+                    "aborting goal"
+                )
+                return TERMINATE_ABORTED
+            p_now, q_now, _stamp = pose
+            p_target, q_target = compose_relative_target(p_now, q_now, p_target, q_target)
+            p_target, q_target = p_target.tolist(), q_target.tolist()
+            self.get_logger().info(
+                "[GuidanceNode] relative goal -> p=%s q=%s"
+                % (np.round(p_target, 3), np.round(q_target, 4))
+            )
+            if via_waypoint_names:
+                self.get_logger().warn(
+                    "[GuidanceNode] ignoring guidance.via_waypoints %s for a "
+                    "relative goal" % via_waypoint_names
+                )
+                via_waypoint_names = []
         via_waypoints = []
         for via_waypoint_name in via_waypoint_names:
             # Reuse self._tf's already-populated buffer instead of standing
@@ -429,10 +455,15 @@ class GuidanceNode(Node):
             tr = t.transform.translation
             via_waypoints.append([tr.x, tr.y, tr.z])
 
+        execute_kwargs = goal_execute_kwargs(self)
+        face_travel = mode == "face_travel"
+        if relative:
+            execute_kwargs.update(RELATIVE_GOAL_OVERRIDES)
+            face_travel = False
         status = self._executor_logic.execute(
             p_target, q_target, feedback_cb, is_cancel_requested,
-            via_waypoints=via_waypoints, face_travel=(mode == "face_travel"),
-            **goal_execute_kwargs(self),
+            via_waypoints=via_waypoints, face_travel=face_travel,
+            **execute_kwargs,
         )
         if status == STATUS_SUCCESS:
             return TERMINATE_SUCCESS

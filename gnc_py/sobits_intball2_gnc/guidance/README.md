@@ -27,6 +27,7 @@ guidance/
 │   ├── marker_array_subscriber.py            # /guidance/virtual_obstacles（MarkerArrayのCUBE）を箱の変更にして渡す
 │   ├── marker_array_publisher.py             # 今の箱の一覧を /guidance/obstacles_active へ発行（RViz表示）
 │   ├── move_to_client.py                     # move_to_client CLI（名前付きTF地点へgoal送信、手動検証用）
+│   ├── move_relative_client.py               # move_relative_client CLI（機体座標系の相対移動goal送信）
 │   └── ctl_command_action_server.py          # ib2_msgs/action/CtlCommand（目標姿勢へのgoal駆動）
 ├── executor/                             # 1つのgoalの流れ
 │   ├── guidance_executor.py                  # GuidanceExecutor: pre-align→軌道追従→arrival-align、cancel・計画失敗後はbrake()で制動
@@ -99,6 +100,14 @@ ros2 run sobits_intball2_gnc move_to_client nav_entry
 
 その地点の位置・姿勢をTFで解決してgoalを送り、完了まで`time_to_go`・`pose_to_go`を表示します。`pose_to_go`は計画上の残りで、実際に着いたかどうかは分かりません（次の「3. 結果を確かめる」で確認します）。
 
+今いる位置からの相対移動（機体座標系、intball2_commonの`move_relative`と同じ引数）は`move_relative_client`で送ります。移動量は`-x -y -z`[m]、回転は`-r -p -w`（roll/pitch/yaw）[deg]:
+
+```sh
+ros2 run sobits_intball2_gnc move_relative_client -x 0.3 -w 90
+```
+
+goalを受けた時点のTFの位置・姿勢を基準に絶対のgoalへ変換します（`docs/archive/achieved/2026-09-29_move_relative_design.md`）。簡単なテレオペ用なので、move_toの設定（姿勢モード・追従モード・経由地・障害物回避など）に関係なく、開始時の姿勢のまま直進し、着いてから回転します（`static_toppra`固定）。移動量が`guidance.relative_move_max_distance`を超えるgoalは拒否します。障害物回避はしないので、壁との距離は操作者が確認してください。
+
 任意の座標へ送る場合は標準の`ros2 action`を使います:
 
 ```sh
@@ -152,6 +161,8 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 <a id="execution-flow"></a>
 ## 実行の流れ（`GuidanceExecutor.execute()`）
 
+経由点がなく並進が1cm未満のgoal（その場での回転）は、1・2を飛ばして3だけ行う（長さ0の経路はTOPP-RAで扱えないため）。
+
 1. **出発前の姿勢合わせ**（`pre_align`、`attitude_reference_mode=face_travel`のとき）: 最初の進行方向へ向きを合わせる。`/gnc/checkpoints`で静止保持、最大`align_timeout`秒
 2. **軌道の追従**: `/gnc/trajectory_setpoint`へ参照を出す。方式は`trajectory_tracking_mode`で決まる
    - `static_toppra`: 力・トルクの制約付きで一度だけ計画した軌道（TOPP-RA）
@@ -191,7 +202,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 
 | アクション名 | 型 | 説明 |
 |---|---|---|
-| `/gnc/move_to` | `ib2_msgs/action/CtlCommand` | 目標姿勢へのgoal駆動move-to（`GuidanceExecutor`が実行） |
+| `/gnc/move_to` | `ib2_msgs/action/CtlCommand` | 目標姿勢へのgoal駆動move-to（`GuidanceExecutor`が実行）。`MOVE_TO_ABSOLUTE_TARGET`（`iss_body`）と`MOVE_TO_RELATIVE_TARGET`（`body`）を受ける |
 
 `path_publisher`（`/gnc/trajectory_path`、`nav_msgs/Path`）は`console_scripts`登録済みの単体デバッグ用ラッパのみで、`guidance_node`本体からは配線されていない。
 
@@ -271,6 +282,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `guidance.stopping.wait_cancel` | 軌道時間＋この秒数で打ち切って静止保持[s] | `10.0` |
 | `guidance.obstacle_map_file` | 障害物の地図（OctoMap `.bt`）。相対パスは`share/sobits_intball2_gnc/maps/`から。`""`で静的な地図なし（仮想の箱だけ） | `jem_octomap.bt` |
 | `guidance.obstacle_grid_resolution` | 障害物の格子の解像度[m] | `0.1` |
+| `guidance.relative_move_max_distance` | 相対移動goalの移動量の上限[m]。打ち間違いよけで、衝突は防がない | `10.0` |
 | `guidance.obstacle_grid_inflation` | 障害物の格子の膨張[m]（機体半径0.1m＋余裕0.1m）。マス単位で効く（解像度0.1mなら0.15は0.2と同じ） | `0.2` |
 
 ### Control側と共有（起動時のみ、`gnc_params.yaml`の各セクションと同じ値を使う）
