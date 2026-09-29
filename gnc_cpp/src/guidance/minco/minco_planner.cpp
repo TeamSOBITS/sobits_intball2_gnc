@@ -514,7 +514,7 @@ PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
         param.g_epsilon = 1e-10;
         param.max_iterations = 500;
 
-        // EGO-Planner lengthenTime方式のanalytic stretchループ（全区間を
+        // このプロジェクト独自のanalytic stretchループ（全区間を
         // 同一比率で一律伸長、上記コメント参照）: fixed-T solve →
         // 全セグメント中最悪のmaxRatioからsqrt(ratio)倍（1回あたり
         // STRETCH_LIMIT_RATIOでキャップ）を計算し、それを全セグメントの
