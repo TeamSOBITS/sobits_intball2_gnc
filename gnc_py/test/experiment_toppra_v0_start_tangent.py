@@ -2,8 +2,8 @@
 """Investigation: can ``ToppraTrajectory`` express an arbitrary start
 velocity ``v0`` (including a component perpendicular to the target
 direction, "v_perp") by forcing the Hermite path's start tangent to ``v0``
-(the same override ``HermiteSplineTrajectoryGenerator(..., v0=v0)`` already
-gives ``ReplanningTrajectoryTracker``'s non-TOPP-RA path) and setting
+(the same override ``HermiteSplineTrajectoryGenerator(..., v0=v0)`` was used
+by the former non-TOPP-RA replanning path) and setting
 ``toppra``'s scalar ``sd_start`` accordingly? See ``docs/
 2026-08-30_toppra_replanning_sd_start_speed_investigation.md`` 追記4/5 for
 the full writeup -- summary of what this file demonstrates:

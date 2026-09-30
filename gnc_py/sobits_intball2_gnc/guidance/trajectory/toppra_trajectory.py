@@ -45,8 +45,8 @@ design rationale and the open questions this implementation resolves:
 - Only used for ``trajectory_tracking_mode="static_toppra"``: ``toppra``'s
   ``compute_trajectory(sd_start, ...)`` only accepts a *scalar* path-tangent
   start speed, which cannot express a velocity residual perpendicular to the
-  path (the case ``ReplanningTrajectoryTracker``'s exact v0-aware bound
-  derivation exists specifically to handle) -- replanning uses MINCO instead.
+  path (replanningのMINCO localが扱うケース) -- ``replan_minco``では
+  MINCOを使う。
 - The position path shape (before TOPP-RA re-times it) comes from
   :class:`~sobits_intball2_gnc.guidance.trajectory.generation.
   hermite_spline_trajectory_generator.HermiteSplineTrajectoryGenerator`,

@@ -1,7 +1,7 @@
 """Offline reproduction of sim run 4: reverse route, box at [10.958,-6.877,4.9] appearing at a given
 surface clearance while a background solve (old grid) is in flight, solve latency forced like the sim.
 
-    python3 repro_run4.py [--latency=0.7] [--latency-after-box=S] [--appear-clr=0.62] [--no-inflight] [--t-max=60] [--proto [--no-b1] [--no-b2] [--no-b4]]
+    python3 repro_run4.py [--latency=0.7] [--latency-after-box=S] [--appear-clr=0.62] [--no-inflight] [--t-max=60]
 """
 import math, sys
 import numpy as np
@@ -34,13 +34,7 @@ omap = ObstacleMap(0.1, 0.2, diag_common.JEM_MAP)
 start, goal = jem.location("nav_entry"), jem.location("inspection_entry_1")
 q0 = jem.facing_quat(goal - start)
 state = {"p": start.copy(), "s": 0.0}
-proto = "--proto" in sys.argv
-if proto:
-    from early_stop_tracker import EarlyStopTracker
-    Tracker = lambda *a, **k: EarlyStopTracker(*a, use_b1="--no-b1" not in sys.argv, use_b2="--no-b2" not in sys.argv, use_b4="--no-b4" not in sys.argv, **k)
-else:
-    Tracker = ReplanMincoTracker
-tr = Tracker(start, goal, lambda: (state["p"], list(q0), state["s"]), lambda s: True, q0,
+tr = ReplanMincoTracker(start, goal, lambda: (state["p"], list(q0), state["s"]), lambda s: True, q0,
     stage4.TS, stage4.MA, via_half_width=0.0, wrench_safety_margin=stage4.MARGIN,
     attitude_resample_spacing_m=stage4.SPACING, planning_horizon_m=stage4.HORIZON, face_travel=True,
     forward_axis=stage4.FWD, local_max_vel=stage4.CRUISE, local_piece_length_m=stage4.PIECE_LENGTH,
