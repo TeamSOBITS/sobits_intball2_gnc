@@ -71,7 +71,7 @@ openspec/
 /tmp
 /.claude
 /.github
-CLAUDE.md
+AGENTS.md
 # docsはissue.md以外pushしない
 /docs/*
 !/docs/issue.md
