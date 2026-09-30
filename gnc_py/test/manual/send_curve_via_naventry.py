@@ -8,7 +8,7 @@ Consolidates the former per-destination/per-mode scripts
 (send_curve_via_naventry_to_{near_dock,above_dock2}[_facing_direction].py,
 docs/archive/achieved/2026-08-20_guidance_node_implementation_plan.md's test/manual/ cleanup): waypoint
 and target are resolved live via TF (same TfClient lookup
-guidance/ros/move_to_client.py uses) instead of hardcoded per-file
+guidance/move_to.py uses) instead of hardcoded per-file
 coordinates, and --facing-direction toggles between a fixed target quaternion
 and facing the direction of travel (guidance.utils.attitude_reference), so
 one file now serves every destination/mode combination.

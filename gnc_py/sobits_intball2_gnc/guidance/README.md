@@ -19,6 +19,8 @@ guidance/
 ├── guidance.py                           # GuidanceNode（唯一のROSノード、1file1node）
 │                                          # /gnc/move_to（ib2_msgs/action/CtlCommand）を提供
 ├── guidance_params.py                    # GuidanceNodeのパラメータの既定値・読み取り専用の一覧・goalごとの読み取り
+├── move_to.py                             # 名前付きTF地点へgoal送信するCLI
+├── move_relative.py                       # 機体座標系の相対移動goalを送信するCLI
 ├── ros/                                  # ROS 入出力ラッパ
 │   ├── path_publisher.py                     # nav_msgs/Path をRVizへ可視化publish（/gnc/trajectory_path）
 │   ├── speed_path_publisher.py               # 速度で色分けしたLINE_STRIP MarkerをRVizへ可視化publish（表示のみ、制御には無関係）
@@ -26,8 +28,7 @@ guidance/
 │   ├── checkpoint_publisher.py               # /gnc/checkpoints へ発行（事前/到着時整列の静止保持）
 │   ├── marker_array_subscriber.py            # /guidance/virtual_obstacles（MarkerArrayのCUBE）を箱の変更にして渡す
 │   ├── marker_array_publisher.py             # 今の箱の一覧を /guidance/obstacles_active へ発行（RViz表示）
-│   ├── move_to_client.py                     # move_to_client CLI（名前付きTF地点へgoal送信、手動検証用）
-│   ├── move_relative_client.py               # move_relative_client CLI（機体座標系の相対移動goal送信）
+│   ├── ctl_command_action_client.py          # ib2_msgs/action/CtlCommand のgoal送信
 │   └── ctl_command_action_server.py          # ib2_msgs/action/CtlCommand（目標姿勢へのgoal駆動）
 ├── executor/                             # 1つのgoalの流れ
 │   ├── guidance_executor.py                  # GuidanceExecutor: pre-align→軌道追従→arrival-align、cancel・計画失敗後はbrake()で制動
@@ -129,22 +130,30 @@ python3 gnc_py/test/manual/move_to_cancel_brake_test.py inspection_entry_2   # �
 <a id="common-settings"></a>
 ## よく使う設定
 
-どれも`ros2 param set /guidance_node <名前> <値>`で変更でき、次に送るgoalから効きます（走行中のgoalには効きません）。
+通常は`guidance.motion_profile`だけを設定します。値は次に送るgoalから効き、走行中のgoalには影響しません。
 
-| やりたいこと | パラメータ | 値 |
+| profile | 用途 | goalごとの実効設定 |
 |---|---|---|
-| 追従の方式を選ぶ | `guidance.trajectory_tracking_mode` | `static_toppra`（既定、一度だけ計画した軌道を追従）/ `static_minco` / `replan_minco`（1秒ごとに再計画） |
-| 経由点を通る | `guidance.via_waypoints` | 地点名の配列、例: `"['nav_entry']"`。**使い終わったら`"['']"`に戻す**（残すと以降の全goalが経由する） |
-| 進行方向を向いて移動する | `guidance.attitude_reference_mode` | `face_travel`（既定）/ `fixed` |
-| 同上（`replan_minco`のとき） | `guidance.minco_replan_face_travel`、`guidance.minco_planning_horizon_m` | 既定で`true`と`4.0`（姿勢を固定するなら`false`。face travelのまま先読みを2mにすると角を曲がりきれない） |
-| 出発前・到着時の姿勢合わせ | `guidance.pre_align`、`guidance.align_at_arrival` | `true`（既定）/ `false` |
-
-例: `replan_minco`で進行方向を向き、`nav_entry`を経由して`inspection_entry_1`へ行く
+| `fast`（既定） | 障害物がない場所を速く移動 | `static_toppra`、姿勢固定、出発前・到着時の姿勢合わせなし、障害物回避なし |
+| `avoidance` | 深度または仮想障害物を避けて移動 | `replan_minco`、進行方向を向く、出発前・到着時の姿勢合わせあり、1秒ごとの非同期再計画、障害物回避あり、local速度上限`0.15 m/s` |
 
 ```sh
-ros2 param set /guidance_node guidance.trajectory_tracking_mode replan_minco
-ros2 param set /guidance_node guidance.minco_replan_face_travel true
-ros2 param set /guidance_node guidance.minco_planning_horizon_m 4.0
+ros2 param set /guidance_node guidance.motion_profile avoidance
+```
+
+`avoidance`には、起動時に`guidance.obstacle_source: depth`または`boxes`を設定する必要があります。`depth`では新鮮な深度フレームをまだ受け取っていない場合、goalをabortします。回避なしで移動するよう自動的に切り替わることはありません。
+
+profileを設定した後なら、profileが設定する項目も個別に変更できます。個別設定は次のgoalだけでなく、profileを再設定するまで以後のgoalにも効きます。profileをもう一度設定すると、個別設定を取り消してprofileの値へ戻します。
+
+```sh
+ros2 param set /guidance_node guidance.motion_profile fast
+ros2 param set /guidance_node guidance.align_at_arrival true
+```
+
+経由点だけはprofileとは別に指定します。**使い終わったら`['']`へ戻します**。
+
+```sh
+ros2 param set /guidance_node guidance.motion_profile avoidance
 ros2 param set /guidance_node guidance.via_waypoints "['nav_entry']"
 ros2 run sobits_intball2_gnc move_to_client inspection_entry_1
 ros2 param set /guidance_node guidance.via_waypoints "['']"
@@ -158,7 +167,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 経由点がなく並進が1cm未満のgoal（その場での回転）は、1・2を飛ばして3だけ行う（長さ0の経路はTOPP-RAで扱えないため）。
 
 1. **出発前の姿勢合わせ**（`pre_align`、`attitude_reference_mode=face_travel`のとき）: 最初の進行方向へ向きを合わせる。`/gnc/checkpoints`で静止保持、最大`align_timeout`秒
-2. **軌道の追従**: `/gnc/trajectory_setpoint`へ参照を出す。方式は`trajectory_tracking_mode`で決まる
+2. **軌道の追従**: `/gnc/trajectory_setpoint`へ参照を出す。方式は`motion_profile`で決まる
    - `static_toppra`: 力・トルクの制約付きで一度だけ計画した軌道（TOPP-RA）
    - `static_minco`: MINCOで一度だけ計画した軌道
    - `replan_minco`: ゴールまでのglobal軌道を一度だけ作り、そこから先読み距離先までのlocal軌道を1秒ごとに作り直す（EGO-Planner v2と同じ構成）。最初のglobal軌道を作れなければ`static_toppra`で作り直す
@@ -207,13 +216,14 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 
 普段は[よく使う設定](#common-settings)だけで足ります。
 
-### goalごとの設定（`ros2 param set`で変更、次のgoalから有効）
+### goalごとの設定（参照用）
 
 | パラメータ名 | 役割 | デフォルト値 |
 |---|---|---|
+| `guidance.motion_profile` | 通常の移動方式（`fast` / `avoidance`）。下記の追従・姿勢・MINCO回避設定をgoalごとに上書きする | `fast` |
 | `guidance.trajectory_tracking_mode` | 軌道追従方式（`static_toppra` / `static_minco` / `replan_minco`、[実行の流れ](#execution-flow)参照） | `static_toppra` |
 | `guidance.via_waypoints` | 経由点のTFフレーム名の配列（順に経由）。`['']`で経由なし | `['']` |
-| `guidance.attitude_reference_mode` | 移動中の姿勢参照（`fixed`/`face_travel`/`look_at`）。`look_at`は未実装で`face_travel`にフォールバック（警告ログ） | `face_travel` |
+| `guidance.attitude_reference_mode` | 移動中の姿勢参照。profileが上書きする。`look_at`は未実装で`face_travel`にフォールバック（警告ログ） | `face_travel` |
 | `guidance.face_travel_camera` | `face_travel`で進行方向に向けるカメラ軸（`main`/`stereo`） | `main` |
 | `guidance.look_at_target_frame` | `look_at`（未実装）で見る対象のTFフレーム名 | `""` |
 | `guidance.pre_align` | 出発前の姿勢合わせを行うか（`face_travel`のときのみ効く） | `true` |

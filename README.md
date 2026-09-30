@@ -124,59 +124,22 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
     ```sh
     ros2 launch sobits_intball2_gnc guidance.launch.py
     ```
-- テレオペ(今いる位置からの相対移動)を行う場合，[move_relative_client.py](gnc_py/sobits_intball2_gnc/guidance/ros/move_relative_client.py)を起動します
+- テレオペ(今いる位置からの相対移動)を行う場合，[move_relative.py](gnc_py/sobits_intball2_gnc/guidance/move_relative.py)を起動します
   - 移動量は`-x -y -z`[m]，回転は`-r -p -w`（roll/pitch/yaw）[deg]
   ```sh
   ros2 run sobits_intball2_gnc move_relative_client -x 0.3 -w 90
   ```
-- 絶対移動を行う場合，[move_to_client.py](gnc_py/sobits_intball2_gnc/guidance/ros/move_to_client.py)にTFフレーム名を指定して起動します
+- 絶対移動を行う場合，[move_to.py](gnc_py/sobits_intball2_gnc/guidance/move_to.py)にTFフレーム名を指定して起動します
   ```sh
   ros2 run sobits_intball2_gnc move_to_client nav_entry
   ```
-  - 様々なパラメータがあり，`ros2 param set /guidance_node <名前> <値>`で変更できます
-  - 使用例
-    - **障害物回避なしの高速移動の場合**
-      - 一度だけ計画した軌道を追従
-        ```sh
-        ros2 param set /guidance_node guidance.trajectory_tracking_mode static_toppra
-        ```
-      - 進行方向を向いて移動しない
-        ```sh
-        ros2 param set /guidance_node guidance.attitude_reference_mode fixed
-        ```
-      - 出発前の姿勢合わせなし
-        ```sh
-        ros2 param set /guidance_node guidance.pre_align false
-        ```
-      - 到着時の姿勢合わせなし
-        ```sh
-        ros2 param set /guidance_node guidance.align_at_arrival false
-        ```
-
-    - **動的未知障害物回避**
-      - 軌道再生成
-        ```sh
-        ros2 param set /guidance_node guidance.trajectory_tracking_mode static_toppra
-        ```
-      - 進行方向を向いて移動
-        ```sh
-        ros2 param set /guidance_node guidance.attitude_reference_mode face_travel
-        ```
-      - 出発前の姿勢合わせあり
-        ```sh
-        ros2 param set /guidance_node guidance.pre_align true
-        ```
-      - 到着時の姿勢合わせあり
-        ```sh
-        ros2 param set /guidance_node guidance.align_at_arrival true
-        ```
-
-  | やりたいこと | パラメータ | 値 |
-  |---|---|---|
-  | 追従の方式を選ぶ | `guidance.trajectory_tracking_mode` | `static_toppra`（既定、一度だけ計画した軌道を追従）/ `static_minco` / `replan_minco`（障害物回避） |
-  | 進行方向を向いて移動する | `guidance.attitude_reference_mode` | `face_travel`（既定）/ `fixed` |
-  | 同上（`replan_minco`のとき） | `guidance.minco_replan_face_travel`、`guidance.minco_planning_horizon_m` | 既定で`true`と`4.0`（姿勢を固定するなら`false`。face travelのまま先読みを2mにすると角を曲がりきれない） |
-  | 出発前・到着時の姿勢合わせ | `guidance.pre_align`、`guidance.align_at_arrival` | `true`（既定）/ `false` |
+  - 通常は`guidance.motion_profile`を選びます。`fast`は姿勢固定・姿勢合わせなしのTOPP-RA移動、`avoidance`は進行方向を向きながら障害物を避ける`replan_minco`移動です。
+    ```sh
+    ros2 param set /guidance_node guidance.motion_profile fast
+    ros2 param set /guidance_node guidance.motion_profile avoidance
+    ```
+  - profileを選んだ後に個別の設定を変更すると、その値が次のgoalからprofileの値より優先されます。profileを再設定すると個別設定は解除されます。
+  - `avoidance`は、起動時に深度または仮想障害物の入力を設定しておく必要があります。深度が新鮮でない場合はgoalをabortします。
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
