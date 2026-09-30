@@ -29,18 +29,22 @@ guidance/
 │   ├── marker_array_subscriber.py            # /guidance/virtual_obstacles（MarkerArrayのCUBE）を箱の変更にして渡す
 │   ├── marker_array_publisher.py             # 今の箱の一覧を /guidance/obstacles_active へ発行（RViz表示）
 │   ├── ctl_command_action_client.py          # ib2_msgs/action/CtlCommand のgoal送信
-│   └── ctl_command_action_server.py          # ib2_msgs/action/CtlCommand（目標姿勢へのgoal駆動）
+│   ├── ctl_command_action_server.py          # ib2_msgs/action/CtlCommand（目標姿勢へのgoal駆動）
+│   └── corridor_marker_publisher.py          # A*折線/FIRI回廊のRViz表示専用publisher
 ├── executor/                             # 1つのgoalの流れ
 │   ├── guidance_executor.py                  # GuidanceExecutor: pre-align→軌道追従→arrival-align、cancel・計画失敗後はbrake()で制動
 │   ├── tracker_builder.py                    # goalのtrajectory_tracking_modeに応じてtrackerを組み立てる（作れなければTrajectoryBuildError）
 │   └── cancel_brake.py                       # 停止プロファイルに沿って止め、止まった点で静止保持
-├── global_planner/                       # 大域経路計画（本番では未使用、単体テストのみ）
+├── global_planner/                       # ROS非依存の大域経路計画
 │   ├── base_global_planner.py                # 共通インターフェース
-│   ├── astar_planner.py
-│   └── rrt_planner.py
+│   ├── astar_planner.py                     # feature flag有効時に使うA*6
+│   ├── path_shortcut.py                     # occupancyを保ったA*折線のshortcut
+│   ├── corridor_plan.py                     # A*折線とFIRI half-space回廊を一つのsnapshotから作る
+│   └── rrt_planner.py                       # オフライン比較用。実行時の切替先には未接続
 ├── local_planner/                        # 障害物を見たlocalの計画
 │   ├── minco_local_planner.py                # replan_mincoのglobal/localの作り方（EGO-Planner v2のplanner_manager）
-│   └── obstacle_map.py                       # 静的な地図（OctoMap）＋仮想の箱から格子地図を作り直す
+│   ├── obstacle_map.py                       # 静的地図＋仮想箱または最新depthから格子地図を作る
+│   └── corridor_constraints.py               # A*回廊を現在local状態から最大0.75mのMINCO区間へ再対応付け
 ├── trajectory/                           # 軌道の表現と生成
 │   ├── minco_trajectory.py                   # MINCO姿勢/トルク統合軌道（sobits_intball2_gnc_cpp拡張のPythonラッパ）
 │   ├── toppra_trajectory.py                  # TOPP-RAによる力/トルク制約付き時間割当済み軌道
@@ -51,7 +55,8 @@ guidance/
 ├── trajectory_tracking/                  # 生成済み軌道の追従方式
 │   ├── base_trajectory_tracker.py            # 共通インターフェース
 │   ├── static_trajectory_tracker.py          # 開ループ単一軌道を最後まで追従（static_toppra・static_minco）
-│   └── replan_minco_tracker.py               # global MINCO軌道を一度だけ解き、local区間を一定周期で再計画しながら追従（衝突確認・非常停止）
+│   ├── replan_minco_tracker.py               # global MINCO軌道を一度だけ解き、local区間を一定周期で再計画しながら追従（衝突確認・非常停止）
+│   └── corridor_session.py                   # optional A*→FIRI→local MINCOの状態と更新判断
 ├── align/                                # 事前/事後アラインメント（SLERP+台形角速度ランプ）
 │   ├── angular_trajectory.py                 # 角度台形プロファイル（角速度・角加速度上限からランプ軌道を生成）
 │   └── attitude_aligner.py                   # 現在姿勢->目標姿勢のSLERP+台形ランプ整列を駆動
@@ -143,6 +148,20 @@ ros2 param set /guidance_node guidance.motion_profile avoidance
 
 `avoidance`には、起動時に`guidance.obstacle_source: depth`または`boxes`を設定する必要があります。`depth`では新鮮な深度フレームをまだ受け取っていない場合、goalをabortします。回避なしで移動するよう自動的に切り替わることはありません。
 
+### 初回からA*で回避する場合（optional）
+
+`guidance.global_corridor_avoidance`を`true`にすると、pre-align後の同一depth snapshotからA*6の折線とFIRI安全回廊を作り、先頭4mを最大0.75mのlocal MINCO区間にして追従します。既定値は`false`であり、既存のlocal-only挙動を変えません。
+
+`avoidance` profileを**先に**設定してから有効化します。この方式は`depth` obstacle mapだけを受け付けます。depthがstale、A*またはFIRIが失敗、あるいは回廊localが衝突した場合はgoalをabortして既存の停止処理へ渡します。
+
+```sh
+ros2 param set /guidance_node guidance.motion_profile avoidance
+ros2 param set /guidance_node guidance.global_corridor_avoidance true
+ros2 run sobits_intball2_gnc move_to_client inspection_entry_1
+```
+
+goalを受け付けた後は、この設定値をそのgoalに固定します。走行中に変更しても、実行中の軌道には影響しません。
+
 profileを設定した後なら、profileが設定する項目も個別に変更できます。個別設定は次のgoalだけでなく、profileを再設定するまで以後のgoalにも効きます。profileをもう一度設定すると、個別設定を取り消してprofileの値へ戻します。
 
 ```sh
@@ -171,6 +190,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
    - `static_toppra`: 力・トルクの制約付きで一度だけ計画した軌道（TOPP-RA）
    - `static_minco`: MINCOで一度だけ計画した軌道
    - `replan_minco`: ゴールまでのglobal軌道を一度だけ作り、そこから先読み距離先までのlocal軌道を1秒ごとに作り直す（EGO-Planner v2と同じ構成）。最初のglobal軌道を作れなければ`static_toppra`で作り直す
+   - `global_corridor_avoidance=true`の`replan_minco`: initial A*折線をFIRI凸回廊へ変換し、その回廊内のlocal MINCOを作る。現在localと未走行A*折線が空いている間は継続し、塞がった時だけ現在位置・速度からA*→FIRI→localを更新する
    - 軌道を作れないとき（TOPP-RA・MINCOが解けない、wrench envelope・質量・慣性・`max_angular_rate`が未設定）はgoalを`TERMINATE_ABORTED`で返し、下の4と同じ制動で止まる
    - 計画時間が過ぎても、位置誤差が`align_pos_tolerance_m`以下に`align_pos_settle_time`秒続くまで待つ（最大`align_pos_timeout`秒）
 3. **到着時の姿勢合わせ**（`align_at_arrival`）: 目標姿勢へ合わせる。`/gnc/checkpoints`で静止保持、最大`align_timeout`秒
@@ -199,6 +219,8 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `/gnc/checkpoints` | `geometry_msgs/PoseArray` | 事前整列・到着時整列での静止保持目標（Control側が購読） |
 | `/gnc/trajectory_path_speed` | `visualization_msgs/Marker` | 速度で色分けした軌道のRViz表示（表示のみ、制御には無関係） |
 | `/gnc/trajectory_path_speed_local` | `visualization_msgs/Marker` | `replan_minco`のlocal軌道のRViz表示（表示のみ） |
+| `/gnc/global_corridor_astar` | `nav_msgs/Path` | global corridor modeで生成したA* shortcut後の折線（transient local、表示のみ） |
+| `/gnc/global_corridor_markers` | `visualization_msgs/MarkerArray` | A*各線分に対応するFIRI凸回廊のwireframe（transient local、表示のみ） |
 | `/guidance/obstacles_active` | `visualization_msgs/MarkerArray` | 今の障害物の地図に入っている仮想の箱の一覧（RViz表示、transient local） |
 
 ### アクション
@@ -242,6 +264,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `guidance.minco_replan_face_travel` | `replan_minco`で進行方向を向く（`attitude_reference_mode=face_travel`も必要）。localを2回solveし、wrenchを機体座標で評価する。先読みは`4.0`程度にする | `true` |
 | `guidance.minco_local_max_vel` | `minco_replan_face_travel`のときのlocalの速度上限[m/s] | `0.15` |
 | `guidance.minco_obstacle_avoidance` | `replan_minco`で障害物の地図（JEMの壁＋仮想の箱）を避ける（`minco_replan_face_travel`も必要）。避けきれないときは停止プロファイルで非常停止し、静止から再計画する | `false` |
+| `guidance.global_corridor_avoidance` | `true`で、depth snapshotからA*6→FIRI回廊→local MINCOを使う。`avoidance` profileかつ`obstacle_source=depth`でのみ有効。goal受付時に固定され、`false`なら既存local-only trackerのまま | `false` |
 | `guidance.minco_local_piece_length_m` | 障害物を避けるときのlocalの1区間の長さ[m]（EGO-Planner v2の`polyTraj_piece_length`） | `1.5` |
 | `guidance.minco_obstacle_clearance_soft` | 障害物を避けるときの緩い余裕[m]（ぶつかった障害物から離す距離） | `0.2` |
 
@@ -288,6 +311,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `guidance.obstacle_grid_resolution` | 障害物の格子の解像度[m] | `0.1` |
 | `guidance.relative_move_max_distance` | 相対移動goalの移動量の上限[m]。打ち間違いよけで、衝突は防がない | `10.0` |
 | `guidance.obstacle_grid_inflation` | 障害物の格子の膨張[m]（機体半径0.1m＋余裕0.1m）。マス単位で効く（解像度0.1mなら0.15は0.2と同じ） | `0.2` |
+| `guidance.obstacle_source` | 障害物入力。`depth`は静的OctoMapへ最新深度占有を重ね、`boxes`は`/guidance/virtual_obstacles`だけを重ねる。global corridor modeは`depth`だけを受け付ける | `depth` |
 
 ### Control側と共有（起動時のみ、`gnc_params.yaml`の各セクションと同じ値を使う）
 
@@ -302,6 +326,8 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `hover_control.max_force` | Control側の出力の各軸上限[N]。cancel後の制動の減速度をこれ以下に抑える | `0.1` |
 
 `gnc_cpp`の`wrench_envelope.hpp`（MINCO）の質量・慣性はC++の定数（3.216 kg・0.0136 kg·m²）で、上の`trajectory_controller.*`の影響は受けない。
+
+global corridor modeは、`gnc_cpp`拡張の`firi_corridor_planes()`でFIRI half-spaceを生成し、`plan_minco(..., corridor_planes=...)`でMINCOへ渡す。これはPythonから利用する内部APIであり、ROSパラメータではない。
 
 ### その他のROS I/Oラッパ
 
