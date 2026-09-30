@@ -139,17 +139,15 @@
       # below `rate` to avoid coupling two feedback loops reading the same TF.
       velocity_estimate_rate: 10.0  # [Hz]
       velocity_estimate_alpha: 0.3  # EMA blend weight (1.0 = no filtering)
-      # In-trajectory q_des(t) mode (docs/archive/achieved/2026-08-21_movement_mode_design.md): fixed /
-      # face_travel (compute_q_des) / look_at (not implemented, falls back to face_travel).
+      motion_profile: fast                 # fast / avoidance; latched when a goal is accepted
+      # Expert defaults overridden by motion_profile. They remain available for
+      # future profiles and direct planner experiments.
       attitude_reference_mode: face_travel
       pre_align: true               # pre-align to initial tangent before departure (face_travel only)
       align_at_arrival: true        # re-align on arrival
       face_travel_camera: main      # camera axis facing travel direction (face_travel)
       look_at_target_frame: ""      # not yet implemented
       align_at_arrival_camera: main # camera aligned to q_target on arrival
-      # static_toppra / static_minco (open-loop single trajectory) or
-      # replan_minco (global/local MINCO re-planning). Latched at goal
-      # receipt, like attitude_reference_mode.
       trajectory_tracking_mode: static_toppra
       relative_move_max_distance: 10.0  # [m] MOVE_TO_RELATIVE_TARGET typo guard (not a collision check)
       minco_local_replan_period: 1.0  # [s] replan_minco local replan period

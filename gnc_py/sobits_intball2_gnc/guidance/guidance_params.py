@@ -21,6 +21,7 @@ GUIDANCE_PARAM_DEFAULTS = {
     "guidance.velocity_estimate_alpha": 0.3,
     "guidance.camera_forward_axis.main": [1.0, 0.0, 0.0],
     "guidance.camera_forward_axis.stereo": [0.0, 1.0, 0.0],
+    "guidance.motion_profile": "fast",
     "guidance.attitude_reference_mode": "face_travel",
     "guidance.pre_align": True,
     "guidance.align_at_arrival": True,
@@ -59,9 +60,7 @@ GUIDANCE_PARAM_DEFAULTS = {
     "guidance.minco_attitude_resample_spacing_m": 0.3,
     "guidance.face_travel_camera": "main",
     "guidance.align_at_arrival_camera": "main",
-    # "static_toppra" (default), "static_minco" or "replan_minco". Category
-    # B, like attitude_reference_mode -- latched at goal receipt in
-    # goal_execute_kwargs below, not applied mid-trajectory.
+    # Expert setting; the selected motion_profile overrides it per goal.
     "guidance.trajectory_tracking_mode": "static_toppra",
     # q_des rate limit (docs/archive/achieved/
     # 2026-08-24_trajectory_state_carryover_design.md 3-4節). First-cut
@@ -175,6 +174,32 @@ OBSTACLE_SOURCES = frozenset({"boxes", "depth"})
 
 ATTITUDE_REFERENCE_MODES = frozenset({"fixed", "face_travel", "look_at"})
 CAMERA_NAMES = frozenset({"main", "stereo"})
+MOTION_PROFILES = {
+    "fast": {
+        "attitude_reference_mode": "fixed",
+        "trajectory_tracking_mode": "static_toppra",
+        "pre_align": False,
+        "align_at_arrival": False,
+        "minco_obstacle_avoidance": False,
+    },
+    "avoidance": {
+        "attitude_reference_mode": "face_travel",
+        "trajectory_tracking_mode": "replan_minco",
+        "pre_align": True,
+        "align_at_arrival": True,
+        "minco_replan_face_travel": True,
+        "minco_local_max_vel": 0.15,
+        "minco_local_replan_period": 1.0,
+        "minco_planning_horizon_m": 4.0,
+        "minco_async_replan": True,
+        "minco_obstacle_avoidance": True,
+        "minco_local_piece_length_m": 1.5,
+        "minco_obstacle_clearance_soft": 0.2,
+    },
+}
+MOTION_PROFILE_FIELDS = frozenset(
+    field for profile in MOTION_PROFILES.values() for field in profile
+)
 
 # execute() keyword -> (guidance.* parameter, type), read at goal receipt so each
 # goal latches the values in effect at that moment (Category B,
@@ -218,12 +243,27 @@ def declare_guidance_params(node, static_descriptor):
         node.declare_parameter(name, default, descriptor)
 
 
-def goal_execute_kwargs(node):
-    """``execute()`` keyword arguments from the current ``guidance.*`` parameters
-    (everything except ``via_waypoints`` and ``face_travel``, which need TF and the
-    attitude-reference fallback)."""
+def goal_motion_profile(node, overrides=()):
+    """Return the selected profile, its attitude mode, and goal execute options.
+
+    ``overrides`` contains profile fields explicitly set after the selected
+    profile. Their current parameter values take precedence for the next goal.
+    """
+    profile = str(node.get_parameter("guidance.motion_profile").value)
+    selected_values = MOTION_PROFILES.get(profile)
+    if selected_values is None:
+        raise ValueError("guidance.motion_profile must be one of %s" % sorted(MOTION_PROFILES))
     kwargs = {key: kind(node.get_parameter("guidance." + name).value)
               for key, (name, kind) in _GOAL_EXECUTE_PARAMS.items()}
     spacing = float(node.get_parameter("guidance.minco_attitude_resample_spacing_m").value)
     kwargs["minco_attitude_resample_spacing_m"] = spacing if spacing > 0.0 else None
-    return kwargs
+    profile_values = dict(selected_values)
+    direct_overrides = frozenset(overrides)
+    for key in direct_overrides:
+        if key == "attitude_reference_mode":
+            profile_values[key] = str(node.get_parameter("guidance." + key).value)
+        elif key in kwargs:
+            profile_values[key] = kwargs[key]
+    kwargs.update({key: value for key, value in profile_values.items()
+                   if key != "attitude_reference_mode"})
+    return profile, profile_values["attitude_reference_mode"], kwargs
