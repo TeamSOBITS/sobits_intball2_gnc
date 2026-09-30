@@ -149,13 +149,9 @@ JAXAは`ki`と飽和付き積分器（`fi_max=0.02`）が配線済み（現状`k
 ### [運用] 単体テストの点検で残った項目
 kdの符号（速度誤差≠0）、本番のminimax重み、HoverControllerの上限、setpointの`_callback`、打ち切り300秒、ROSなし環境でのtest collection失敗など（10・16は対応済み）。詳細: `docs/archive/achieved/2026-09-26_unit_test_audit.md`（未完了）
 
-### [運用] replan_minco関連の後片付け
-削除済みの`ReplanningTrajectoryTracker`を前提にした説明が`minco_trajectory.py`・`toppra_trajectory.py`・`model_kf_estimator.py`のdocstringに残る。`gnc_py/test/experiment_v3_face_travel_*.py`の試作7本、`gnc_py/test/diag/early_stop_tracker.py`と各スクリプトの`--proto`（本番に入ったので不要）の削除判断。詳細: `docs/archive/achieved/2026-09-23_replanning_minco_v3_remaining_tasks.md`（§15）
 ### [運用] ROS1↔ROS2ブリッジの本番トピック構成方針
 GNC最小構成（`/clock`・`/tf`・`/tf_static`・`/imu/imu`・`/gnc/body_pose_raw`等）に絞るだけで`/tf`の負荷耐性が大幅改善することは確証済み。これを正式運用にするか、`bridge_topics.yaml`を用途別複数用意する仕組みにするか、方針を固める必要がある。詳細: `docs/archive/achieved/2026-08-19_recording_cpu_load_control_degradation.md`
 
-### [運用] `/root/bridge/`の未使用ファイルの後片付け
-`bridge_topics_tf.yaml`、`bridge_topics.yaml.bak_*`（4つ）が残っている。要否を判断して消す（コード内の一時デバッグ計装は撤去済み）。
 ### [運用] 緊急停止/中断サービス（/gnc/stop）の要否（優先度低）
 `/gnc/advance_checkpoint`と同じ`std_srvs/Trigger`パターン。Action自体は`cancel_goal`で個別の移動を中断でき、cancel時の制動も実装済み（9c06e8e）のため、それと独立した「今すぐ全部止める」手段が本当に必要か未検討。
 

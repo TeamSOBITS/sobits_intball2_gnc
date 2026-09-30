@@ -9,12 +9,11 @@ Phase 1（``docs/archive/achieved/2026-08-30_minco_attitude_torque_status_and_ne
 
 :class:`~sobits_intball2_gnc.guidance.trajectory.toppra_trajectory.
 ToppraTrajectory` と同じ ``sample(t) -> (p, v, a, q)`` 契約で返す
-（同docの「MINCOも同じ型を踏襲する」節）。``ReplanningTrajectoryTracker``
-が今使っている位置のみの``Trajectory``（face-travelで毎tick姿勢を後付け
-計算する）とは異なり、姿勢もMINCOの最適化対象に含まれる6-DOF軌道を扱う。
+（同docの「MINCOも同じ型を踏襲する」節）。位置だけでなく姿勢もMINCOの
+最適化対象に含める6-DOF軌道であり、``replan_minco`` のglobal/local両方で使う。
 
-姿勢waypoint（``plan_minco``に渡す各waypointの回転ベクトル）は、呼び出し側
-（``ReplanningTrajectoryTracker._replan``）が位置waypointしか持たないため、
+姿勢waypoint（``plan_minco``に渡す各waypointの回転ベクトル）は、呼び出し側が
+位置waypointを渡すため、
 :class:`ToppraTrajectory` の ``_dense_travel_rotvecs`` と同じ face-travel
 ヒューリスティック（waypoint間の位置差分方向を向く）で、この中で自前に
 導出する。
@@ -63,7 +62,7 @@ class MincoInfeasibleError(ValueError):
 
 class MincoTrajectory:
     """MINCO姿勢/トルク統合軌道。コンストラクタで一度だけ最適化を実行する
-    （``ReplanningTrajectoryTracker``で使う場合、re-planごとに新しい
+    （``replan_minco``ではreplanごとに新しい
     インスタンスを作る想定 -- ``Trajectory.replace_coeffs``のような
     in-place更新はしない）。
 

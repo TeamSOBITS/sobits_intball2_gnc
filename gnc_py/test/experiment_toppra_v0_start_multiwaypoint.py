@@ -2,8 +2,7 @@
 """Follow-up to ``experiment_toppra_v0_start_tangent.py``: does routing
 through additional waypoints (the mitigation named but never tried in
 ``docs/archive/achieved/2026-08-30_toppra_replanning_sd_start_speed_
-investigation.md`` 追記5, and now available via ``ReplanningTrajectoryTracker``
-'s ``route_waypoints``) avoid the ``v_perp`` + ``face_travel=True``
+investigation.md`` 追記5) avoid the ``v_perp`` + ``face_travel=True``
 ``FailUncontrollable`` blowup found there?
 
 Two variants, same v_perp sweep as the original 2-waypoint experiment:

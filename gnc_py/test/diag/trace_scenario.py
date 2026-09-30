@@ -1,10 +1,9 @@
 """async_paced_scenario.py + per-solve log (start, occupancy, clearance, result) and free gaps.
 
-    python3 trace_scenario.py <ahead_m> <appear_after_m> [--sync] [--t-max=90] [--latency=S] [--latency-after-box=S] [--proto]
+    python3 trace_scenario.py <ahead_m> <appear_after_m> [--sync] [--t-max=90] [--latency=S] [--latency-after-box=S]
 
 --latency forces each background solve to land no earlier than S sim seconds (sim-like solve times),
---latency-after-box only for solves started once the box is in;
---proto runs early_stop_tracker.EarlyStopTracker instead of ReplanMincoTracker.
+--latency-after-box only for solves started once the box is in.
 """
 import math, sys
 import numpy as np
@@ -35,12 +34,7 @@ q0 = jem.facing_quat(goal - start); route_dir = (goal - start) / np.linalg.norm(
 state = {"p": start.copy(), "s": 0.0}
 latency = next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--latency=")), 0.0)
 latency_after_box = next((float(a.split("=")[1]) for a in sys.argv if a.startswith("--latency-after-box=")), latency)
-proto = "--proto" in sys.argv
-if proto:
-    from early_stop_tracker import EarlyStopTracker as Tracker
-else:
-    Tracker = ReplanMincoTracker
-tr = Tracker(start, goal, lambda: (state["p"], list(q0), state["s"]), lambda s: True, q0,
+tr = ReplanMincoTracker(start, goal, lambda: (state["p"], list(q0), state["s"]), lambda s: True, q0,
     stage4.TS, stage4.MA, via_half_width=0.0, wrench_safety_margin=stage4.MARGIN,
     attitude_resample_spacing_m=stage4.SPACING, planning_horizon_m=stage4.HORIZON, face_travel=True,
     forward_axis=stage4.FWD, local_max_vel=stage4.CRUISE, local_piece_length_m=stage4.PIECE_LENGTH,

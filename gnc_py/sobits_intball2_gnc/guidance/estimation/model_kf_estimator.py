@@ -9,7 +9,7 @@ VelocityEstimator` (finite-difference + EMA on position alone, which has an
 inherent lag that compounds badly with replanning-induced feedback loops),
 this predicts forward using the *commanded* (feedforward) acceleration --
 already computed every tick as a side effect of trajectory sampling
-(``ReplanningTrajectoryTracker.sample()``'s ``a``) -- and corrects with the
+(``ReplanMincoTracker.sample()``'s ``a``) -- and corrects with the
 noisy position (or rotation-vector) observation via a per-axis
 constant-acceleration Kalman filter. Prediction is a pure integration step
 (does not amplify observation noise); correction is a weighted fusion (does
@@ -90,7 +90,7 @@ class ModelKfEstimator:
             z: noisy position/rotvec observation, shape ``(n_axes,)``.
             a_cmd: commanded (feedforward) acceleration used for the
                 predict step, shape ``(n_axes,)`` -- the same quantity
-                ``ReplanningTrajectoryTracker.sample()`` already computes
+                ``ReplanMincoTracker.sample()`` already computes
                 as ``a`` (docs/
                 2026-09-01_replanning_minco_v4_production_port_plan.md,
                 "指令加速度の取得元は解決"節).
