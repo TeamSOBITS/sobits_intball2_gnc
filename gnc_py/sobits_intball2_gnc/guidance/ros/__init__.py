@@ -2,7 +2,9 @@ from sobits_intball2_gnc.guidance.ros.checkpoint_publisher import CheckpointPubl
 from sobits_intball2_gnc.guidance.ros.ctl_command_action_server import (
     CtlCommandActionServer,
 )
-from sobits_intball2_gnc.guidance.ros.move_to_client import MoveToClient
+from sobits_intball2_gnc.guidance.ros.ctl_command_action_client import (
+    CtlCommandActionClient,
+)
 from sobits_intball2_gnc.guidance.ros.multi_dof_joint_trajectory_publisher import (
     MultiDOFJointTrajectoryPublisher,
 )
@@ -12,7 +14,7 @@ from sobits_intball2_gnc.guidance.ros.speed_path_publisher import SpeedPathPubli
 __all__ = [
     "CheckpointPublisher",
     "CtlCommandActionServer",
-    "MoveToClient",
+    "CtlCommandActionClient",
     "MultiDOFJointTrajectoryPublisher",
     "PathPublisher",
     "SpeedPathPublisher",
