@@ -15,7 +15,7 @@ python3 test/manual/send_curve_via_naventry.py near_dock
 
 Guidance (`guidance/guidance.py`) is now implemented: for a plain move-to-target
 (straight line, current pose -> one target), use
-`guidance/ros/move_to_client.py` against a running `guidance` node instead of
+`guidance/move_to.py` against a running `guidance` node instead of
 a manual script -- it resolves the target from TF by name and sends a real
 `CtlCommand` goal through the production path (segment-time allocation,
 Hermite trajectory generation, optional pre-/post-alignment), not a
