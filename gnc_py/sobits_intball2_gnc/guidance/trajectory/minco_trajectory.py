@@ -120,7 +120,9 @@ class MincoTrajectory:
                  forward_axis=(1.0, 0.0, 0.0), face_travel=True,
                  via_half_width=0.3, attitude_resample_spacing_m=None,
                  wrench_safety_margin=1.0, target_speed=None, max_accel=None,
-                 a0=None, v_tail=None, body_frame_wrench=False):
+                 a0=None, v_tail=None, body_frame_wrench=False,
+                 obstacle_pairs=None, obstacle_touch_goal=False, corridor_planes=None,
+                 obstacle_grid=None, obstacle_clearance_soft=0.5):
         if (target_speed is None) != (max_accel is None):
             raise ValueError(
                 "target_speed and max_accel must be given together (both "
@@ -140,6 +142,18 @@ class MincoTrajectory:
         wrench_q0 = [float(c) for c in self._q0] if body_frame_wrench else None
         v0 = np.zeros(3) if v0 is None else np.asarray(v0, dtype=float)
         w0 = np.zeros(3) if w0 is None else np.asarray(w0, dtype=float)
+        obstacle_pairs = None if obstacle_pairs is None else [float(value) for value in obstacle_pairs]
+        corridor_planes = None if corridor_planes is None else [float(value) for value in corridor_planes]
+        constraint_kwargs = {}
+        if obstacle_pairs is not None:
+            constraint_kwargs["obstacle_pairs"] = obstacle_pairs
+            constraint_kwargs["obstacle_touch_goal"] = bool(obstacle_touch_goal)
+        if corridor_planes is not None:
+            constraint_kwargs["corridor_planes"] = corridor_planes
+        if obstacle_grid is not None:
+            constraint_kwargs["grid"] = obstacle_grid
+            constraint_kwargs["obstacle_touch_goal"] = bool(obstacle_touch_goal)
+            constraint_kwargs["obstacle_clearance_soft"] = float(obstacle_clearance_soft)
 
         if attitude_resample_spacing_m is not None:
             position_waypoints = self._densify(
@@ -159,6 +173,7 @@ class MincoTrajectory:
         segment_times, coeffs, duration = self._solve(
             position_waypoints, rotvecs, v0, w0, via_half_width,
             wrench_safety_margin, target_speed, max_accel, a0, v_tail, wrench_q0
+            , **constraint_kwargs
         )
 
         if face_travel:
@@ -179,6 +194,7 @@ class MincoTrajectory:
             segment_times, coeffs, duration = self._solve(
                 position_waypoints, rotvecs, v0, w0, via_half_width,
                 wrench_safety_margin, target_speed, max_accel, a0, v_tail, wrench_q0
+                , **constraint_kwargs
             )
 
         self._set_solution(segment_times, coeffs, duration,
@@ -280,6 +296,8 @@ class MincoTrajectory:
                 waypoints_flat, v0, w0, via_half_width, wrench_safety_margin,
                 a0=a0, v_tail=v_tail, q0=wrench_q0, **plan_minco_kwargs,
             )
+        if plan_minco_kwargs:
+            raise ValueError("corridor/grid constraints require the free-time plan_minco path")
         return sobits_intball2_gnc_cpp.plan_minco_heuristic_time(
             waypoints_flat, v0, w0, target_speed, max_accel,
             via_half_width, wrench_safety_margin, q0=wrench_q0

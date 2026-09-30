@@ -125,7 +125,8 @@ class GuidanceExecutor:
                  angular_velocity_fn=None, allocator=None,
                  stopping_profile_kwargs=None, stopping_tolerance_pos=0.30,
                  stopping_tolerance_att=1.0, stopping_duration_goal=3.0,
-                 stopping_wait_cancel=10.0, obstacle_map=None):
+                 stopping_wait_cancel=10.0, obstacle_map=None,
+                 corridor_plan_callback=None):
         self._tf = tf_client
         self._setpoint_pub = setpoint_publisher
         self._checkpoint_pub = checkpoint_publisher
@@ -211,6 +212,7 @@ class GuidanceExecutor:
             self._max_angular_rate, self._wrench_envelope,
             self._mass, self._inertia, obstacle_map=obstacle_map,
             stop_profile_fn=self._brake.profile_from if self._brake.available else None,
+            corridor_plan_callback=corridor_plan_callback,
         )
         self._aligner = AttitudeAligner(
             tf_client, checkpoint_publisher, spin_fn, clock_seconds_fn, logger,
@@ -286,7 +288,8 @@ class GuidanceExecutor:
                 minco_planning_horizon_m=DEFAULT_PLANNING_HORIZON_M,
                 minco_replan_face_travel=False, minco_local_max_vel=None,
                 minco_async_replan=False, minco_obstacle_avoidance=False,
-                minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2):
+                minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2,
+                global_corridor_avoidance=False):
         """Run one move-to-target goal; returns a ``STATUS_*`` constant.
 
         ``via_waypoints``: an optional ordered list of interior relay points
@@ -513,6 +516,7 @@ class GuidanceExecutor:
                 minco_obstacle_avoidance=minco_obstacle_avoidance,
                 minco_local_piece_length_m=minco_local_piece_length_m,
                 minco_obstacle_clearance_soft=minco_obstacle_clearance_soft,
+                global_corridor_avoidance=global_corridor_avoidance,
             )
         except TrajectoryBuildError as exc:
             self._log.error("[GuidanceExecutor] %s, aborting" % exc)

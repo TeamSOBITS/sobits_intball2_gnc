@@ -23,6 +23,7 @@ from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker impor
     DEFAULT_PLANNING_HORIZON_M,
     ReplanMincoTracker,
 )
+from sobits_intball2_gnc.guidance.trajectory_tracking.corridor_session import CorridorSession
 from sobits_intball2_gnc.guidance.trajectory_tracking.static_trajectory_tracker import (
     StaticTrajectoryTracker,
 )
@@ -45,7 +46,7 @@ class TrackerBuilder:
 
     def __init__(self, tf_client, tf_fresh_fn, logger, target_speed, max_accel,
                  max_angular_rate, wrench_envelope, mass, inertia, obstacle_map=None,
-                 stop_profile_fn=None):
+                 stop_profile_fn=None, corridor_plan_callback=None):
         self._tf = tf_client
         self._tf_fresh_fn = tf_fresh_fn
         self._log = logger
@@ -57,6 +58,7 @@ class TrackerBuilder:
         self._inertia = inertia
         self._obstacle_map = obstacle_map
         self._stop_profile_fn = stop_profile_fn
+        self._corridor_plan_callback = corridor_plan_callback
         self._obstacle_tracker = None
         if obstacle_map is not None:
             obstacle_map.add_listener(self._on_obstacle_grid)
@@ -68,7 +70,8 @@ class TrackerBuilder:
               minco_planning_horizon_m=DEFAULT_PLANNING_HORIZON_M,
               minco_replan_face_travel=False, minco_local_max_vel=None,
               minco_async_replan=False, minco_obstacle_avoidance=False,
-              minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2):
+              minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2,
+              global_corridor_avoidance=False):
         """Returns ``(tracker, traj)``: ``traj`` is the trajectory to preview (the
         tracked one, or the global one for ``replan_minco``).
         ``forward_axis`` must already be resolved (never ``None``).
@@ -96,6 +99,18 @@ class TrackerBuilder:
         if mode == "replan_minco" and minco_obstacle_avoidance:
             obstacle_kwargs = self._obstacle_tracker_kwargs(
                 minco_local_piece_length_m, minco_obstacle_clearance_soft)
+        corridor_session = None
+        if global_corridor_avoidance:
+            if mode != "replan_minco" or not minco_obstacle_avoidance:
+                raise TrajectoryBuildError(
+                    "global_corridor_avoidance requires replan_minco obstacle avoidance")
+            if self._obstacle_map is None or not self._obstacle_map.uses_depth:
+                raise TrajectoryBuildError(
+                    "global_corridor_avoidance requires a depth obstacle map")
+            corridor_session = CorridorSession(
+                self._obstacle_map, p_target, q0, forward_axis,
+                minco_planning_horizon_m, minco_wrench_safety_margin,
+                minco_obstacle_clearance_soft, self._corridor_plan_callback)
         if mode == "replan_minco":
             # Builds its own trajectory internally; `traj` is set to its
             # global MincoTrajectory only for the speed path preview.
@@ -118,6 +133,7 @@ class TrackerBuilder:
                     forward_axis=forward_axis,
                     local_max_vel=minco_local_max_vel,
                     async_replan=minco_async_replan,
+                    corridor_session=corridor_session,
                     **obstacle_kwargs,
                 )
                 if getattr(replan_tracker, "initial_local_collides", False):

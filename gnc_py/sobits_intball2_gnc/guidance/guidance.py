@@ -57,6 +57,8 @@ from sobits_intball2_gnc.guidance.ros.marker_array_publisher import MarkerArrayP
 from sobits_intball2_gnc.guidance.ros.marker_array_subscriber import MarkerArraySubscriber
 from sobits_intball2_gnc.guidance.ros.marker_publisher import MarkerPublisher
 from sobits_intball2_gnc.guidance.ros.depth_image_subscriber import DepthImageSubscriber
+from sobits_intball2_gnc.guidance.ros.corridor_marker_publisher import CorridorMarkerPublisher
+from sobits_intball2_gnc.guidance.ros.path_publisher import PathPublisher
 from sobits_intball2_gnc.guidance.ros.speed_path_publisher import SpeedPathPublisher
 from sobits_intball2_gnc.guidance.executor.tracker_builder import (
     TRAJECTORY_TRACKING_MODES,
@@ -73,6 +75,8 @@ from sobits_intball2_gnc.guidance.utils.relative_target import compose_relative_
 ACTION_NAME = "/gnc/move_to"
 TRAJECTORY_SPEED_PATH_TOPIC = "/gnc/trajectory_path_speed"
 LOCAL_TRAJECTORY_SPEED_PATH_TOPIC = "/gnc/trajectory_path_speed_local"
+GLOBAL_ASTAR_PATH_TOPIC = "/gnc/global_corridor_astar"
+GLOBAL_CORRIDOR_MARKERS_TOPIC = "/gnc/global_corridor_markers"
 TF_STARTUP_TIMEOUT = 5.0
 # Separate lock file from control_node's: a leftover process once survived
 # kill as a child and answered /gnc/move_to alongside the new one,
@@ -170,6 +174,10 @@ class GuidanceNode(Node):
             max_speed=float(g("target_speed")), line_width=0.03,
             low_rgb=(0.0, 1.0, 0.0), high_rgb=(1.0, 1.0, 0.0),
         )
+        self._astar_path_pub = PathPublisher(
+            self, GLOBAL_ASTAR_PATH_TOPIC, reference_frame=reference_frame)
+        self._corridor_marker_pub = CorridorMarkerPublisher(
+            self, GLOBAL_CORRIDOR_MARKERS_TOPIC, reference_frame=reference_frame)
 
         # Guidance-side TF velocity estimate (docs/
         # guidance_velocity_estimator_design.md): driven by its own low-rate
@@ -264,6 +272,7 @@ class GuidanceNode(Node):
             stopping_duration_goal=float(g("stopping.duration_goal")),
             stopping_wait_cancel=float(g("stopping.wait_cancel")),
             obstacle_map=self._obstacle_map,
+            corridor_plan_callback=self._publish_global_corridor,
         )
         if self._obstacle_map is not None and self._obstacle_map.uses_depth:
             self._depth_timeout = float(g("depth.timeout"))
@@ -338,6 +347,12 @@ class GuidanceNode(Node):
         self.get_logger().info(
             "[GuidanceNode] %d virtual obstacle box(es) in the obstacle map"
             % len(self._obstacle_map.boxes()))
+
+    def _publish_global_corridor(self, plan) -> None:
+        """Render an immutable A*+FIRI plan; planner code remains ROS-free."""
+        self._astar_path_pub.publish(
+            ((point, (0.0, 0.0, 0.0, 1.0)) for point in plan.route))
+        self._corridor_marker_pub.publish(plan.planes)
 
     def _on_depth(self, depth, fx, fy, cx, cy, rotation, origin, stamp) -> None:
         points, cells_updated, _flipped = self._obstacle_map.integrate_depth(

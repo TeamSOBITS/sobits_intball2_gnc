@@ -67,7 +67,7 @@ class MincoLocalPlanner:
     def __init__(self, p0, v0, p_target, q0, target_speed, max_accel, route_waypoints,
                  planning_horizon_m, via_half_width, wrench_safety_margin,
                  attitude_resample_spacing_m, face_travel, forward_axis, local_max_vel,
-                 local_piece_length_m, obstacle_grid, obstacle_clearance_soft):
+                 local_piece_length_m, obstacle_grid, obstacle_clearance_soft, corridor_planes=None):
         self.p_target = np.asarray(p_target, dtype=float)
         self._q0 = np.asarray(q0, dtype=float)
         self._target_speed = None if target_speed is None else float(target_speed)
@@ -83,6 +83,7 @@ class MincoLocalPlanner:
             None if local_piece_length_m is None else float(local_piece_length_m))
         self.obstacle_grid = obstacle_grid
         self._obstacle_clearance_soft = float(obstacle_clearance_soft)
+        self._corridor_planes = corridor_planes
         self._rng = np.random.default_rng(0)
 
         route_waypoints = (
@@ -112,6 +113,7 @@ class MincoLocalPlanner:
             attitude_resample_spacing_m=self._attitude_resample_spacing_m,
             wrench_safety_margin=self._wrench_safety_margin,
             target_speed=self._target_speed, max_accel=self._max_accel,
+            corridor_planes=self._corridor_planes,
         )
 
     def goal_in_obstacle(self):
@@ -160,8 +162,11 @@ class MincoLocalPlanner:
         target_pos, target_vel, touch_goal = self._get_local_target(p0)
         v_tail = np.zeros(3) if touch_goal else target_vel
         if self._face_travel:
-            shape_seed = self._shape_seed(p0, target_pos, prev_local, prev_elapsed,
-                                          prev_target_global_t, rest_failures)
+            if self._corridor_planes is not None and prev_local is None:
+                shape_seed = self._global_shape_seed(p0, target_pos)
+            else:
+                shape_seed = self._shape_seed(p0, target_pos, prev_local, prev_elapsed,
+                                              prev_target_global_t, rest_failures)
             local = self.build_face_travel_local(
                 p0, v0, a0, rv0, rv_rate0, rv_accel0, target_pos, v_tail, shape_seed, touch_goal)
             return local, touch_goal
@@ -172,6 +177,16 @@ class MincoLocalPlanner:
             target_speed=None, max_accel=None, a0=a0, v_tail=v_tail,
         )
         return local, touch_goal
+
+    def _global_shape_seed(self, p0, target_pos):
+        """Seed the first long local solve from the already-safe global curve."""
+        duration = max(self._global_search_t, 1e-3)
+        n_pieces = max(2, math.ceil(self._planning_horizon_m / self._local_piece_length_m))
+        samples = [self.global_trajectory.sample(duration * k / n_pieces)
+                   for k in range(1, n_pieces)]
+        return (np.asarray([sample[0] for sample in samples]),
+                np.asarray([sample[1] for sample in samples]),
+                np.full(n_pieces, duration / n_pieces))
 
     def _shape_seed(self, p0, target_pos, prev_local, prev_elapsed, prev_target_global_t,
                     rest_failures):
