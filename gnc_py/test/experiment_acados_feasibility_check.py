@@ -98,7 +98,7 @@ def main():
         x0 = solver.get(1, "x")
 
     solve_times = np.array(solve_times[5:])  # drop JIT/cache warmup ticks
-    replan_budget_s = 0.1  # guidance.replan_rate_hz=10.0 in config/gnc_params.yaml
+    replan_budget_s = 0.1  # historical 10 Hz replanning budget
     print(f"RTI solve time over {len(solve_times)} ticks (N=20, nx=4, nu=2):")
     print(
         f"  mean={solve_times.mean()*1000:.3f}ms  "
