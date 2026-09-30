@@ -5,6 +5,10 @@ import numpy as np
 from sobits_intball2_gnc.guidance.global_planner.base_global_planner import (
     BaseGlobalPlanner,
 )
+from sobits_intball2_gnc.guidance.global_planner.path_shortcut import (
+    point_is_free,
+    segment_is_free,
+)
 
 
 class RRTPlanner(BaseGlobalPlanner):
@@ -28,7 +32,14 @@ class RRTPlanner(BaseGlobalPlanner):
         max_iterations=5000,
         bounds_margin=1.0,
         seed=None,
+        grid=None,
+        search_bounds=None,
+        collision_step=None,
     ):
+        if (grid is None) != (search_bounds is None):
+            raise ValueError("grid and search_bounds must be supplied together")
+        if grid is not None and bounds is not None:
+            raise ValueError("occupancy mode uses search_bounds, not bounds")
         self.bounds = bounds
         self.step_size = float(step_size)
         self.goal_tolerance = float(goal_tolerance)
@@ -36,8 +47,20 @@ class RRTPlanner(BaseGlobalPlanner):
         self.max_iterations = int(max_iterations)
         self.bounds_margin = float(bounds_margin)
         self._rng = np.random.RandomState(seed)
+        self._grid = grid
+        self._search_bounds = self._validate_search_bounds(search_bounds)
+        self._collision_step = (
+            float(collision_step) if collision_step is not None
+            else (0.5 * float(grid.resolution) if grid is not None else None)
+        )
+        self.last_iterations = 0
 
     def plan(self, start, goal, obstacles=None):
+        if self._grid is not None:
+            if obstacles is not None:
+                raise ValueError("occupancy mode reads obstacles only from grid")
+            return self._plan_occupancy(start, goal)
+
         obstacles = list(obstacles) if obstacles else []
         start = np.asarray(start, dtype=float)
         goal = np.asarray(goal, dtype=float)
@@ -67,6 +90,55 @@ class RRTPlanner(BaseGlobalPlanner):
                 return self._reconstruct(nodes, parents, len(nodes) - 1)
 
         raise RuntimeError("RRTPlanner: exceeded max_iterations without reaching goal")
+
+    def _plan_occupancy(self, start, goal):
+        start = np.asarray(start, dtype=float)
+        goal = np.asarray(goal, dtype=float)
+        if start.shape != (3,) or goal.shape != (3,):
+            raise ValueError("start and goal must each be 3-element points")
+        if not self._point_free(start):
+            raise RuntimeError("RRTPlanner: start is occupied or outside search_bounds")
+        if not self._point_free(goal):
+            raise RuntimeError("RRTPlanner: goal is occupied or outside search_bounds")
+        if self._segment_free(start, goal):
+            return [start, goal]
+
+        nodes = [start]
+        parents = [-1]
+        bounds = list(zip(*self._search_bounds))
+        for iteration in range(1, self.max_iterations + 1):
+            self.last_iterations = iteration
+            sample = goal if self._rng.random_sample() < self.goal_bias else self._sample(bounds)
+            nearest_idx = self._nearest(nodes, sample)
+            new_point = self._steer(nodes[nearest_idx], sample)
+            if not self._segment_free(nodes[nearest_idx], new_point):
+                continue
+            nodes.append(new_point)
+            parents.append(nearest_idx)
+            if (np.linalg.norm(new_point - goal) <= self.goal_tolerance
+                    and self._segment_free(new_point, goal)):
+                nodes.append(goal)
+                parents.append(len(nodes) - 2)
+                return self._reconstruct(nodes, parents, len(nodes) - 1)
+        raise RuntimeError("RRTPlanner: exceeded max_iterations without reaching goal")
+
+    @staticmethod
+    def _validate_search_bounds(search_bounds):
+        if search_bounds is None:
+            return None
+        if len(search_bounds) != 2:
+            raise ValueError("search_bounds must be (lower, upper)")
+        lower, upper = (np.asarray(v, dtype=float) for v in search_bounds)
+        if lower.shape != (3,) or upper.shape != (3,) or np.any(lower >= upper):
+            raise ValueError("search_bounds lower/upper must be ordered 3-element points")
+        return lower, upper
+
+    def _point_free(self, point):
+        return point_is_free(point, self._grid, self._search_bounds)
+
+    def _segment_free(self, start, end):
+        return segment_is_free(start, end, self._grid, self._search_bounds,
+                               self._collision_step)
 
     def _default_bounds(self, start, goal):
         lo = np.minimum(start, goal) - self.bounds_margin
