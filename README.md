@@ -40,15 +40,6 @@ ROS2 Humble に対応しています．
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
-### GNCの枠組み
-
-| 役割 | 内容 |
-|---|---|
-| **[Guidance](gnc_py/sobits_intball2_gnc/guidance/README.md)** | 目標軌道 `p_des(t), v_des(t), a_des(t), q_des(t)` を生成 |
-| **[Navigation](gnc_py/sobits_intball2_gnc/navigation/README.md)** | 自己位置推定，移動先地点配信 | 
-| **[Control](gnc_py/sobits_intball2_gnc/control/README.md)** | 目標軌道を追従する force/torque を計算し，8 duty へ配分 |
-
-<p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
 ### パッケージ構成
 
@@ -124,16 +115,81 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
 
 ## 実行方法
 
-- [gnc_bringup.launch.py](gnc_py/launch/gnc_bringup.launch.py)を起動し，移動先地点の配信と現在位置・姿勢の保持（[control.launch.py](gnc_py/launch/control.launch.py)を含む）を行います．
-    ```
+1.  [gnc_bringup.launch.py](gnc_py/launch/gnc_bringup.launch.py)を起動します
+    - 現在位置・姿勢の保持，移動先地点の配信，マップの配信などを行います
+    ```sh
     ros2 launch sobits_intball2_gnc gnc_bringup.launch.py
     ```
-    `control_node`を別に起動する場合は`use_control:=false`を付け，`ros2 launch sobits_intball2_gnc control.launch.py`を起動します．
-- [guidance.py](gnc_py/sobits_intball2_gnc/guidance/guidance.py)を起動し，目標軌道の生成・追従を行います．
-    ```
+2.  [guidance.launch.py](gnc_py/launch/guidance.launch.py)を起動し，目標軌道の生成・追従を行うためのAction Serverを起動します
+    ```sh
     ros2 launch sobits_intball2_gnc guidance.launch.py
     ```
-    詳細は[guidance/README.md](gnc_py/sobits_intball2_gnc/guidance/README.md)を参照してください．
+- テレオペ(今いる位置からの相対移動)を行う場合，[move_relative_client.py](gnc_py/sobits_intball2_gnc/guidance/ros/move_relative_client.py)を起動します
+  - 移動量は`-x -y -z`[m]，回転は`-r -p -w`（roll/pitch/yaw）[deg]
+  ```sh
+  ros2 run sobits_intball2_gnc move_relative_client -x 0.3 -w 90
+  ```
+- 絶対移動を行う場合，[move_to_client.py](gnc_py/sobits_intball2_gnc/guidance/ros/move_to_client.py)にTFフレーム名を指定して起動します
+  ```sh
+  ros2 run sobits_intball2_gnc move_to_client nav_entry
+  ```
+  - 様々なパラメータがあり，`ros2 param set /guidance_node <名前> <値>`で変更できます
+  - 使用例
+    - **障害物回避なしの高速移動の場合**
+      - 一度だけ計画した軌道を追従
+        ```sh
+        ros2 param set /guidance_node guidance.trajectory_tracking_mode static_toppra
+        ```
+      - 進行方向を向いて移動しない
+        ```sh
+        ros2 param set /guidance_node guidance.attitude_reference_mode fixed
+        ```
+      - 出発前の姿勢合わせなし
+        ```sh
+        ros2 param set /guidance_node guidance.pre_align false
+        ```
+      - 到着時の姿勢合わせなし
+        ```sh
+        ros2 param set /guidance_node guidance.align_at_arrival false
+        ```
+
+    - **動的未知障害物回避**
+      - 軌道再生成
+        ```sh
+        ros2 param set /guidance_node guidance.trajectory_tracking_mode static_toppra
+        ```
+      - 進行方向を向いて移動
+        ```sh
+        ros2 param set /guidance_node guidance.attitude_reference_mode face_travel
+        ```
+      - 出発前の姿勢合わせあり
+        ```sh
+        ros2 param set /guidance_node guidance.pre_align true
+        ```
+      - 到着時の姿勢合わせあり
+        ```sh
+        ros2 param set /guidance_node guidance.align_at_arrival true
+        ```
+
+  | やりたいこと | パラメータ | 値 |
+  |---|---|---|
+  | 追従の方式を選ぶ | `guidance.trajectory_tracking_mode` | `static_toppra`（既定、一度だけ計画した軌道を追従）/ `static_minco` / `replan_minco`（障害物回避） |
+  | 進行方向を向いて移動する | `guidance.attitude_reference_mode` | `face_travel`（既定）/ `fixed` |
+  | 同上（`replan_minco`のとき） | `guidance.minco_replan_face_travel`、`guidance.minco_planning_horizon_m` | 既定で`true`と`4.0`（姿勢を固定するなら`false`。face travelのまま先読みを2mにすると角を曲がりきれない） |
+  | 出発前・到着時の姿勢合わせ | `guidance.pre_align`、`guidance.align_at_arrival` | `true`（既定）/ `false` |
+
+<p align="right">(<a href="#readme-top">上に戻る</a>)</p>
+
+### GNCの枠組み
+詳細は各READMEを参照してください
+| 役割 | 内容 |
+|---|---|
+| **[Guidance](gnc_py/sobits_intball2_gnc/guidance/README.md)** | 目標軌道を生成 |
+| **[Navigation](gnc_py/sobits_intball2_gnc/navigation/README.md)** | 自己位置推定，移動先地点を配信 | 
+| **[Control](gnc_py/sobits_intball2_gnc/control/README.md)** | 位置・姿勢保持，目標軌道を追従 |
+
+<p align="right">(<a href="#readme-top">上に戻る</a>)</p>
+
 
 ### 仮想カメラ（シム専用）
 
