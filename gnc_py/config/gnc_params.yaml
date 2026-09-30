@@ -165,7 +165,7 @@
       obstacle_grid_inflation: 0.2           # [m] robot radius 0.1 + 0.1 margin, whole cells (read-only)
       # boxes = /guidance/virtual_obstacles, depth = depth camera log-odds layer
       # (docs/archive/2026-09-28_virtual_camera_depth_mapping_plan.md); read-only
-      obstacle_source: boxes
+      obstacle_source: depth
       depth:
         topic: /virtual_camera/main/depth
         timeout: 1.0                         # [s] no frame this long (TF stamp clock) -> stop and hold
