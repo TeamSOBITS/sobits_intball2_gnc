@@ -34,7 +34,7 @@ from trajectory_msgs.msg import MultiDOFJointTrajectory
 
 from sobits_intball2_gnc.common.ros.tf_client import TfClient
 from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle
-from sobits_intball2_gnc.guidance.ros.move_to_client import MoveToClient
+from sobits_intball2_gnc.guidance.move_to import resolve_location
 
 ACTION_NAME = "/gnc/move_to"
 REFERENCE_FRAME = "iss_body"
@@ -75,15 +75,13 @@ def main():
 
 def _run(node, args):
     log = node.get_logger()
-    target = MoveToClient(node, reference_frame=REFERENCE_FRAME).resolve_location(
-        args.location_name)
+    target = resolve_location(node, args.location_name, REFERENCE_FRAME)
     if target is None:
         log.error("location '%s' not found in TF" % args.location_name)
         return
     cancel_near = None
     if args.cancel_near:
-        near = MoveToClient(node, reference_frame=REFERENCE_FRAME).resolve_location(
-            args.cancel_near)
+        near = resolve_location(node, args.cancel_near, REFERENCE_FRAME)
         if near is None:
             log.error("location '%s' not found in TF" % args.cancel_near)
             return

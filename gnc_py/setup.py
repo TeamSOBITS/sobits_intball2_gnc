@@ -35,7 +35,7 @@ setup(
             'sobits_intball2_gnc.navigation.octomap_marker_publisher:main',
             # Control-system orchestrator (the single control node).
             'control = sobits_intball2_gnc.control.control:main',
-            # ros/ wrapper manual-test entry points.
+            # ROS wrapper manual tests and move commands.
             'fan_duty_publisher = sobits_intball2_gnc.control.ros.fan_duty_publisher:main',
             'imu_subscriber = sobits_intball2_gnc.control.ros.imu_subscriber:main',
             'set_operation_type_client = '
@@ -54,9 +54,9 @@ setup(
             'checkpoint_publisher = '
             'sobits_intball2_gnc.guidance.ros.checkpoint_publisher:main',
             'move_to_client = '
-            'sobits_intball2_gnc.guidance.ros.move_to_client:main',
+            'sobits_intball2_gnc.guidance.move_to:main',
             'move_relative_client = '
-            'sobits_intball2_gnc.guidance.ros.move_relative_client:main',
+            'sobits_intball2_gnc.guidance.move_relative:main',
             # Guidance-system orchestrator (the single guidance node).
             'guidance = sobits_intball2_gnc.guidance.guidance:main',
         ],

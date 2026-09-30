@@ -12,7 +12,7 @@ override, which would fake the very signal the tracker is supposed to
 react to. Called from this ROS2 script via a clean ROS1 subshell (docs/archive
 [[ros1_bridge_access]] pattern), since the service isn't bridged into ROS2.
 
-Reuses test/manual/move_to_full_trace.py's pattern (TfClient + MoveToClient
+Reuses test/manual/move_to_full_trace.py's pattern (TfClient + CtlCommandActionClient
 on the same node/executor, so spin_until_future_complete inside send_goal
 still services the logging/trigger timer while blocking on the goal result).
 
@@ -46,7 +46,8 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 
 from sobits_intball2_gnc.common.ros.tf_client import TfClient
-from sobits_intball2_gnc.guidance.ros.move_to_client import MoveToClient
+from sobits_intball2_gnc.guidance.move_to import resolve_location
+from sobits_intball2_gnc.guidance.ros.ctl_command_action_client import CtlCommandActionClient
 
 OUT_CSV_DEFAULT = "/tmp/move_to_with_disturbance.csv"
 BODY_NAME = "ib2::base"
@@ -153,8 +154,8 @@ def main():
         print("TF unavailable, aborting")
         return 1
 
-    client = MoveToClient(node)
-    resolved = client.resolve_location(args.location_name)
+    client = CtlCommandActionClient(node)
+    resolved = resolve_location(node, args.location_name)
     if resolved is None:
         print(f"could not resolve '{args.location_name}' via TF")
         return 1

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-shot move_to verification: drives a real move_to goal (MoveToClient)
+"""One-shot move_to verification: drives a real move_to goal (CtlCommandActionClient)
 while recording everything relevant, event-driven (TF, `/gnc/trajectory_setpoint`,
 `/gnc/checkpoints`, `/ctl/wrench_correction`, `/ctl/wrench_achieved`, `/ctl/duty`, and every published
 global/local path preview `/gnc/trajectory_path_speed(_local)`), then computes and prints a
@@ -61,7 +61,8 @@ from trajectory_msgs.msg import MultiDOFJointTrajectory
 from visualization_msgs.msg import Marker
 
 from sobits_intball2_gnc.control.utils.quat_math import quat_conj, quat_mul
-from sobits_intball2_gnc.guidance.ros.move_to_client import MoveToClient
+from sobits_intball2_gnc.guidance.move_to import resolve_location
+from sobits_intball2_gnc.guidance.ros.ctl_command_action_client import CtlCommandActionClient
 
 REFERENCE_FRAME = "iss_body"
 TARGET_FRAME = "body"
@@ -318,7 +319,7 @@ def main():
     duty_rec = DutyRecorder(node)
     global_path_rec = PathRecorder(node, "/gnc/trajectory_path_speed")
     local_path_rec = PathRecorder(node, "/gnc/trajectory_path_speed_local")
-    move_client = MoveToClient(node)
+    move_client = CtlCommandActionClient(node)
 
     if args.set_mode is not None:
         if not set_tracking_mode(node, args.set_mode):
@@ -326,7 +327,7 @@ def main():
             rclpy.shutdown()
             return 1
 
-    resolved = move_client.resolve_location(args.location_name)
+    resolved = resolve_location(node, args.location_name)
     if resolved is None:
         print("could not resolve '%s' via TF" % args.location_name)
         node.destroy_node()
