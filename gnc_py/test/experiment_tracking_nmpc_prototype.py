@@ -33,7 +33,7 @@ import numpy as np
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
 
 MASS = 3.216  # kg, config/gnc_params.yaml trajectory_controller.mass
-DT_TICK = 0.1  # guidance.replan_rate_hz = 10.0
+DT_TICK = 0.1  # historical 10 Hz replanning budget
 REPLAN_BUDGET_S = DT_TICK
 
 P0 = np.array([10.155, -3.715, 5.163])

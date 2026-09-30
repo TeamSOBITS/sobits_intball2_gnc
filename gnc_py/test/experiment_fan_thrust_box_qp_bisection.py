@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Follow-up to test/experiment_fan_thrust_box_nlp_warmstart.py: warm-starting
 scipy SLSQP didn't help (0.155s cold vs 0.166s warm for a re-plan sub-leg,
-still ~1.5x over the 10Hz/0.1s replan budget in config/gnc_params.yaml
-guidance.replan_rate_hz). This script tests a different lever: reformulate as
+still ~1.5x over the former 10 Hz/0.1 s replanning budget). This script tests
+a different lever: reformulate as
 a QP instead of an NLP.
 
 For a *fixed* T, trapezoidal collocation is linear in (p, v, f) -- dt=T/(n-1)
@@ -31,7 +31,7 @@ from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
 
 MASS = 3.216  # kg, config/gnc_params.yaml trajectory_controller.mass
 N_NODES = 15
-REPLAN_BUDGET_S = 1.0 / 10.0  # guidance.replan_rate_hz = 10.0
+REPLAN_BUDGET_S = 1.0 / 10.0  # historical 10 Hz replanning budget
 
 P0 = np.array([10.155, -3.715, 5.163])
 P1 = np.array([11.0, -4.3, 5.0])

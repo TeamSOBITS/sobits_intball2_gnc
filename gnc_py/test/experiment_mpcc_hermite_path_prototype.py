@@ -68,7 +68,7 @@ from sobits_intball2_gnc.guidance.trajectory.generation.hermite_spline_trajector
 
 MASS = 3.216  # kg, config/gnc_params.yaml trajectory_controller.mass
 INERTIA = 0.0136  # kg*m^2, isotropic, trajectory_controller.inertia
-DT_TICK = 0.1  # guidance.replan_rate_hz = 10.0
+DT_TICK = 0.1  # historical 10 Hz replanning budget
 REPLAN_BUDGET_S = DT_TICK
 
 # Two ~0.58m chords, 90 degree turn at the interior waypoint, all in the
