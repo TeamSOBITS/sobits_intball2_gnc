@@ -36,10 +36,12 @@ from sobits_intball2_gnc.guidance.constraints.actuation_envelope import (
 from sobits_intball2_gnc.guidance.guidance_params import (
     ATTITUDE_REFERENCE_MODES,
     CAMERA_NAMES,
+    MOTION_PROFILES,
+    MOTION_PROFILE_FIELDS,
     OBSTACLE_SOURCES,
     RELATIVE_GOAL_OVERRIDES,
     declare_guidance_params,
-    goal_execute_kwargs,
+    goal_motion_profile,
 )
 from sobits_intball2_gnc.guidance.local_planner.obstacle_map import ObstacleMap
 from sobits_intball2_gnc.guidance.ros.checkpoint_publisher import CheckpointPublisher
@@ -328,6 +330,7 @@ class GuidanceNode(Node):
         # here; velocity_estimate_rate is a timer period, only read at node
         # construction, so it's read-only (declared with static_descriptor
         # above) rather than handled here.
+        self._motion_profile_overrides = set()
         self.add_on_set_parameters_callback(self._on_set_parameters)
 
     def _on_virtual_obstacles(self, clear, set_boxes, remove) -> None:
@@ -430,6 +433,13 @@ class GuidanceNode(Node):
                 self._vel_estimator.set_gains(max_dt=float(p.value))
             elif p.name == "guidance.velocity_estimate_alpha":
                 self._vel_estimator.set_gains(alpha=float(p.value))
+            elif p.name == "guidance.motion_profile":
+                if str(p.value) not in MOTION_PROFILES:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="guidance.motion_profile must be one of %s"
+                        % sorted(MOTION_PROFILES),
+                    )
             elif p.name == "guidance.attitude_reference_mode":
                 if str(p.value) not in ATTITUDE_REFERENCE_MODES:
                     return SetParametersResult(
@@ -454,6 +464,13 @@ class GuidanceNode(Node):
                     )
             # Any other declared parameter is Category B/C (latched or
             # static) -- accepted but intentionally not applied at runtime.
+        if any(p.name == "guidance.motion_profile" for p in params):
+            self._motion_profile_overrides.clear()
+        for p in params:
+            if p.name.startswith("guidance."):
+                field = p.name.removeprefix("guidance.")
+                if field in MOTION_PROFILE_FIELDS and field != "motion_profile":
+                    self._motion_profile_overrides.add(field)
         return SetParametersResult(successful=True)
 
     def _execute_fn(self, p_target, q_target, feedback_cb, is_cancel_requested,
@@ -466,7 +483,25 @@ class GuidanceNode(Node):
         docs/archive/achieved/2026-08-21_dynamic_parameter_classification.md)
         rather than reacting to a change mid-trajectory.
         """
-        mode = str(self.get_parameter("guidance.attitude_reference_mode").value)
+        try:
+            profile, mode, execute_kwargs = goal_motion_profile(
+                self, self._motion_profile_overrides
+            )
+        except ValueError as exc:
+            self.get_logger().error("[GuidanceNode] %s" % exc)
+            return TERMINATE_ABORTED
+        if profile == "avoidance" and not relative:
+            if self._obstacle_map is None:
+                self.get_logger().error(
+                    "[GuidanceNode] avoidance profile requires an obstacle map"
+                )
+                return TERMINATE_ABORTED
+            if self._obstacle_map.uses_depth and not self._depth_fresh():
+                self.get_logger().error(
+                    "[GuidanceNode] avoidance profile requires a fresh depth frame"
+                )
+                return TERMINATE_ABORTED
+        self.get_logger().info("[GuidanceNode] motion profile: %s" % profile)
         if mode == "look_at" and not relative:
             self.get_logger().warn(
                 "[GuidanceNode] attitude_reference_mode=look_at is not yet "
@@ -523,7 +558,6 @@ class GuidanceNode(Node):
             tr = t.transform.translation
             via_waypoints.append([tr.x, tr.y, tr.z])
 
-        execute_kwargs = goal_execute_kwargs(self)
         face_travel = mode == "face_travel"
         if relative:
             execute_kwargs.update(RELATIVE_GOAL_OVERRIDES)
