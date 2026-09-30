@@ -83,6 +83,7 @@ target_include_directories(gnc_cpp_core
 target_link_libraries(gnc_cpp_core PRIVATE OpenMP::OpenMP_CXX ${OCTOMAP_LIBRARIES} tinyxml2::tinyxml2)
 
 pybind11_add_module(sobits_intball2_gnc_cpp python/bindings.cpp)
+target_include_directories(sobits_intball2_gnc_cpp PRIVATE ${GCOPTER_INCLUDE_DIR})
 target_link_libraries(sobits_intball2_gnc_cpp PRIVATE gnc_cpp_core)
 
 ament_get_python_install_dir(PYTHON_INSTALL_DIR)
@@ -111,6 +112,11 @@ if(BUILD_TESTING)
   target_include_directories(test_rebound_penalties PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src ${GCOPTER_INCLUDE_DIR})
   target_link_libraries(test_rebound_penalties gnc_cpp_core)
+  add_executable(experiment_firi_jem_corridor test/experiment_firi_jem_corridor.cpp)
+  target_include_directories(experiment_firi_jem_corridor PRIVATE ${GCOPTER_INCLUDE_DIR})
+  target_link_libraries(experiment_firi_jem_corridor gnc_cpp_core)
+  add_executable(experiment_gcopter_free_internal_points test/experiment_gcopter_free_internal_points.cpp)
+  target_include_directories(experiment_gcopter_free_internal_points PRIVATE ${GCOPTER_INCLUDE_DIR} /usr/include/eigen3)
 endif()
 
 ament_package()

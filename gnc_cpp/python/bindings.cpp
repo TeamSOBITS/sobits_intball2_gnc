@@ -13,6 +13,8 @@
 #include "sobits_intball2_gnc_cpp/mapping/octomap_io.hpp"
 #include "sobits_intball2_gnc_cpp/guidance/rebound/rebound.hpp"
 #include "sobits_intball2_gnc_cpp/perception/depth_renderer.hpp"
+#include "sobits_intball2_gnc_cpp/perception/mesh_voxels.hpp"
+#include "gcopter/firi.hpp"
 
 namespace py = pybind11;
 
@@ -34,16 +36,70 @@ plan_minco(const std::vector<double>& waypoints_flat,
            bool obstacle_touch_goal,
            double obstacle_clearance,
            double obstacle_clearance_soft,
-           const sobits_intball2_gnc::mapping::OccupancyGrid* grid) {
+           const sobits_intball2_gnc::mapping::OccupancyGrid* grid,
+           std::optional<std::vector<double>> corridor_planes) {
   std::shared_lock<std::shared_mutex> gridLock;
   if (grid) gridLock = grid->readLock();
   const sobits_intball2_gnc::guidance::PlanResult result =
       sobits_intball2_gnc::guidance::planMinco(waypoints_flat, v0, w0, via_half_width, wrench_safety_margin,
                                warm_start_qvia, warm_start_T, a0, v_tail, rot_a0, rot_v_tail,
                                max_vel, q0, obstacle_pairs, obstacle_touch_goal,
-                               obstacle_clearance, obstacle_clearance_soft, grid);
+                               obstacle_clearance, obstacle_clearance_soft, grid, corridor_planes);
   return std::make_tuple(result.success, result.error_code, result.segment_times,
                           result.coeffs_flat, result.duration);
+}
+
+std::vector<double> firi_corridor_planes(const std::vector<double>& route_flat,
+                                         const std::vector<double>& obstacle_points_flat,
+                                         double inflation,
+                                         const std::vector<double>& lower,
+                                         const std::vector<double>& upper,
+                                         double local_margin) {
+  if (route_flat.size() < 6 || route_flat.size() % 3 != 0 || obstacle_points_flat.size() % 3 != 0 ||
+      lower.size() != 3 || upper.size() != 3 || inflation < 0.0) {
+    throw std::invalid_argument("route/obstacles must be flat xyz and bounds must have 3 values");
+  }
+  std::vector<Eigen::Vector3d> route, obstacles;
+  route.reserve(route_flat.size() / 3);
+  obstacles.reserve(obstacle_points_flat.size() / 3);
+  for (std::size_t i = 0; i < route_flat.size(); i += 3)
+    route.emplace_back(route_flat[i], route_flat[i + 1], route_flat[i + 2]);
+  for (std::size_t i = 0; i < obstacle_points_flat.size(); i += 3)
+    obstacles.emplace_back(obstacle_points_flat[i], obstacle_points_flat[i + 1], obstacle_points_flat[i + 2]);
+  const Eigen::Vector3d lo(lower[0], lower[1], lower[2]), hi(upper[0], upper[1], upper[2]);
+  std::vector<double> result;
+  for (std::size_t segment = 0; segment + 1 < route.size(); ++segment) {
+    const auto a = route[segment], b = route[segment + 1];
+    const Eigen::Vector3d margin = Eigen::Vector3d::Constant(local_margin);
+    const Eigen::Vector3d segmentLo = local_margin < 0.0 ? lo : lo.cwiseMax(a.cwiseMin(b) - margin);
+    const Eigen::Vector3d segmentHi = local_margin < 0.0 ? hi : hi.cwiseMin(a.cwiseMax(b) + margin);
+    Eigen::Matrix<double, 6, 4> bounds = Eigen::Matrix<double, 6, 4>::Zero();
+    for (int axis = 0; axis < 3; ++axis) {
+      bounds(2 * axis, axis) = 1.0; bounds(2 * axis, 3) = -segmentHi(axis);
+      bounds(2 * axis + 1, axis) = -1.0; bounds(2 * axis + 1, 3) = segmentLo(axis);
+    }
+    std::vector<Eigen::Vector3d> points;
+    for (const auto& p : obstacles) {
+      if ((p.array() < segmentLo.array()).any() || (p.array() > segmentHi.array()).any()) continue;
+      for (int dx = -1; dx <= 1; ++dx)
+        for (int dy = -1; dy <= 1; ++dy)
+          for (int dz = -1; dz <= 1; ++dz)
+            points.push_back(p + inflation * Eigen::Vector3d(dx, dy, dz));
+    }
+    Eigen::Matrix3Xd cloud(3, points.size());
+    for (std::size_t i = 0; i < points.size(); ++i) cloud.col(i) = points[i];
+    Eigen::MatrixX4d poly;
+    if (!firi::firi(bounds, cloud, a, b, poly) ||
+        (poly * Eigen::Vector4d(a.x(), a.y(), a.z(), 1.0)).maxCoeff() > 1e-6 ||
+        (poly * Eigen::Vector4d(b.x(), b.y(), b.z(), 1.0)).maxCoeff() > 1e-6) {
+      throw std::runtime_error("FIRI failed to contain a route segment");
+    }
+    for (int row = 0; row < poly.rows(); ++row) {
+      result.push_back(static_cast<double>(segment));
+      result.insert(result.end(), {poly(row, 0), poly(row, 1), poly(row, 2), poly(row, 3)});
+    }
+  }
+  return result;
 }
 
 std::tuple<bool, int, std::vector<double>, std::vector<double>, double>
@@ -231,6 +287,15 @@ PYBIND11_MODULE(sobits_intball2_gnc_cpp, m) {
         }, py::arg("path"),
         "(resolution, occupied voxel centers flat [x,y,z]...) of an OctoMap .bt, pruned leaves "
         "expanded to the finest resolution.");
+  m.def("load_mesh_surface_voxels", [](const std::string& path, double resolution) {
+          return perception::surfaceVoxelCenters(perception::loadDaeTriangles(path), resolution);
+        }, py::arg("path"), py::arg("resolution"),
+        "Voxelize a Collada mesh surface for the offline virtual-depth renderer.");
+  m.def("firi_corridor_planes", &firi_corridor_planes, py::call_guard<py::gil_scoped_release>(),
+        py::arg("route_flat"), py::arg("obstacle_points_flat"), py::arg("inflation"),
+        py::arg("lower"), py::arg("upper"), py::arg("local_margin") = -1.0,
+        "Generate FIRI half-spaces as [segment,nx,ny,nz,b] x n from an in-memory point cloud; "
+        "local_margin >= 0 restricts each corridor to its segment bounding box plus that margin.");
   m.def("rebound_pairs", &rebound_pairs,
         py::arg("grid"), py::arg("segment_times"), py::arg("coeffs_flat"), py::arg("max_vel"),
         py::arg("touch_goal") = false, py::arg("obstacle_pairs") = std::vector<double>{},
@@ -255,6 +320,7 @@ PYBIND11_MODULE(sobits_intball2_gnc_cpp, m) {
         py::arg("obstacle_clearance") = 0.1,
         py::arg("obstacle_clearance_soft") = 0.5,
         py::arg("grid") = nullptr,
+        py::arg("corridor_planes") = py::none(),
         "Plan a MINCO trajectory. via_half_width: position via-point free-variable "
         "box half-width [m] (0.0 pins via points exactly, TOPPRA-style; inf leaves them unboxed). "
         "wrench_safety_margin: shrinks the loaded wrench envelope by this factor "
