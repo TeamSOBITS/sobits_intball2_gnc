@@ -337,6 +337,46 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /gnc/trajectory_path_speed_local
       Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
+      Color: 0; 255; 120
+      Enabled: true
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
+      Line Style: Lines
+      Line Width: 0.039999999105930328
+      Name: Path (global A* corridor reference)
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /gnc/global_corridor_astar
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray (FIRI safe corridor)
+      Namespaces:
+        firi_corridor: true
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /gnc/global_corridor_markers
+      Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: false
       Name: Marker (JEM octomap)
@@ -367,14 +407,14 @@ Visualization Manager:
       Max Value: 1
       Median window: 5
       Min Value: 0
-      Name: Image
+      Name: Image (virtual camera main depth)
       Normalize Range: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /camera_main/image_raw
+        Value: /virtual_camera/main/depth
       Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: true

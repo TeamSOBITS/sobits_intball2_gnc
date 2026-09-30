@@ -122,6 +122,9 @@ GUIDANCE_PARAM_DEFAULTS = {
     # Robot radius 0.1 m + 0.1 m margin, applied in whole cells (0.15 = 0.2 at 0.1 m resolution).
     "guidance.obstacle_grid_inflation": 0.2,
     "guidance.minco_obstacle_avoidance": False,
+    # Optional A*6 + FIRI enhancement of the depth local-avoidance profile.
+    # Latched per goal; False preserves the established tracker path exactly.
+    "guidance.global_corridor_avoidance": False,
     "guidance.minco_local_piece_length_m": 1.5,
     "guidance.minco_obstacle_clearance_soft": 0.2,
     # Obstacles from boxes (/guidance/virtual_obstacles) or the depth camera
@@ -220,6 +223,7 @@ _GOAL_EXECUTE_PARAMS = {
     "minco_local_max_vel": ("minco_local_max_vel", float),
     "minco_async_replan": ("minco_async_replan", bool),
     "minco_obstacle_avoidance": ("minco_obstacle_avoidance", bool),
+    "global_corridor_avoidance": ("global_corridor_avoidance", bool),
     "minco_local_piece_length_m": ("minco_local_piece_length_m", float),
     "minco_obstacle_clearance_soft": ("minco_obstacle_clearance_soft", float),
 }

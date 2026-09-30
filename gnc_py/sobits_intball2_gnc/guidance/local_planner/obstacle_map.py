@@ -46,6 +46,25 @@ class ObstacleMap:
     def static_point_count(self):
         return len(self._points) // 3
 
+    @property
+    def inflation(self):
+        """Configured robot-plus-margin inflation in metres."""
+        return self._inflation
+
+    def corridor_points_snapshot(self):
+        """Static and currently occupied depth points for one FIRI snapshot.
+
+        The returned array is a copy: a corridor solve must not retain mutable
+        depth-layer storage while the depth subscriber integrates its next
+        frame.  Box-mode support is intentionally deferred; boxes have their
+        own replacement-grid transaction semantics and need voxel expansion.
+        """
+        if not self.uses_depth:
+            raise RuntimeError("FIRI corridor snapshots currently require depth obstacles")
+        static = np.asarray(self._points, dtype=float).reshape(-1, 3)
+        depth = np.asarray(self.grid.depth_occupied_cells(), dtype=float).reshape(-1, 3)
+        return np.concatenate((static, depth), axis=0)
+
     def boxes(self):
         """``{key: (center, half_extents)}`` currently in the map."""
         with self._lock:

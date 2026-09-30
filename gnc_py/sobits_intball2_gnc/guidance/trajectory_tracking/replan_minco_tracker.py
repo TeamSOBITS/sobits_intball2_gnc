@@ -162,13 +162,14 @@ class ReplanMincoTracker:
                  local_replan_period=DEFAULT_LOCAL_REPLAN_PERIOD_S,
                  planning_horizon_m=DEFAULT_PLANNING_HORIZON_M,
                  via_half_width=0.3, wrench_safety_margin=1.0,
+                 corridor_planes=None,
                  attitude_resample_spacing_m=None,
                  initial_v0=None, face_travel=False, forward_axis=(1.0, 0.0, 0.0),
                  local_max_vel=None, async_replan=False, local_piece_length_m=None,
                  obstacle_grid=None, obstacle_clearance_soft=0.5, stop_profile_fn=None,
                  emergency_time_s=None,
                  collision_check_period=DEFAULT_COLLISION_CHECK_PERIOD_S,
-                 sensor_fresh_fn=None):
+                 sensor_fresh_fn=None, corridor_session=None):
         if (target_speed is None) != (max_accel is None):
             raise ValueError(
                 "target_speed and max_accel must be given together (both "
@@ -209,6 +210,9 @@ class ReplanMincoTracker:
         self._brake_replan_t = 0.0
         self._brake_switch = None
         self._recent_replan_waits = collections.deque(maxlen=REPLAN_WAIT_WINDOW)
+        # Optional global A*+FIRI mode.  Kept as a separate session so the
+        # default tracker retains its established periodic-local behavior.
+        self._corridor_session = corridor_session
 
         v0 = np.zeros(3) if initial_v0 is None else np.asarray(initial_v0, dtype=float)
         self._last_p_now = p0.copy()
@@ -225,7 +229,7 @@ class ReplanMincoTracker:
             p0, v0, p_target, self._q0, target_speed, max_accel, route_waypoints,
             planning_horizon_m, via_half_width, wrench_safety_margin,
             attitude_resample_spacing_m, face_travel, forward_axis, local_max_vel,
-            local_piece_length_m, obstacle_grid, obstacle_clearance_soft)
+            local_piece_length_m, obstacle_grid, obstacle_clearance_soft, corridor_planes)
         self.last_goal_moved_out_of_obstacle = False
 
         self._local_elapsed = 0.0
@@ -306,7 +310,9 @@ class ReplanMincoTracker:
                         return self._sample_emergency_stop(0.0)
         elif (not self._goal_local_played_out()
                 and self._local_elapsed >= self._local_replan_period
-                and self._since_replan_attempt >= self._local_replan_period):
+                and self._since_replan_attempt >= self._local_replan_period
+                and (self._corridor_session is None
+                     or self._local_elapsed >= self._local_trajectory.global_total_duration)):
             self._since_replan_attempt = 0.0
             if self._async_replan:
                 self._start_background_replan()
@@ -353,8 +359,18 @@ class ReplanMincoTracker:
         self._planner.obstacle_grid = grid
 
     def _check_collision(self):
+        corridor_update = False
+        if self._corridor_session is not None:
+            p_ref, _v_ref, _a_ref, _q_ref = self._local_trajectory.sample(self._local_elapsed)
+            corridor_update = self._corridor_session.update_required(p_ref)
         self.last_collision_ahead_s = self._collision_ahead_s()
+        if self.last_collision_ahead_s is None and not corridor_update:
+            return
         if self.last_collision_ahead_s is None:
+            if self._async_replan and self._pending_thread is None:
+                self._start_background_replan()
+            elif not self._async_replan:
+                self._adopt_local(self._try_build_local(self._reference_start_state()), 0.0, "corridor")
             return
         if self._async_replan:
             # Like EGO v2: keep playing the old local while replanning, decide to stop on the
@@ -575,5 +591,8 @@ class ReplanMincoTracker:
         return self._planner.p_target.copy()
 
     def _build_local(self, p0, v0, a0, rv0, rv_rate0, rv_accel0, prev_local, prev_elapsed):
+        if self._corridor_session is not None:
+            return self._corridor_session.build_local(
+                p0, v0, a0, rv0, rv_rate0, rv_accel0, prev_local, prev_elapsed)
         return self._planner.build_local(p0, v0, a0, rv0, rv_rate0, rv_accel0, prev_local,
                                          prev_elapsed, rest_failures=self._rest_replan_failures)
