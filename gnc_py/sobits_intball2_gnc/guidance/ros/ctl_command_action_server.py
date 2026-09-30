@@ -198,11 +198,16 @@ class CtlCommandActionServer:
 
         self._executing = True
         try:
-            status = self._execute_fn(
-                p_target, q_target, feedback_cb,
-                lambda: goal_handle.is_cancel_requested,
-                goal_handle.request.type.type == CtlStatusType.MOVE_TO_RELATIVE_TARGET,
-            )
+            try:
+                status = self._execute_fn(
+                    p_target, q_target, feedback_cb,
+                    lambda: goal_handle.is_cancel_requested,
+                    goal_handle.request.type.type == CtlStatusType.MOVE_TO_RELATIVE_TARGET,
+                )
+            except Exception as exc:  # boundary: planner exceptions must not leave goal state unset
+                self._node.get_logger().error(
+                    "[CtlCommandActionServer] execute failed: %s" % exc)
+                status = TERMINATE_ABORTED
         finally:
             self._executing = False
 
