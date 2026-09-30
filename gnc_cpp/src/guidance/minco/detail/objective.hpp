@@ -31,6 +31,9 @@ struct EvalContext
     int obstacleLastId = 0;
     double obstacleClearance = 0.0;
     double obstacleClearanceSoft = 0.0;
+    // Segment-indexed FIRI half-spaces n.dot(p)+b <= 0.  Unlike rebound
+    // pairs, these are persistent global safe-corridor constraints.
+    std::vector<std::vector<Eigen::Vector4d>> corridorPlanes;
     // Rebound during optimization (roughlyCheckConstraintPoints), grid given only.
     const mapping::OccupancyGrid *grid = nullptr;
     bool obstacleTouchGoal = false;

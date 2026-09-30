@@ -45,4 +45,8 @@ double addObstacleCost(const Eigen::MatrixX3d &coeffsPos, const Eigen::VectorXd 
                        const std::vector<std::vector<ObstaclePair>> &pairsByPoint, int lastId,
                        double clearance, double clearanceSoft, Eigen::MatrixX3d &gdC, Eigen::VectorXd &gdT);
 
+double addCorridorCost(const Eigen::MatrixX3d &coeffsPos, const Eigen::VectorXd &T, int K,
+                       const std::vector<std::vector<Eigen::Vector4d>> &planesBySegment,
+                       Eigen::MatrixX3d &gdC, Eigen::VectorXd &gdT);
+
 }  // namespace sobits_intball2_gnc::guidance

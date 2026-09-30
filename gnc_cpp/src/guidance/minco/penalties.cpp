@@ -14,6 +14,7 @@ namespace
 // Weight of the clearance term; w_h already assumes the T_k/kappa quadrature weight below.
 constexpr double W_HARD = 1.0e3;
 constexpr double W_SOFT = 0.5 * W_HARD;
+constexpr double W_CORRIDOR = 1.0e5;
 
 constexpr double SOFT_HUBER_RADIUS = 0.05;
 
@@ -183,6 +184,42 @@ double addObstacleCost(const MatrixX3d &coeffsPos, const VectorXd &T, int K,
             gdC.block<6, 3>(k * 6, 0) += beta0 * (w * gradQ).transpose();
             const Vector3d qDot = c.transpose() * polyBasis(s, 1);
             gdT(k) += w * gradQ.dot(qDot) * alpha + node * pointCost / C;
+        }
+    }
+    return total;
+}
+
+double addCorridorCost(const MatrixX3d &coeffsPos, const VectorXd &T, int K,
+                       const std::vector<std::vector<Vector4d>> &planesBySegment,
+                       MatrixX3d &gdC, VectorXd &gdT)
+{
+    const int C = CONSTRAINT_POINTS_PER_PIECE;
+    double total = 0.0;
+    for (int k = 0; k < K; ++k)
+    {
+        if (k >= static_cast<int>(planesBySegment.size())) continue;
+        const Matrix<double, 6, 3> &c = coeffsPos.block<6, 3>(k * 6, 0);
+        const double step = T(k) / C;
+        for (int i = 0; i <= C; ++i)
+        {
+            const double alpha = static_cast<double>(i) / C;
+            const double s = alpha * T(k);
+            const Matrix<double, 6, 1> beta = polyBasis(s, 0);
+            const Vector3d q = c.transpose() * beta;
+            Vector3d gradQ = Vector3d::Zero();
+            double pointCost = 0.0;
+            for (const Vector4d &plane : planesBySegment[k])
+            {
+                double dCost;
+                pointCost += W_CORRIDOR * hardClearanceCost(plane.head<3>().dot(q) + plane(3), dCost);
+                gradQ += W_CORRIDOR * dCost * plane.head<3>();
+            }
+            if (pointCost == 0.0) continue;
+            const double node = (i == 0 || i == C) ? 0.5 : 1.0;
+            const double w = node * step;
+            total += w * pointCost;
+            gdC.block<6, 3>(k * 6, 0) += beta * (w * gradQ).transpose();
+            gdT(k) += w * gradQ.dot(c.transpose() * polyBasis(s, 1)) * alpha + node * pointCost / C;
         }
     }
     return total;

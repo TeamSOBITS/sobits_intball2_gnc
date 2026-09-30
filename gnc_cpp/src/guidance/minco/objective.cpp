@@ -161,6 +161,11 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
                                        ctx->obstacleClearance, ctx->obstacleClearanceSoft,
                                        gdC_penalty_pos, gdT_penalty);
     }
+    if (!ctx->corridorPlanes.empty())
+    {
+        penaltyCost += addCorridorCost(coeffsPos, T, K, ctx->corridorPlanes,
+                                       gdC_penalty_pos, gdT_penalty);
+    }
 
     const MatrixX3d gdC_total_pos = W_ENERGY * gdC_energy_pos + gdC_penalty_pos;
     const MatrixX3d gdC_total_rot = W_ENERGY * gdC_energy_rot + gdC_penalty_rot;

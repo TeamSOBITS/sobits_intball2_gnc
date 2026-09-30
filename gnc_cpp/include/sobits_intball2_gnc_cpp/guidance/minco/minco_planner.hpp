@@ -14,7 +14,7 @@ namespace sobits_intball2_gnc::guidance
 struct PlanResult
 {
     bool success = false;
-    int error_code = 1;  // 0=OK, 1=INFEASIBLE, 2=COLLISION (gridを渡したときだけ)
+    int error_code = 1;  // 0=OK, 1=INFEASIBLE, 2=COLLISION, 3=CORRIDOR_VIOLATION
     std::vector<double> segment_times;
     std::vector<double> coeffs_flat;
     double duration = 0.0;
@@ -74,7 +74,8 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       bool obstacle_touch_goal = false,
                       double obstacle_clearance = 0.1,
                       double obstacle_clearance_soft = 0.5,
-                      const mapping::OccupancyGrid *grid = nullptr);
+                      const mapping::OccupancyGrid *grid = nullptr,
+                      const std::optional<std::vector<double>> &corridor_planes = std::nullopt);
 
 // planMincoとの違い: セグメント時間Tを自由変数にせず、内部で
 // (1) ヒューリスティックな初期T（経路全体の弧長比配分、v0-aware台形/三角形

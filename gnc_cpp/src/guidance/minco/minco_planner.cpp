@@ -8,6 +8,7 @@
 #include "sobits_intball2_gnc_cpp/guidance/minco/constraint_points.hpp"
 #include "guidance/minco/detail/objective.hpp"
 #include "guidance/minco/detail/parameterization.hpp"
+#include "guidance/minco/detail/penalties.hpp"
 #include "sobits_intball2_gnc_cpp/guidance/rebound/rebound.hpp"
 #include "guidance/minco/detail/time_allocation.hpp"
 #include "sobits_intball2_gnc_cpp/common/trace.hpp"
@@ -69,6 +70,27 @@ const double STRETCH_RATIO_EPS = 1e-4;
 const int MAX_REBOUND_TIMES = 20;
 const int MAX_RESTART_TIMES = 3;
 
+bool corridorFree(const MatrixX3d &coeffs, const VectorXd &T,
+                  const std::vector<std::vector<Vector4d>> &planes)
+{
+    constexpr int samplesPerPiece = 40;
+    for (int k = 0; k < T.size(); ++k)
+    {
+        if (k >= static_cast<int>(planes.size())) continue;
+        const Matrix<double, 6, 3> c = coeffs.block<6, 3>(k * 6, 0);
+        for (int i = 0; i <= samplesPerPiece; ++i)
+        {
+            const Vector3d p = c.transpose() * polyBasis(T(k) * i / samplesPerPiece, 0);
+            for (const Vector4d &plane : planes[k])
+                // FIRI planes and MINCO coefficients are double precision;
+                // accept only a sub-voxel numerical residual, not a geometric
+                // relaxation (grid resolution is 0.10 m in this use case).
+                if (plane.head<3>().dot(p) + plane(3) > 1e-4) return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 PlanResult planMinco(const std::vector<double> &waypoints_flat,
@@ -88,7 +110,8 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       bool obstacle_touch_goal,
                       double obstacle_clearance,
                       double obstacle_clearance_soft,
-                      const mapping::OccupancyGrid *grid)
+                      const mapping::OccupancyGrid *grid,
+                      const std::optional<std::vector<double>> &corridor_planes)
 {
     PlanResult result;
 
@@ -193,6 +216,23 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         ctx.penaltyWeight = weightSchedule[0];
         ctx.maxVel = max_vel;
         ctx.segmentTensionWeight = std::isinf(via_half_width) ? W_SEGMENT_TENSION : 0.0;
+        if (corridor_planes.has_value() && !corridor_planes->empty())
+        {
+            if (corridor_planes->size() % 5 != 0)
+                throw std::invalid_argument("corridor_planes must be [segment,nx,ny,nz,b] x n");
+            ctx.corridorPlanes.resize(K);
+            for (std::size_t i = 0; i < corridor_planes->size(); i += 5)
+            {
+                const int segment = static_cast<int>((*corridor_planes)[i]);
+                if (segment < 0 || segment >= K)
+                    throw std::invalid_argument("corridor plane segment outside trajectory");
+                const Vector3d normal((*corridor_planes)[i + 1], (*corridor_planes)[i + 2],
+                                      (*corridor_planes)[i + 3]);
+                if (normal.norm() < 1e-12) throw std::invalid_argument("corridor plane normal is zero");
+                ctx.corridorPlanes[segment].emplace_back(normal.x(), normal.y(), normal.z(),
+                                                           (*corridor_planes)[i + 4]);
+            }
+        }
         if (obstacle_pairs.has_value() && !obstacle_pairs->empty())
         {
             const int nPoints = K * CONSTRAINT_POINTS_PER_PIECE + 1;
@@ -356,6 +396,7 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         rotMinco.setParameters(rotVia, T);
 
         const double maxViol = maxViolation(posMinco, rotMinco, T, K, wrench_safety_margin, ctx.forceFrame);
+        const bool corridorIsFree = corridorFree(posMinco.getCoeffs(), T, ctx.corridorPlanes);
         if (common::reboundTraceEnabled() && grid != nullptr)
             std::fprintf(stderr, "[trace] solve: maxViol=%.3g duration=%.2f\n", maxViol, T.sum());
 
@@ -388,7 +429,7 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         }
 
         result.duration = T.sum();
-        result.error_code = (maxViol > VIOLATION_TOLERANCE) ? 1 : (obstacleFree ? 0 : 2);
+        result.error_code = (maxViol > VIOLATION_TOLERANCE) ? 1 : (!obstacleFree ? 2 : (corridorIsFree ? 0 : 3));
         result.success = (result.error_code == 0);
     }
     catch (const std::exception &e)
