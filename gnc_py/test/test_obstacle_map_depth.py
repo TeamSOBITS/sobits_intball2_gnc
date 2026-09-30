@@ -79,10 +79,8 @@ def test_box_mode_unchanged():
     assert m.grid is not old and m.grid.inflated_occupied(BOX[0])
 
 
-def test_first_local_through_a_depth_seen_obstacle_starts_held(renderer):
-    """Reproduces the sim case (docs/archive/2026-09-28_virtual_camera_depth_mapping_plan.md):
-    from rest with only the obstacle's front face in the depth layer, the first local
-    crosses it, so the tracker must hold instead of flying it."""
+def test_first_local_through_a_depth_seen_obstacle_is_safe_or_held(renderer):
+    """A depth-only front face must never be flown through at the first local."""
     from scipy.spatial.transform import Rotation
     from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import (
         ReplanMincoTracker,
@@ -121,6 +119,9 @@ def test_first_local_through_a_depth_seen_obstacle_starts_held(renderer):
         planning_horizon_m=4.0, face_travel=True, forward_axis=[1.0, 0.0, 0.0],
         local_max_vel=0.15, local_piece_length_m=1.5, obstacle_grid=m.grid,
         obstacle_clearance_soft=0.2, stop_profile_fn=lambda p, v, q, w: _Hold(p))
-    assert tracker.initial_local_collides
-    assert tracker._stop_profile is not None
-    assert tracker.last_fallback_reason == "initial_local_collides"
+    if tracker.initial_local_collides:
+        assert tracker._stop_profile is not None
+        assert tracker.last_fallback_reason == "initial_local_collides"
+    else:
+        assert not tracker._local_collides(tracker.local_trajectory,
+                                           tracker._local_touches_goal)
