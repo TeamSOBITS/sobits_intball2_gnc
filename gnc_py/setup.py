@@ -59,6 +59,8 @@ setup(
             'sobits_intball2_gnc.guidance.move_relative:main',
             # Guidance-system orchestrator (the single guidance node).
             'guidance = sobits_intball2_gnc.guidance.guidance:main',
+            # Keyboard teleoperation (docs/teleop_keyboard_design.md); not together with a running move_to.
+            'teleop = sobits_intball2_gnc.teleop.teleop:main',
         ],
     },
 )

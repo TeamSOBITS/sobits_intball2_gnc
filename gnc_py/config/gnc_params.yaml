@@ -364,3 +364,26 @@
       # Adds inertia * alpha_des (from /gnc/trajectory_setpoint's angular
       # acceleration) to the attitude torque. Off until A/B-verified live.
       attitude_feedforward: false
+
+    # Keyboard teleoperation (docs/teleop_keyboard_design.md). The reference moves with the held keys
+    # and is published on /gnc/trajectory_setpoint; accelerations are fractions of what the fans can do
+    # per axis (wrench envelope). Limits verified offline and in the sim (docs/teleop_keyboard_design.md 8.3).
+    teleop:
+      rate: 50.0                  # reference publish rate [Hz] (= guidance.rate)
+      # Speed / acceleration levels the GUI steps through ( [ ] for speed, , . for acceleration ). The last
+      # entries are the ceilings. A change applies while the reference is at rest.
+      speed_levels: [0.03, 0.05, 0.075, 0.10, 0.15]      # translational speed cap [m/s]
+      speed_level_default: 1                             # index at start (0.05 m/s)
+      acc_frac_levels: [0.3, 0.4, 0.5, 0.6, 0.7]         # acceleration cap, fraction of max force / mass per axis
+      acc_level_default: 2                               # index at start (0.5)
+      wmax_per_vmax: 2.0          # angular speed cap = this * speed cap [rad/s per m/s]
+      alpha_per_acc: 0.5          # angular acceleration fraction = this * the translational one
+      # Error limits that stall the reference follow the speeds: position 5 mm + 0.3 * speed cap,
+      # attitude 5 deg up to 0.2 rad/s and +3 deg per 0.1 rad/s beyond (docs/teleop_keyboard_design.md 8.3).
+      resume_ratio: 0.8           # resume below this fraction of the error limits
+      wrench_envelope_safety_margin: 1.0   # 1.0 = exact envelope (guidance.wrench_envelope_safety_margin is for planning)
+      guidance_cooldown: 2.0      # keep ignoring input this long after a /gnc/move_to goal ends [s]
+      key_timeout: 0.5            # no GUI update this long -> keys released [s]
+      estop_hold: 1.0             # keep publishing the braking reference this long after Esc [s]
+      stall_timeout: 2.0          # reference stalled this long (e.g. vehicle against a wall) -> brake at the vehicle and disable [s]
+      tf_staleness_timeout: 1.0   # TF stamp stalled this long -> no pose [s]
