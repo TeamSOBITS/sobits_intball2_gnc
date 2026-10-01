@@ -1,0 +1,44 @@
+# JAXA Int-Ball2 controller parameters for the ported JAXA controller
+# (gnc_cpp/src/control/jaxa_*.cpp). Values copied unchanged from the JAXA Int-Ball2
+# simulator (Apache-2.0): Int-Ball2_platform_simulator/src/platform/guidance_control/
+# ctl_only/ctl.yaml, which JAXA's fsm also loads. Keys keep ctl.yaml's structure so the
+# two files can be compared side by side. Our own values stay in gnc_params.yaml.
+/**:
+  ros__parameters:
+    jaxa_control:
+      ctl_body:
+        mass: 3.216
+        Is: {xx: 0.0136, yy: 0.0136, zz: 0.0136, xy: 0.0, yz: 0.0, zx: 0.0}
+      pos_ctl:
+        kp: 0.6219
+        ki: 0.0
+        kd: 1.1152
+        fi_max: 0.02
+      att_ctl:
+        kp: 2.6181
+        kd: 3.2361
+      fan:
+        number: 8
+        Fmax: 0.06
+        PWMmax: 1.0
+        n_saturation: 4
+        fj0: {fan01: 0.0, fan02: 0.0, fan03: 0.0, fan04: 0.0, fan05: 0.0, fan06: 0.0, fan07: 0.0, fan08: 0.0}
+        kj: {fan01: 4.082482905, fan02: 4.082482905, fan03: 4.082482905, fan04: 4.082482905, fan05: 4.082482905, fan06: 4.082482905, fan07: 4.082482905, fan08: 4.082482905}
+        Wp:
+          fan01: {Fx: 0.0, Fy: 0.0, Fz: 0.0, Tx: 0.0, Ty: 0.0, Tz: 7.3257}
+          fan02: {Fx: 0.0, Fy: 0.6027, Fz: 0.0, Tx: 19.8198, Ty: 0.0, Tz: 0.0}
+          fan03: {Fx: 0.0, Fy: 0.6027, Fz: 0.4911, Tx: 0.0, Ty: 13.1935, Tz: 0.0}
+          fan04: {Fx: 0.0, Fy: 0.0, Fz: 0.4911, Tx: 19.8198, Ty: 13.1935, Tz: 7.3257}
+          fan05: {Fx: 0.3315, Fy: 0.0, Fz: 0.4911, Tx: 19.8198, Ty: 0.0, Tz: 0.0}
+          fan06: {Fx: 0.3315, Fy: 0.0, Fz: 0.0, Tx: 0.0, Ty: 13.1935, Tz: 0.0}
+          fan07: {Fx: 0.3315, Fy: 0.6027, Fz: 0.0, Tx: 19.8198, Ty: 13.1935, Tz: 7.3257}
+          fan08: {Fx: 0.3315, Fy: 0.6027, Fz: 0.4911, Tx: 0.0, Ty: 0.0, Tz: 7.3257}
+        Wm:
+          fan01: {Fx: 0.3315, Fy: 0.6027, Fz: 0.4911, Tx: 19.8198, Ty: 13.1935, Tz: 0.0}
+          fan02: {Fx: 0.3315, Fy: 0.0, Fz: 0.4911, Tx: 0.0, Ty: 13.1935, Tz: 7.3257}
+          fan03: {Fx: 0.3315, Fy: 0.0, Fz: 0.0, Tx: 19.8198, Ty: 0.0, Tz: 7.3257}
+          fan04: {Fx: 0.3315, Fy: 0.6027, Fz: 0.0, Tx: 0.0, Ty: 0.0, Tz: 0.0}
+          fan05: {Fx: 0.0, Fy: 0.6027, Fz: 0.0, Tx: 0.0, Ty: 13.1935, Tz: 7.3257}
+          fan06: {Fx: 0.0, Fy: 0.6027, Fz: 0.4911, Tx: 19.8198, Ty: 0.0, Tz: 7.3257}
+          fan07: {Fx: 0.0, Fy: 0.0, Fz: 0.4911, Tx: 0.0, Ty: 0.0, Tz: 0.0}
+          fan08: {Fx: 0.0, Fy: 0.0, Fz: 0.0, Tx: 19.8198, Ty: 13.1935, Tz: 0.0}

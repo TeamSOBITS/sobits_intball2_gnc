@@ -8,6 +8,9 @@
 #include <tuple>
 #include <vector>
 
+#include "sobits_intball2_gnc_cpp/control/jaxa_attitude_controller.hpp"
+#include "sobits_intball2_gnc_cpp/control/jaxa_position_controller.hpp"
+#include "sobits_intball2_gnc_cpp/control/jaxa_thrust_allocator.hpp"
 #include "sobits_intball2_gnc_cpp/guidance/minco/constraint_points.hpp"
 #include "sobits_intball2_gnc_cpp/guidance/minco/minco_planner.hpp"
 #include "sobits_intball2_gnc_cpp/mapping/octomap_io.hpp"
@@ -17,6 +20,42 @@
 #include "gcopter/firi.hpp"
 
 namespace py = pybind11;
+
+namespace
+{
+
+Eigen::Vector3d toVec3(const std::vector<double> &v, const char *name)
+{
+  if (v.size() != 3)
+    throw std::invalid_argument(std::string(name) + " must have 3 elements");
+  return Eigen::Vector3d(v[0], v[1], v[2]);
+}
+
+// Python side uses [x, y, z, w] like the rest of the code base.
+Eigen::Quaterniond toQuat(const std::vector<double> &q, const char *name)
+{
+  if (q.size() != 4)
+    throw std::invalid_argument(std::string(name) + " must be [x, y, z, w]");
+  return Eigen::Quaterniond(q[3], q[0], q[1], q[2]);
+}
+
+std::vector<double> toList(const Eigen::VectorXd &v)
+{
+  return std::vector<double>(v.data(), v.data() + v.size());
+}
+
+Eigen::MatrixXd fanRows(const std::vector<double> &flat, size_t fans, const char *name)
+{
+  if (flat.size() != fans * 6)
+    throw std::invalid_argument(std::string(name) + " must be fans x 6 (row per fan)");
+  Eigen::MatrixXd m(fans, 6);
+  for (size_t i = 0; i < fans; ++i)
+    for (size_t k = 0; k < 6; ++k)
+      m(i, k) = flat[i * 6 + k];
+  return m;
+}
+
+}  // namespace
 
 std::tuple<bool, int, std::vector<double>, std::vector<double>, double>
 plan_minco(const std::vector<double>& waypoints_flat,
@@ -361,4 +400,71 @@ PYBIND11_MODULE(sobits_intball2_gnc_cpp, m) {
         "max_accel: used only for the heuristic time estimate, both required > 0. "
         "via_half_width/wrench_safety_margin: same meaning as plan_minco. "
         "Returns (success, error_code, segment_times, coeffs_flat, duration).");
+
+  namespace control = sobits_intball2_gnc::control;
+  py::class_<control::JaxaPositionController>(m, "JaxaPositionController",
+      "JAXA ctl_only PosController port. Body-frame force, not clamped (JAXA saturates in fsm).")
+      .def(py::init([](double mass, double kp, double ki, double kd, double fi_max) {
+             return control::JaxaPositionController({mass, kp, ki, kd, fi_max});
+           }), py::arg("mass"), py::arg("kp"), py::arg("ki"), py::arg("kd"), py::arg("fi_max"))
+      .def("force_command", [](control::JaxaPositionController &c, double t,
+                               const std::vector<double> &r, const std::vector<double> &v,
+                               const std::vector<double> &q, const std::vector<double> &r_ref,
+                               const std::vector<double> &v_ref, const std::vector<double> &a_ref) {
+             return toList(c.forceCommand(t, toVec3(r, "r"), toVec3(v, "v"), toQuat(q, "q"),
+                                          toVec3(r_ref, "r_ref"), toVec3(v_ref, "v_ref"),
+                                          toVec3(a_ref, "a_ref")));
+           }, py::arg("t"), py::arg("r"), py::arg("v"), py::arg("q"), py::arg("r_ref"),
+           py::arg("v_ref"), py::arg("a_ref"),
+           "q is the body attitude [x, y, z, w] in the reference frame; returns body-frame force.")
+      .def("reset", &control::JaxaPositionController::reset)
+      .def_property_readonly("integral", [](const control::JaxaPositionController &c) {
+             return toList(c.integral());
+           });
+  py::class_<control::JaxaAttitudeController>(m, "JaxaAttitudeController",
+      "JAXA ctl_only AttController port. Body-frame torque.")
+      .def(py::init([](const std::vector<double> &inertia, double kp, double kd) {
+             if (inertia.size() != 9)
+               throw std::invalid_argument("inertia must be 9 elements (row-major 3x3)");
+             Eigen::Matrix3d is;
+             for (int i = 0; i < 9; ++i)
+               is(i / 3, i % 3) = inertia[i];
+             return control::JaxaAttitudeController({is, kp, kd});
+           }), py::arg("inertia"), py::arg("kp"), py::arg("kd"))
+      .def("torque_command", [](const control::JaxaAttitudeController &c,
+                                const std::vector<double> &q, const std::vector<double> &w,
+                                const std::vector<double> &q_ref, const std::vector<double> &w_ref) {
+             return toList(c.torqueCommand(toQuat(q, "q"), toVec3(w, "w"), toQuat(q_ref, "q_ref"),
+                                           toVec3(w_ref, "w_ref")));
+           }, py::arg("q"), py::arg("w"), py::arg("q_ref"), py::arg("w_ref"),
+           "w in the current body frame, w_ref in the target body frame; returns body-frame torque.");
+  py::class_<control::JaxaThrustAllocator>(m, "JaxaThrustAllocator",
+      "JAXA fsm thrust allocation (Wp/Wm) and PWM saturation port.")
+      .def(py::init([](const std::vector<double> &wp, const std::vector<double> &wm,
+                       const std::vector<double> &kj, const std::vector<double> &fj0,
+                       double pwm_max, int n_saturation) {
+             const size_t fans = kj.size();
+             if (fj0.size() != fans)
+               throw std::invalid_argument("fj0 must have one value per fan");
+             control::JaxaThrustAllocatorParams p;
+             p.wp = fanRows(wp, fans, "wp");
+             p.wm = fanRows(wm, fans, "wm");
+             p.kj = Eigen::Map<const Eigen::VectorXd>(kj.data(), fans);
+             p.fj0 = Eigen::Map<const Eigen::VectorXd>(fj0.data(), fans);
+             p.pwm_max = pwm_max;
+             p.n_saturation = n_saturation;
+             return control::JaxaThrustAllocator(p);
+           }), py::arg("wp"), py::arg("wm"), py::arg("kj"), py::arg("fj0"), py::arg("pwm_max"),
+           py::arg("n_saturation"),
+           "wp/wm: flat row-major fans x 6 (Fx Fy Fz Tx Ty Tz per fan), as in JAXA ctl.yaml.")
+      .def_property_readonly("fan_count", &control::JaxaThrustAllocator::fanCount)
+      .def("allocate", [](const control::JaxaThrustAllocator &a, const std::vector<double> &force,
+                          const std::vector<double> &torque) {
+             return toList(a.allocate(toVec3(force, "force"), toVec3(torque, "torque")));
+           }, py::arg("force"), py::arg("torque"), "Per-fan thrust [N] before fj0.")
+      .def("duty", [](control::JaxaThrustAllocator &a, const std::vector<double> &force,
+                      const std::vector<double> &torque) {
+             return toList(a.duty(toVec3(force, "force"), toVec3(torque, "torque")));
+           }, py::arg("force"), py::arg("torque"), "Per-fan PWM duty after saturation.")
+      .def_property_readonly("last_saturated_count", &control::JaxaThrustAllocator::lastSaturatedCount);
 }

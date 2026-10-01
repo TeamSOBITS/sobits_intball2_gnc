@@ -51,6 +51,9 @@ configure_file(
 )
 
 add_library(gnc_cpp_core STATIC
+  src/control/jaxa_attitude_controller.cpp
+  src/control/jaxa_position_controller.cpp
+  src/control/jaxa_thrust_allocator.cpp
   src/guidance/minco/constraint_points.cpp
   src/guidance/minco/minco_planner.cpp
   src/guidance/minco/objective.cpp
@@ -112,6 +115,8 @@ if(BUILD_TESTING)
   target_include_directories(test_rebound_penalties PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src ${GCOPTER_INCLUDE_DIR})
   target_link_libraries(test_rebound_penalties gnc_cpp_core)
+  ament_add_gtest(test_jaxa_controller test/test_jaxa_controller.cpp)
+  target_link_libraries(test_jaxa_controller gnc_cpp_core)
   add_executable(experiment_firi_jem_corridor test/experiment_firi_jem_corridor.cpp)
   target_include_directories(experiment_firi_jem_corridor PRIVATE ${GCOPTER_INCLUDE_DIR})
   target_link_libraries(experiment_firi_jem_corridor gnc_cpp_core)
