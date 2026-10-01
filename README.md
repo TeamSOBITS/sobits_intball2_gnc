@@ -213,6 +213,8 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
 | 対象 | 出典 | ライセンス |
 |---|---|---|
 | `gnc_py/sobits_intball2_gnc/common/utils/stopping_profile.py` | [JAXA Int-Ball2 platform works](https://github.com/jaxa/int-ball2_platform_works) `ctl_only`（改変あり） | Apache-2.0（`licenses/Apache-2.0.txt`） |
+| `gnc_cpp/{include/sobits_intball2_gnc_cpp,src}/control/jaxa_position_controller.*`・`jaxa_attitude_controller.*`・`jaxa_thrust_allocator.*` | [JAXA Int-Ball2 simulator](https://github.com/jaxa/int-ball2_simulator) `ctl_only`（`pos_controller.cpp`・`att_controller.cpp`）・`fsm`（`thrust_allocator.cpp`・`fsm.cpp`）（改変あり） | Apache-2.0（`licenses/Apache-2.0.txt`） |
+| `gnc_py/config/jaxa_control.yaml` | JAXA Int-Ball2 simulator `ctl_only/ctl.yaml` | Apache-2.0 |
 | 機体の物理パラメータ（ファン配置・推力係数・質量・慣性、`gnc_params.yaml`・`thrust_allocator.py`）、そこから生成した`gnc_cpp/config/wrench_envelope.csv` | JAXA Int-Ball2 の`ctl.yaml`・`sim.yaml` | Apache-2.0 |
 | `gnc_py/maps/iss_octomap.bt`・`jem_octomap.bt` | [JAXA Int-Ball2 simulator](https://github.com/jaxa/int-ball2_simulator)のISSメッシュから生成 | Apache-2.0 |
 | GCOPTERヘッダ（`install.sh`で取得、ビルド成果物に含まれる）、`gnc_py/test/experiment_minco_native/main.cpp`の一部 | [GCOPTER](https://github.com/ZJU-FAST-Lab/GCOPTER) | MIT（`licenses/GCOPTER-MIT.txt`） |

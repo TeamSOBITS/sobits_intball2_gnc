@@ -35,6 +35,8 @@ setup(
             'sobits_intball2_gnc.navigation.octomap_marker_publisher:main',
             # Control-system orchestrator (the single control node).
             'control = sobits_intball2_gnc.control.control:main',
+            # JAXA-controller baseline (exclusive with control; control_jaxa.launch.py).
+            'jaxa_control = sobits_intball2_gnc.control.jaxa_control:main',
             # ROS wrapper manual tests and move commands.
             'fan_duty_publisher = sobits_intball2_gnc.control.ros.fan_duty_publisher:main',
             'imu_subscriber = sobits_intball2_gnc.control.ros.imu_subscriber:main',

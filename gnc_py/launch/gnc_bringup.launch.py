@@ -1,7 +1,7 @@
-"""GNC bring-up launch: control_node plus everything needed to observe/debug
+"""GNC bring-up launch: the control node plus everything needed to observe/debug
 the GNC stack.
 
-Starts control_node (control.launch.py, unless ``use_control:=false``), the ISS and ib2 models (robot_state_publisher for each, so
+Starts the control node (unless ``use_control:=false``), the ISS and ib2 models (robot_state_publisher for each, so
 the ISS TF frames -- iss_body, dock_body, etc. -- and the ib2 mesh render)
 and, unless disabled, RViz with a
 GNC-specific config (TF tree + the trajectory visualization path,
@@ -10,11 +10,17 @@ togglable piece of this launch, not its purpose -- as the GNC stack grows
 (e.g. a Guidance node), it belongs here too, so the file is named for the
 whole stack rather than for RViz alone.
 
-control.launch.py stays usable on its own: control_node must be stopped alone
-before restarting the sim/bridge, so run it separately with ``use_control:=false``.
-guidance_node is not included (guidance.launch.py).
+``controller`` picks the control node: ``jaxa`` (default) is jaxa_control_node,
+the ported JAXA controller (control_jaxa.launch.py), which the comparisons now
+use for both guidance methods; ``sobits`` is our control_node
+(control.launch.py). Any other value is an error rather than no controller.
+
+The control launch files stay usable on their own: the control node must be
+stopped alone before restarting the sim/bridge, so run it separately with
+``use_control:=false``. guidance_node is not included (guidance.launch.py).
 
     ros2 launch sobits_intball2_gnc gnc_bringup.launch.py
+    ros2 launch sobits_intball2_gnc gnc_bringup.launch.py controller:=sobits
     ros2 launch sobits_intball2_gnc gnc_bringup.launch.py use_rviz:=false
     ros2 launch sobits_intball2_gnc gnc_bringup.launch.py use_control:=false
 """
@@ -22,11 +28,27 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+CONTROL_LAUNCH_FILES = {"jaxa": "control_jaxa.launch.py", "sobits": "control.launch.py"}
+
+
+def _control_launch(context):
+    controller = LaunchConfiguration("controller").perform(context)
+    if controller not in CONTROL_LAUNCH_FILES:
+        raise ValueError("controller:=%r: expected one of %s"
+                         % (controller, ", ".join(sorted(CONTROL_LAUNCH_FILES))))
+    return [IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(os.path.join(
+            get_package_share_directory("sobits_intball2_gnc"), "launch",
+            CONTROL_LAUNCH_FILES[controller])),
+        launch_arguments={"params_file": LaunchConfiguration("params_file")}.items(),
+        condition=IfCondition(LaunchConfiguration("use_control")),
+    )]
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -38,7 +60,12 @@ def generate_launch_description() -> LaunchDescription:
     use_control_arg = DeclareLaunchArgument(
         "use_control",
         default_value="true",
-        description="Whether to start control_node (control.launch.py).",
+        description="Whether to start the control node.",
+    )
+    controller_arg = DeclareLaunchArgument(
+        "controller",
+        default_value="jaxa",
+        description="Control node: jaxa (control_jaxa.launch.py) or sobits (control.launch.py).",
     )
     params_file_arg = DeclareLaunchArgument(
         "params_file",
@@ -46,18 +73,6 @@ def generate_launch_description() -> LaunchDescription:
             get_package_share_directory("sobits_intball2_gnc"), "config", "gnc_params.yaml"
         ),
         description="Path to the ROS2 parameter file for the control node.",
-    )
-
-    control_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(
-                get_package_share_directory("sobits_intball2_gnc"),
-                "launch",
-                "control.launch.py",
-            )
-        ),
-        launch_arguments={"params_file": LaunchConfiguration("params_file")}.items(),
-        condition=IfCondition(LaunchConfiguration("use_control")),
     )
 
     # Re-declares intball2_programs' robot_state_publisher piece directly
@@ -132,8 +147,9 @@ def generate_launch_description() -> LaunchDescription:
         [
             use_rviz_arg,
             use_control_arg,
+            controller_arg,
             params_file_arg,
-            control_launch,
+            OpaqueFunction(function=_control_launch),
             iss_state_publisher,
             ib2_state_publisher,
             rviz_node,
