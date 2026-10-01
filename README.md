@@ -29,6 +29,7 @@
       </ul>
     </li>
     <li><a href="#実行方法">実行方法</a></li>
+    <li><a href="#キーボードテレオペ">キーボードテレオペ</a></li>
     <li><a href="#マイルストーン">マイルストーン</a></li>
   </ol>
 </details>
@@ -140,6 +141,44 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
     ```
   - profileを選んだ後に個別の設定を変更すると、その値が次のgoalからprofileの値より優先されます。profileを再設定すると個別設定は解除されます。
   - `avoidance`は、起動時に深度または仮想障害物の入力を設定しておく必要があります。深度が新鮮でない場合はgoalをabortします。
+
+<p align="right">(<a href="#readme-top">上に戻る</a>)</p>
+
+### キーボードテレオペ
+
+GUIとキーボードで機体を動かします．
+
+機体を直接動かすのではなく，**「基準」（機体が向かう目標点）**を動かします．キーを押すと基準が動き，Controlが機体をそれに追従させます．キーを離すと基準が止まり，機体が追いついて止まります．基準はRVizに緑の球と矢印（向き）で表示されます．
+
+1. `gnc_bringup.launch.py`を起動します（`control`も起動します）．テレオペ側のRVizを使うので，こちらのRVizは止めます．
+    ```sh
+    ros2 launch sobits_intball2_gnc gnc_bringup.launch.py use_rviz:=false
+    ```
+2. [teleop.launch.py](gnc_py/launch/teleop.launch.py)を起動します．操作用のウィンドウと，機体の真後ろ斜め上から見るRViz（[teleop.rviz](gnc_py/rviz/teleop.rviz)）が開きます．
+    ```sh
+    ros2 launch sobits_intball2_gnc teleop.launch.py
+    ```
+    RVizを開かないときは`use_rviz:=false`を付けます．
+3. ウィンドウをクリックし，Enterで開始します．もう一度Enterで終了，Esc・Spaceで非常停止です．
+
+<p align="center">
+  <img src="docs/images/teleop_gui.png" alt="テレオペのウィンドウ（追従中）" width="720">
+</p>
+
+- 左の枠：並進（水平と上下）
+- 右の枠：回転（ピッチ・ヨー・ロール）
+- 下の青い四角形：速度と加速度，機体が止まっているときに反映される
+- 下の2本のバー：機体が向かう基準と機体のずれ（位置と向き）
+  - 上限に近づくと黄→赤に変化
+  - ずれが上限を超えると，基準はその場で止まって機体を待つ（バナーが黄色）．
+  - **2秒たっても機体が追いつかなければ（壁にぶつかったときなど），自動で停止**（下の画像）．再開はEnter．
+- `/gnc/move_to`のgoalが実行中は，キー入力を受け付けません（終了後も約2秒は無効）．テレオペ中はgoalを送らないでください．
+
+<p align="center">
+  <img src="docs/images/teleop_gui_stopped.png" alt="自動停止したときのウィンドウ" width="720">
+</p>
+
+速度・加速度の段階や誤差の上限などは，`config/gnc_params.yaml`の`teleop:`で変えられます．
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
