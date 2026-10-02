@@ -26,6 +26,7 @@ from sobits_intball2_gnc.guidance.ros.multi_dof_joint_trajectory_publisher impor
 from sobits_intball2_gnc.teleop.link import TeleopLink
 from sobits_intball2_gnc.teleop.reference import TeleopReference, limits_for_levels
 from sobits_intball2_gnc.teleop.ros.guidance_status_subscriber import GuidanceStatusSubscriber
+from sobits_intball2_gnc.teleop.ros.fan_duty_subscriber import FanDutySubscriber
 from sobits_intball2_gnc.teleop.ros.reference_marker_publisher import ReferenceMarkerPublisher
 from sobits_intball2_gnc.teleop.state import KeyState, Status, TeleopState
 
@@ -64,6 +65,9 @@ class TeleopNode(Node):
         inertia = float(param("trajectory_controller.inertia", 0.0136))
 
         allocator = ThrustAllocator.from_node(self)
+        positions = self.get_parameter("thrust_allocator.fan_positions").value
+        self._fan_positions = tuple(tuple(positions[i:i + 3]) for i in range(0, len(positions), 3))
+        self._fan_duty = FanDutySubscriber(self)
         envelope = wrench_envelope_halfspaces(allocator.A, allocator.fj_max,
                                               safety_margin=float(param("teleop.wrench_envelope_safety_margin", 1.0)))
         self._envelope, self._mass, self._inertia = envelope, mass, inertia
@@ -125,12 +129,14 @@ class TeleopNode(Node):
 
     def _publish_state(self, status: Status) -> None:
         r, lim = self._ref, self._limits
+        duties, fan_status = self._fan_duty.snapshot()
         v_ratio = tuple(np.concatenate([r.vb / lim.vmax, r.wb / lim.wmax]))
         self._link.set_state(TeleopState(
             status=status, v_ratio=v_ratio, v_body=tuple(r.vb), w_body=tuple(r.wb),
             pos_err=r.pos_err, att_err=r.att_err, err_pos_limit=lim.err_pos, err_att_limit=lim.err_att,
             shaped=r.scaled, speed_values=self._speed_values, accel_values=self._accel_values,
-            speed_level=self._speed_level, accel_level=self._accel_level))
+            speed_level=self._speed_level, accel_level=self._accel_level,
+            fan_duties=duties, fan_positions=self._fan_positions, fan_status=fan_status))
 
     def _go_idle(self, status: Status) -> None:
         if self._phase != IDLE:
