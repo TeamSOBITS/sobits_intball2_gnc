@@ -20,6 +20,13 @@ class Status(enum.Enum):
     CONTROL_BUSY = "control_busy"      # JAXA ctl_only not idle: the wrench would be held
 
 
+class FanDutyStatus(enum.Enum):
+    WAITING = "waiting"
+    LIVE = "live"
+    STALE = "stale"
+    INVALID = "invalid"
+
+
 @dataclass(frozen=True)
 class KeyState:
     """What the operator is asking for. ``axes`` = (vx, vy, vz, wx, wy, wz) in [-1, 1], body frame."""
@@ -48,3 +55,6 @@ class TeleopState:
     accel_values: tuple = ()           # selectable acceleration caps (fraction of what the fans can do)
     speed_level: int = 0               # index applied now (a request is applied while the reference is at rest)
     accel_level: int = 0
+    fan_duties: tuple = ()
+    fan_positions: tuple = ()
+    fan_status: FanDutyStatus = FanDutyStatus.WAITING
