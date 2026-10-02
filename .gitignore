@@ -75,6 +75,8 @@ AGENTS.md
 # docsはissue.md以外pushしない
 /docs/*
 !/docs/issue.md
+# READMEに載せる画像だけは追跡する
+!/docs/images/
 # GCOPTERヘッダ（MITライセンス）。ベンダリングせずinstall.shでclone取得する
 /gnc_cpp/third_party/
 
