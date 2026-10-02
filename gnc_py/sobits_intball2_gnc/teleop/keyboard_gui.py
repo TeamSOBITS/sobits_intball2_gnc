@@ -16,7 +16,7 @@ import tkinter.font as tkfont
 
 from sobits_intball2_gnc.teleop.keymap import BINDINGS, LABELS, LABELS_EN, axes_from_pressed
 from sobits_intball2_gnc.teleop.link import TeleopLink
-from sobits_intball2_gnc.teleop.state import KeyState, Status
+from sobits_intball2_gnc.teleop.state import FanDutyStatus, KeyState, Status
 
 REFRESH_MS = 33
 # A key release is confirmed only if no press follows within this time: X11 auto-repeat sends
@@ -47,7 +47,14 @@ LEVEL_LABELS = (("速度", "SPEED"), ("加速度", "ACCEL"))
 PENDING_TEXT = ("止まると反映", "applies when stopped")
 SHAPED_TEXT = ("出力を抑えています", "output limited by thrust envelope")
 
-W, H = 1040, 615
+W, H = 1040, 900
+FAN_FRAME = (650, 470, 1030, 886)
+FAN_MESSAGES = {
+    FanDutyStatus.WAITING: ("未受信", "WAITING FOR DATA"),
+    FanDutyStatus.LIVE: ("受信中", "LIVE"),
+    FanDutyStatus.STALE: ("更新停止", "STALE DATA"),
+    FanDutyStatus.INVALID: ("受信異常", "INVALID DATA"),
+}
 CX, CY = 180, 285           # horizontal-translation ball
 VX = 385                    # vertical-translation panel (R / F), drawn like the pitch panel
 RY = 285
@@ -247,6 +254,85 @@ class KeyboardGui:
         self._draw_ball(CX, CY)
         self._draw_levels(state)
         self._draw_error_bars(state)
+        self._draw_fans(state)
+
+    def _draw_fans(self, state) -> None:
+        c = self._canvas
+        x0, y0, x1, y1 = FAN_FRAME
+        c.create_rectangle(x0, y0, x1, y1, outline="#4a5260", width=2)
+        c.create_text((x0 + x1) / 2, y0 + 20,
+                      text=("ファン / 指令duty", "FANS / COMMAND DUTY")[self._lang],
+                      fill="#c4c9d1", font=self._font(12, True))
+        live = state.fan_status is FanDutyStatus.LIVE and len(state.fan_duties) == 8
+        c.create_text((x0 + x1) / 2, y1 - 18,
+                      text=FAN_MESSAGES[state.fan_status][self._lang],
+                      fill="#80c995" if live else "#aab0b9", font=self._font(9))
+        if len(state.fan_positions) != 8:
+            c.create_text((x0 + x1) / 2, (y0 + y1) / 2,
+                          text=("配置情報なし", "LAYOUT UNAVAILABLE")[self._lang],
+                          fill="#aab0b9", font=self._font(10))
+            return
+
+        c.create_text(840, y0 + 42,
+                      text=("斜め後方・右上から", "VIEW: REAR-RIGHT / ABOVE")[self._lang],
+                      fill="#aab0b9", font=self._font(8))
+        cx, cy, scale = 840, 661, 720
+        radius = max(math.sqrt(sum(v * v for v in p)) for p in state.fan_positions) * scale
+
+        def surface_point(x, y, z):
+            return cx + (0.5 * x - 0.866 * y) * scale, cy - (0.612 * x + 0.354 * y + 0.707 * z) * scale
+
+        c.create_oval(cx - radius, cy - radius, cx + radius, cy + radius,
+                      fill="#242d39", outline="#a7becb", width=2, tags="fan_body")
+        # Great circles make the spherical surface readable; rear hemispheres use dashed arcs.
+        physical_radius = radius / scale
+        for plane in ('xy', 'xz', 'yz'):
+            for start in range(0, 360, 6):
+                segment = []
+                depth = 0.0
+                for degree in (start, start + 3, start + 6):
+                    t = math.radians(degree)
+                    a, b = physical_radius * math.cos(t), physical_radius * math.sin(t)
+                    xyz = {'xy': (a, b, 0), 'xz': (a, 0, b), 'yz': (0, a, b)}[plane]
+                    segment.extend(surface_point(*xyz))
+                    depth += -0.612 * xyz[0] - 0.354 * xyz[1] + 0.707 * xyz[2]
+                c.create_line(*segment, fill="#526272" if depth > 0 else "#354350",
+                              width=1, dash=() if depth > 0 else (2, 3))
+        camera_x, camera_y = surface_point(physical_radius, 0, 0)
+        c.create_oval(camera_x - 5, camera_y - 5, camera_x + 5, camera_y + 5,
+                      fill="#14181f", outline="#ffd34d", width=2)
+
+        points = [surface_point(*p) for p in state.fan_positions]
+        groups = sorted(range(8), key=lambda i: points[i][0])
+        for left, indices in ((True, groups[:4]), (False, groups[4:])):
+            bx = 666 if left else 942
+            for i, row in zip(sorted(indices, key=lambda i: points[i][1]), (558, 620, 702, 764)):
+                duty = state.fan_duties[i] if live else None
+                c.create_text(bx, row - 14, text=f"Fan{i + 1}", anchor="w",
+                              fill="#e8eaed", font=self._font(9), tags="fan_label")
+                c.create_text(bx + 80, row - 14, text=f"{duty * 100:.0f}%" if live else "--",
+                              anchor="e", fill="#e8eaed" if live else "#8e96a3",
+                              font=self._font(9), tags="fan_label")
+                c.create_rectangle(bx, row + 5, bx + 80, row + 17,
+                                   fill="#202732", outline="#505762", tags="fan_bar")
+                if live and duty > 0:
+                    c.create_rectangle(bx + 1, row + 6, bx + 1 + 78 * duty, row + 16,
+                                       fill=ratio_color(duty), outline="", tags="fan_bar")
+        for i in sorted(range(8), key=lambda j: -0.612 * state.fan_positions[j][0]
+                        - 0.354 * state.fan_positions[j][1] + 0.707 * state.fan_positions[j][2]):
+            x, y, z = state.fan_positions[i]
+            px, py = points[i]
+            visible = -0.612 * x - 0.354 * y + 0.707 * z >= 0
+            c.create_oval(px - 10, py - 10, px + 10, py + 10,
+                          fill="#9ad9e5" if visible else "#242d39", outline="#9ad9e5",
+                          width=2, dash=() if visible else (2, 2), tags="fan_mount")
+            c.create_text(px, py, text=str(i + 1),
+                          fill="#14181f" if visible else "#9ad9e5", font=self._font(8, True),
+                          tags="fan_badge")
+        c.create_text(cx, 808, text=("塗り: 手前 / 破線: 奥側", "FILLED: NEAR / DASHED: FAR")[self._lang],
+                      fill="#aab0b9", font=self._font(8), tags="fan_direction")
+        c.create_text(cx, 830, text=("黄の輪: 前方カメラ", "YELLOW RING: FRONT CAMERA")[self._lang],
+                      fill="#ffd34d", font=self._font(8), tags="fan_direction")
 
     def _draw_ball(self, cx, cy) -> None:
         c = self._canvas
@@ -361,7 +447,7 @@ class KeyboardGui:
                  ("bracketleft", "["), ("bracketright", "]")),
                 (LEVEL_LABELS[1], state.accel_values, state.accel_level, self._req_accel, "%d %%",
                  ("comma", ","), ("period", ".")))
-        y = H - 122
+        y = 500
         now = time.monotonic()
         for label, values, applied, requested, fmt, down, up in rows:
             c.create_text(40, y, text=label[self._lang], fill="#aab0b9", anchor="w", font=self._font(10))
@@ -380,15 +466,15 @@ class KeyboardGui:
             shown = values[applied] * (100 if "%%" in fmt else 1)
             c.create_text(532, y, text=fmt % shown, fill="#e8eaed", anchor="w", font=self._font(10))
             if requested is not None and requested != applied:
-                c.create_text(640, y, text=PENDING_TEXT[self._lang], fill=KEY_COLOR, anchor="w",
+                c.create_text(220, y + 18, text=PENDING_TEXT[self._lang], fill=KEY_COLOR, anchor="w",
                               font=self._font(9))
-            y += 26
+            y += 52
 
     def _draw_error_bars(self, state) -> None:
         c = self._canvas
         rows = ((ERROR_LABELS[0], state.pos_err * 1e3, state.err_pos_limit * 1e3, "mm"),
                 (ERROR_LABELS[1], math.degrees(state.att_err), math.degrees(state.err_att_limit), "°"))
-        y = H - 62
+        y = 626
         x0, width = 220, 300
         for label, value, limit, unit in rows:
             frac = min(value / limit, 1.0) if limit > 0 else 0.0
@@ -401,9 +487,9 @@ class KeyboardGui:
             c.create_line(x0 + width * RESUME_MARK, y - 11, x0 + width * RESUME_MARK, y + 11, fill="#8a8f98")
             c.create_text(532, y, text="%.1f / %.1f %s" % (value, limit, unit), fill="#e8eaed", anchor="w",
                           font=self._font(10))
-            y += 26
+            y += 40
         if state.shaped:
-            c.create_text(W - 20, H - 14, text=SHAPED_TEXT[self._lang], fill="#e0a800", anchor="e",
+            c.create_text(40, 718, text=SHAPED_TEXT[self._lang], fill="#e0a800", anchor="w",
                           font=self._font(9))
 
     # --- loop --------------------------------------------------------------------------------
