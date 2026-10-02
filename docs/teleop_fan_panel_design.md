@@ -227,3 +227,15 @@ OpenGL初期化とROSノードを確認し、起動成功と判断した。
 テレオペ用RVizの実際のクライアントウィンドウを前面に出し、デスクトップ画像で
 `teleop.rviz` のタイトル、機体・ISSの表示、GUIの `TRACKING` と実dutyの `LIVE` を確認した。
 操作中の移動・停止性能を自動で検証したものではない。
+
+## 12. READMEと掲載画像の更新（2026-10-02 JST）
+
+READMEの右下ファン枠の説明を追加し、掲載済みの
+`images/teleop_gui.png` と `images/teleop_gui_stopped.png` を最新GUIのサンプル描画で更新した。
+サンプル値であることをREADMEに明記した。
+`gnc_py/test/manual/teleop_fan_preview.py` に `--teleop-status stall_stopped` を追加し、
+追従中・自動停止の2画像を再生成できるようにした。
+
+両画像の重なり検査と目視確認、パッケージビルド、関連テスト28件、
+`git diff --check` は成功。ドキュメント用の静的表示であり、新たなシム操作は行っていない。
+次はREADMEの掲載内容の確認を優先する。

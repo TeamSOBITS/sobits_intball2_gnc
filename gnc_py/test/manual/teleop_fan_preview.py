@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--language', choices=('en', 'ja'), default='en')
     parser.add_argument('--status', choices=[s.value for s in FanDutyStatus], default='live')
     parser.add_argument('--duties', choices=('mixed', 'zero', 'full'), default='mixed')
+    parser.add_argument('--teleop-status', choices=('tracking', 'stall_stopped'), default='tracking')
     args = parser.parse_args()
     config = Path(__file__).resolve().parents[2] / 'config' / 'gnc_params.yaml'
     params = yaml.safe_load(config.read_text())['/**']['ros__parameters']
@@ -28,11 +29,14 @@ def main():
     gui._japanese = args.language == 'ja'
     gui._root.geometry('+0+0')
     gui._root.attributes('-topmost', True)
-    gui._req_speed, gui._req_accel = 2, 3
-    gui._pressed = {'w', 'left'}
+    stopped = args.teleop_status == 'stall_stopped'
+    gui._req_speed, gui._req_accel = 1, 2
+    gui._pressed = set() if stopped else {'w', 'left'}
     state = TeleopState(
-        status=Status.TRACKING, v_ratio=(0.4, 0, 0, 0, 0, 0.3),
-        pos_err=0.006, att_err=0.024, err_pos_limit=0.020, err_att_limit=0.087,
+        status=Status.STALL_STOPPED if stopped else Status.TRACKING,
+        v_ratio=(0.0,) * 6 if stopped else (0.4, 0, 0, 0, 0, 0.3),
+        pos_err=0.026 if stopped else 0.006, att_err=0.024,
+        err_pos_limit=0.020, err_att_limit=0.087,
         speed_values=(0.03, 0.05, 0.075, 0.1, 0.15), accel_values=(0.3, 0.4, 0.5, 0.6, 0.7),
         speed_level=1, accel_level=2, shaped=True,
         fan_positions=tuple(tuple(positions[i:i + 3]) for i in range(0, 24, 3)),
