@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>sobits_intball2_teleop</name>
+  <version>0.1.0</version>
+  <description>Keyboard teleoperation for Int-Ball2: reference generator, backend node and RViz panel.</description>
+  <maintainer email="sobits@todo.todo">sobits</maintainer>
+  <license>BSD-3-Clause</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>eigen</depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>action_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>ib2_msgs</depend>
+  <test_depend>rosgraph_msgs</test_depend>
+  <depend>rviz_common</depend>
+  <depend>rviz_rendering</depend>
+  <depend>pluginlib</depend>
+  <depend>qtbase5-dev</depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

@@ -1,0 +1,10 @@
+<library path="teleop_panel_plugin">
+  <class name="sobits_intball2_teleop/TeleopPanel"
+         type="sobits_intball2_teleop::TeleopPanel" base_class_type="rviz_common::Panel">
+    <description>Int-Ball2 teleop state display (needs teleop_ros_enabled for ROS connection).</description>
+  </class>
+  <class name="sobits_intball2_teleop/TeleopTool"
+         type="sobits_intball2_teleop::TeleopTool" base_class_type="rviz_common::Tool">
+    <description>Keyboard teleop input with camera interaction.</description>
+  </class>
+</library>
