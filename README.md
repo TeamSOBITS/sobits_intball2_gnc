@@ -60,6 +60,7 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
 │   ├── package.xml
 │   ├── setup.py
 │   └── setup.cfg
+├── teleop/                          # パッケージ sobits_intball2_teleop: キーボードテレオペ（C++・ament_cmake）。基準の生成・backendノード・RVizのPanel
 └── gnc_cpp/                         # パッケージ sobits_intball2_gnc_cpp: C++実装とそのpybind11拡張（ament_cmake）
     ├── package.xml
     ├── CMakeLists.txt
@@ -108,7 +109,7 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
 5. パッケージをビルドします．
    ```sh
    cd ~/colcon_ws/
-   colcon build --packages-select sobits_intball2_gnc_cpp sobits_intball2_gnc
+   colcon build --packages-select sobits_intball2_gnc_cpp sobits_intball2_gnc sobits_intball2_teleop
    source ~/colcon_ws/install/setup.bash
    ```
 
@@ -145,43 +146,38 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
 ### キーボードテレオペ
-
-GUIとキーボードで機体を動かします．
-
-機体を直接動かすのではなく，**「基準」（機体が向かう目標点）**を動かします．キーを押すと基準が動き，Controlが機体をそれに追従させます．キーを離すと基準が止まり，機体が追いついて止まります．基準はRVizに緑の球と矢印（向き）で表示されます．
-
 1. `gnc_bringup.launch.py`を起動します（`control`も起動します）．テレオペ側のRVizを使うので，こちらのRVizは止めます．
     ```sh
     ros2 launch sobits_intball2_gnc gnc_bringup.launch.py use_rviz:=false
     ```
-2. [teleop.launch.py](gnc_py/launch/teleop.launch.py)を起動します．操作用のウィンドウと，機体の真後ろ斜め上から見るRViz（[teleop.rviz](gnc_py/rviz/teleop.rviz)）が開きます．
+2. [teleop.launch.py](teleop/launch/teleop.launch.py)を起動します．teleopノードと，機体の真後ろ斜め上から見るRViz（[teleop.rviz](teleop/config/teleop.rviz)）が開きます．
     ```sh
-    ros2 launch sobits_intball2_gnc teleop.launch.py
+    ros2 launch sobits_intball2_teleop teleop.launch.py
     ```
-    RVizを開かないときは`use_rviz:=false`を付けます．
-3. ウィンドウをクリックし，Enterで開始します．もう一度Enterで終了，Esc・Spaceで非常停止です．
+3. RVizの3D画面をクリックし，Enterで開始します．もう一度Enterで終了です．
 
 <p align="center">
-  <img src="docs/images/teleop_gui.png" alt="テレオペのウィンドウ（追従中・8基のファンの指令duty表示）" width="840">
+  <img src="docs/images/teleop_tracking.png" alt="テレオペのRViz画面（追従中）．左が機体の後方斜め上からの3D表示，右がPanel（並進・回転・速度と加速度・誤差・8基のファンの指令duty）" width="840">
 </p>
 
-- 左上の枠：並進（水平と上下）
-- 右上の枠：回転（ピッチ・ヨー・ロール）
-- 左下の青い四角形：速度と加速度，機体が止まっているときに反映される
-- 左下の2本のバー：機体が向かう基準と機体のずれ（位置と向き）
-  - 上限に近づくと黄→赤に変化
-  - ずれが上限を超えると，基準はその場で止まって機体を待つ（バナーが黄色）．
-  - **2秒たっても機体が追いつかなければ（壁にぶつかったときなど），自動で停止**（下の画像）．再開はEnter．
-- 右下の枠：8基のファン配置と，それぞれの**指令duty（0～100%）**．実測の回転数や推力ではありません．
-  - 機体を斜め後方・右上から見た図で，番号は各バーのFan番号と対応します．手前側は塗りつぶし，奥側は破線，黄色の輪は前方カメラの目印です．
-  - `/ctl/duty`の受信値を表示し，テレオペ終了後も更新します．未受信・更新停止・受信異常では数値を`--`で表示します．
-- `/gnc/move_to`のgoalが実行中は，キー入力を受け付けません（終了後も約2秒は無効）．テレオペ中はgoalを送らないでください．
+| 操作 | キー |
+| --- | --- |
+| 前後・左右・上下 | `W`/`S`・`A`/`D`・`R`/`F` |
+| ピッチ・ヨー・ロール | `↑`/`↓`・`←`/`→`・`Q`/`E` |
+| 開始・終了 | `Enter` |
+| 非常停止 | `Esc`・`Space` |
+| 速度の段階 | `[` / `]` |
+| 加速度の段階 | `,` / `.` |
+| NO CONTROL（ファンを止めて漂流させる）と，制御に戻す | `N`（押すたびに切り替え）．`Esc`・`Space`でも戻る |
 
-<p align="center">
-  <img src="docs/images/teleop_gui_stopped.png" alt="自動停止したときのウィンドウ（ファン表示付き）" width="840">
-</p>
-
-上のGUI画像は，表示例としてサンプル値を描画したものです．
+- RVizのPanelの表示
+  - 上のバナー：状態（TRACKING・STALLED・DISCONNECTED, NO CONTROL」
+  - 速度と加速度：段階．キーで変えた値は黄色の枠で表示し，機体停止時に反映される
+  - 位置と向きのずれ：機体が向かう基準と機体の差．上限に近づくと黄→赤に変化
+    - ずれが上限を超えると，基準はその場で止まって機体を待つ（バナーが黄色）．
+    - **2秒たっても機体が追いつかなければ（壁にぶつかったときなど），自動で停止**（バナーが「STALL_STOPPED」）．再開はEnterを離してから押し直す．
+  - 8基のファン配置と，それぞれの**指令duty（0～100%）**．
+    - 機体を斜め後方・右上から見た図で，手前側は塗りつぶし，奥側は破線，黄色の輪は前方カメラの目印．
 
 速度・加速度の段階や誤差の上限などは，`config/gnc_params.yaml`の`teleop:`で変えられます．
 
