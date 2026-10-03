@@ -66,6 +66,21 @@ class JaxaTrackingController:
         self._hold_version += 1
         self._pos.reset()
 
+    def release(self):
+        """Forget all tracking state when control resumes after being cut off (free drift).
+
+        The next ``step`` holds the pose it first sees, with a fresh integrator and velocity
+        estimate, instead of pulling back toward a target left from before the cut-off.
+        """
+        self._pos.reset()
+        self._hold = None
+        self._hold_version += 1
+        self._was_trajectory = False
+        self._last_pos = self._last_stamp = None
+        self._vel = np.zeros(3)
+        self._force, self._torque = list(ZERO3), list(ZERO3)
+        self.updated = False
+
     def step(self, t, pose, gyro, setpoint, setpoint_t):
         """Returns ``(force_body, torque_body)``.
 
