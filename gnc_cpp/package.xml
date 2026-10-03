@@ -13,6 +13,7 @@
   <depend>pybind11-dev</depend>
   <depend>eigen</depend>
   <depend>liboctomap-dev</depend>
+  <depend>ompl</depend>
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>gazebo_msgs</depend>

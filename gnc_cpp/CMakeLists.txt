@@ -28,6 +28,7 @@ find_package(pybind11 REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(octomap REQUIRED)
+find_package(ompl REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(gazebo_msgs REQUIRED)
@@ -54,6 +55,8 @@ add_library(gnc_cpp_core STATIC
   src/control/jaxa_attitude_controller.cpp
   src/control/jaxa_position_controller.cpp
   src/control/jaxa_thrust_allocator.cpp
+  src/guidance/jaxa/local_planner.cpp
+  src/guidance/jaxa/ompl_planner.cpp
   src/guidance/minco/constraint_points.cpp
   src/guidance/minco/minco_planner.cpp
   src/guidance/minco/objective.cpp
@@ -82,10 +85,11 @@ target_include_directories(gnc_cpp_core
     ${GCOPTER_INCLUDE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${OCTOMAP_INCLUDE_DIRS}
+    ${OMPL_INCLUDE_DIRS}
 )
-target_link_libraries(gnc_cpp_core PRIVATE OpenMP::OpenMP_CXX ${OCTOMAP_LIBRARIES} tinyxml2::tinyxml2)
+target_link_libraries(gnc_cpp_core PRIVATE OpenMP::OpenMP_CXX ${OCTOMAP_LIBRARIES} ${OMPL_LIBRARIES} tinyxml2::tinyxml2)
 
-pybind11_add_module(sobits_intball2_gnc_cpp python/bindings.cpp)
+pybind11_add_module(sobits_intball2_gnc_cpp python/bindings.cpp python/jaxa_planner_bindings.cpp)
 target_include_directories(sobits_intball2_gnc_cpp PRIVATE ${GCOPTER_INCLUDE_DIR})
 target_link_libraries(sobits_intball2_gnc_cpp PRIVATE gnc_cpp_core)
 

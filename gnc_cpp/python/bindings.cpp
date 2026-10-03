@@ -21,6 +21,8 @@
 
 namespace py = pybind11;
 
+void registerJaxaPlanner(py::module_ &m);
+
 namespace
 {
 
@@ -400,6 +402,8 @@ PYBIND11_MODULE(sobits_intball2_gnc_cpp, m) {
         "max_accel: used only for the heuristic time estimate, both required > 0. "
         "via_half_width/wrench_safety_margin: same meaning as plan_minco. "
         "Returns (success, error_code, segment_times, coeffs_flat, duration).");
+
+  registerJaxaPlanner(m);
 
   namespace control = sobits_intball2_gnc::control;
   py::class_<control::JaxaPositionController>(m, "JaxaPositionController",
