@@ -6,7 +6,6 @@ Panels:
       Expanded:
         - /Global Options1
         - /Status1
-        - /Path (trajectory setpoint, viz-only)1/Topic1
       Splitter Ratio: 0.5
     Tree Height: 506
   - Class: rviz_common/Selection
@@ -32,7 +31,7 @@ Visualization Manager:
       Line Style:
         Line Width: 0.029999999329447746
         Value: Lines
-      Name: Grid
+      Name: "Base: Grid"
       Normal Cell Count: 0
       Offset:
         X: 0
@@ -77,7 +76,7 @@ Visualization Manager:
       Mass Properties:
         Inertia: false
         Mass: false
-      Name: RobotModel (ISS)
+      Name: "Base: ISS model"
       TF Prefix: ""
       Update Interval: 0
       Value: true
@@ -128,7 +127,7 @@ Visualization Manager:
       Mass Properties:
         Inertia: false
         Mass: false
-      Name: RobotModel (ib2)
+      Name: "Base: ib2 model"
       TF Prefix: ""
       Update Interval: 0
       Value: true
@@ -209,7 +208,7 @@ Visualization Manager:
         window_sobits_approach:
           Value: true
       Marker Scale: 1
-      Name: TF
+      Name: "Base: TF"
       Show Arrows: false
       Show Axes: true
       Show Names: true
@@ -283,37 +282,9 @@ Visualization Manager:
               {}
       Update Interval: 0
       Value: true
-    - Alpha: 1
-      Buffer Length: 1
-      Class: rviz_default_plugins/Path
-      Color: 25; 255; 0
-      Enabled: false
-      Head Diameter: 0.30000001192092896
-      Head Length: 0.20000000298023224
-      Length: 0.30000001192092896
-      Line Style: Lines
-      Line Width: 0.029999999329447746
-      Name: Path (trajectory setpoint, viz-only)
-      Offset:
-        X: 0
-        Y: 0
-        Z: 0
-      Pose Color: 255; 85; 255
-      Pose Style: None
-      Radius: 0.029999999329447746
-      Shaft Diameter: 0.10000000149011612
-      Shaft Length: 0.10000000149011612
-      Topic:
-        Depth: 5
-        Durability Policy: Transient Local
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /gnc/trajectory_path
-      Value: false
     - Class: rviz_default_plugins/Marker
       Enabled: true
-      Name: Marker (trajectory speed, viz-only)
+      Name: "Guidance: trajectory speed"
       Namespaces:
         speed_path: true
       Topic:
@@ -326,7 +297,7 @@ Visualization Manager:
       Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: true
-      Name: Marker (local trajectory speed, viz-only)
+      Name: "Guidance: local trajectory speed"
       Namespaces:
         speed_path: true
       Topic:
@@ -340,6 +311,47 @@ Visualization Manager:
     - Alpha: 1
       Buffer Length: 1
       Class: rviz_default_plugins/Path
+      Color: 0; 200; 255
+      Enabled: true
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
+      Line Style: Lines
+      Line Width: 0.029999999329447746
+      Name: "Guidance: JAXA local path"
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 0; 200; 255
+      Pose Style: None
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /gnc/jaxa_local_path
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: "Guidance: JAXA tracking point"
+      Namespaces:
+        point: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /gnc/jaxa_tracking_point
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz_default_plugins/Path
       Color: 0; 255; 120
       Enabled: true
       Head Diameter: 0.30000001192092896
@@ -347,7 +359,7 @@ Visualization Manager:
       Length: 0.30000001192092896
       Line Style: Lines
       Line Width: 0.039999999105930328
-      Name: Path (global A* corridor reference)
+      Name: "Guidance: global A* path"
       Offset:
         X: 0
         Y: 0
@@ -367,7 +379,7 @@ Visualization Manager:
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
-      Name: MarkerArray (FIRI safe corridor)
+      Name: "Guidance: FIRI safe corridor"
       Namespaces:
         firi_corridor: true
       Topic:
@@ -377,9 +389,33 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /gnc/global_corridor_markers
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: "Obstacles: planner active boxes"
+      Namespaces:
+        {}
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /guidance/obstacles_active
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: "Obstacles: virtual camera scene"
+      Namespaces:
+        {}
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /virtual_camera/obstacles
+      Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: false
-      Name: Marker (JEM octomap)
+      Name: "Obstacles: JEM octomap"
       Namespaces:
         octomap: true
       Topic:
@@ -391,23 +427,23 @@ Visualization Manager:
         Value: /octomap_marker
       Value: false
     - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
-      Name: MarkerArray (active obstacles)
+      Enabled: false
+      Name: "Obstacles: spawn_model markers"
       Namespaces:
         {}
       Topic:
-        Depth: 1
-        Durability Policy: Transient Local
+        Depth: 5
+        Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /guidance/obstacles_active
-      Value: true
+        Value: /spawned_model_markers
+      Value: false
     - Class: rviz_default_plugins/Image
       Enabled: true
       Max Value: 1
       Median window: 5
       Min Value: 0
-      Name: Image (virtual camera main depth)
+      Name: "VCam main: depth image"
       Normalize Range: true
       Topic:
         Depth: 5
@@ -415,19 +451,6 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /virtual_camera/main/depth
-      Value: true
-    - Class: rviz_default_plugins/Marker
-      Enabled: true
-      Name: Marker (virtual camera stereo frustum)
-      Namespaces:
-        virtual_camera: true
-      Topic:
-        Depth: 1
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /virtual_camera/stereo/frustum
       Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: false
@@ -447,7 +470,68 @@ Visualization Manager:
       Max Intensity: 3
       Min Color: 255; 0; 0
       Min Intensity: 0
-      Name: PointCloud2 (virtual camera stereo, color = depth, near red / far blue 0-3m)
+      Name: "VCam main: points (red near / blue far, 0-3m)"
+      Position Transformer: XYZ
+      Selectable: false
+      Size (Pixels): 2
+      Size (m): 0.02
+      Style: Flat Squares
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /virtual_camera/main/points
+      Use Fixed Frame: false
+      Use rainbow: false
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: "VCam main: frustum"
+      Namespaces:
+        virtual_camera: true
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /virtual_camera/main/frustum
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: false
+      Max Value: 6
+      Median window: 5
+      Min Value: 0
+      Name: "VCam stereo: depth image"
+      Normalize Range: false
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /virtual_camera/stereo/depth
+      Value: false
+    - Alpha: 1
+      Autocompute Intensity Bounds: false
+      Autocompute Value Bounds:
+        Max Value: 3
+        Min Value: 0
+        Value: false
+      Axis: Z
+      Channel Name: z
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: Intensity
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 0; 120; 255
+      Max Intensity: 3
+      Min Color: 255; 0; 0
+      Min Intensity: 0
+      Name: "VCam stereo: points (red near / blue far, 0-3m)"
       Position Transformer: XYZ
       Selectable: false
       Size (Pixels): 2
@@ -465,7 +549,7 @@ Visualization Manager:
       Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: true
-      Name: Marker (virtual camera main frustum)
+      Name: "VCam stereo: frustum"
       Namespaces:
         virtual_camera: true
       Topic:
@@ -474,66 +558,8 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /virtual_camera/main/frustum
+        Value: /virtual_camera/stereo/frustum
       Value: true
-    - Alpha: 1
-      Autocompute Intensity Bounds: false
-      Autocompute Value Bounds:
-        Max Value: 3
-        Min Value: 0
-        Value: false
-      Axis: Z
-      Channel Name: z
-      Class: rviz_default_plugins/PointCloud2
-      Color: 255; 255; 255
-      Color Transformer: Intensity
-      Decay Time: 0
-      Enabled: true
-      Invert Rainbow: false
-      Max Color: 0; 120; 255
-      Max Intensity: 3
-      Min Color: 255; 0; 0
-      Min Intensity: 0
-      Name: PointCloud2 (virtual camera main, color = depth, near red / far blue 0-3m)
-      Position Transformer: XYZ
-      Selectable: false
-      Size (Pixels): 2
-      Size (m): 0.02
-      Style: Flat Squares
-      Topic:
-        Depth: 1
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /virtual_camera/main/points
-      Use Fixed Frame: false
-      Use rainbow: false
-      Value: true
-    - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
-      Name: MarkerArray (virtual camera obstacles)
-      Namespaces:
-        {}
-      Topic:
-        Depth: 1
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /virtual_camera/obstacles
-      Value: true
-    - Class: rviz_default_plugins/MarkerArray
-      Enabled: false
-      Name: MarkerArray (spawn_model markers, intball2_programs)
-      Namespaces:
-        {}
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /spawned_model_markers
-      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -552,7 +578,7 @@ Visualization Manager:
       Max Intensity: 4096
       Min Color: 0; 0; 0
       Min Intensity: 0
-      Name: PointCloud2 (real stereo, stereo_pointcloud.launch.py)
+      Name: "Real: stereo points (stereo_pointcloud.launch.py)"
       Position Transformer: XYZ
       Selectable: false
       Size (Pixels): 2
@@ -567,20 +593,6 @@ Visualization Manager:
         Value: /stereo/points2
       Use Fixed Frame: true
       Use rainbow: true
-      Value: false
-    - Class: rviz_default_plugins/Image
-      Enabled: false
-      Max Value: 6
-      Median window: 5
-      Min Value: 0
-      Name: Image (virtual camera stereo depth)
-      Normalize Range: false
-      Topic:
-        Depth: 1
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /virtual_camera/stereo/depth
       Value: false
   Enabled: true
   Global Options:

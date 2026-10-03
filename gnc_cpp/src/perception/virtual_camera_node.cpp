@@ -297,7 +297,7 @@ private:
             auto m = base(box_names_[i], boxes[i].rotation, boxes[i].center);
             m.type = visualization_msgs::msg::Marker::CUBE;
             m.scale.x = 2 * boxes[i].half_extent.x(), m.scale.y = 2 * boxes[i].half_extent.y(), m.scale.z = 2 * boxes[i].half_extent.z();
-            m.color.r = m.color.g = m.color.b = 0.7f, m.color.a = 0.8f;
+            m.color.r = 0.85f, m.color.g = 0.33f, m.color.b = 0.0f, m.color.a = 0.9f;  // dark orange: gray was hard to see in RViz
             array.markers.push_back(m);
         }
         return array;
