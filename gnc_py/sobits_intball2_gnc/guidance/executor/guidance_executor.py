@@ -114,7 +114,8 @@ class GuidanceExecutor:
                  align_tolerance_deg=3.0, align_timeout=60.0,
                  align_settle_time=0.5, rate=50.0,
                  camera_forward_axis=None, speed_path_publisher=None,
-                 local_speed_path_publisher=None,
+                 local_speed_path_publisher=None, jaxa_path_publisher=None,
+                 jaxa_tracking_point_publisher=None,
                  path_preview_points=20, max_accel=None,
                  align_pos_tolerance_m=0.05, align_pos_settle_time=0.5,
                  align_pos_timeout=10.0, tf_staleness_timeout=1.0,
@@ -180,6 +181,10 @@ class GuidanceExecutor:
         # docstring.
         self._speed_path_pub = speed_path_publisher
         self._local_speed_path_pub = local_speed_path_publisher
+        # Optional RViz-only views of the jaxa_rrt tracker: its waypoint path
+        # (PathPublisher, on every new path) and tracking point (PointMarkerPublisher).
+        self._jaxa_path_pub = jaxa_path_publisher
+        self._jaxa_tracking_point_pub = jaxa_tracking_point_publisher
         self._path_preview_points = int(path_preview_points)
         # Real actuator-derived budget for the static/TOPP-RA path (docs/
         # 2026-08-28_constrained_trajectory_generation_research.md,
@@ -289,8 +294,13 @@ class GuidanceExecutor:
                 minco_replan_face_travel=False, minco_local_max_vel=None,
                 minco_async_replan=False, minco_obstacle_avoidance=False,
                 minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2,
-                global_corridor_avoidance=False):
+                global_corridor_avoidance=False, jaxa_lookahead_m=0.11,
+                jaxa_ompl_solve_time_s=0.1, jaxa_max_attempts=50,
+                jaxa_collision_check_period=0.05, jaxa_goal_facing_hold_m=0.3,
+                jaxa_rrt_bounds=(9.6, -11.9, 3.6, 12.3, -2.4, 6.0)):
         """Run one move-to-target goal; returns a ``STATUS_*`` constant.
+
+        ``jaxa_*``: ``"jaxa_rrt"`` only (docs/jaxa_baseline_gazebo_port_plan.md 5 節).
 
         ``via_waypoints``: an optional ordered list of interior relay points
         (already TF-resolved to ``[x, y, z]`` positions by the caller, e.g.
@@ -517,14 +527,20 @@ class GuidanceExecutor:
                 minco_local_piece_length_m=minco_local_piece_length_m,
                 minco_obstacle_clearance_soft=minco_obstacle_clearance_soft,
                 global_corridor_avoidance=global_corridor_avoidance,
+                jaxa_options=dict(
+                    lookahead_m=jaxa_lookahead_m, ompl_solve_time_s=jaxa_ompl_solve_time_s,
+                    max_attempts=int(jaxa_max_attempts),
+                    collision_check_period=jaxa_collision_check_period,
+                    goal_facing_hold_m=jaxa_goal_facing_hold_m, bounds=list(jaxa_rrt_bounds)),
             )
         except TrajectoryBuildError as exc:
             self._log.error("[GuidanceExecutor] %s, aborting" % exc)
             return STATUS_PLANNING_FAILED
 
-        if self._speed_path_pub is not None:
+        if self._speed_path_pub is not None and traj is not None:
             self._publish_speed_path_preview(traj)
         self._publish_local_speed_path_preview(tracker)
+        self._publish_jaxa_path(tracker)
 
         status = self._run_trajectory(tracker, p_target, feedback_cb, is_cancel_requested)
         if status != STATUS_SUCCESS:
@@ -588,6 +604,12 @@ class GuidanceExecutor:
             return
         self._publish_speed_path_preview(local_traj, self._local_speed_path_pub)
 
+    def _publish_jaxa_path(self, tracker):
+        path = getattr(tracker, "path", None)
+        if self._jaxa_path_pub is None or path is None:
+            return
+        self._jaxa_path_pub.publish([(point, (0.0, 0.0, 0.0, 1.0)) for point in path])
+
     def _publish_speed_path_preview(self, traj, publisher=None):
         """Publish ``traj``'s current shape to ``self._speed_path_pub``, for
         RViz-only visualization -- called once at goal start, and again on
@@ -643,9 +665,12 @@ class GuidanceExecutor:
                        getattr(tracker, "last_replan_source", None),
                        getattr(tracker, "last_replan_collides", None))
                 )
-                if self._speed_path_pub is not None:
+                if self._speed_path_pub is not None and getattr(tracker, "trajectory", None) is not None:
                     self._publish_speed_path_preview(tracker.trajectory)
                 self._publish_local_speed_path_preview(tracker)
+                self._publish_jaxa_path(tracker)
+            if self._jaxa_tracking_point_pub is not None and hasattr(tracker, "path"):
+                self._jaxa_tracking_point_pub.publish(p)
             if not fallback_logged and getattr(
                 tracker, "last_fallback_reason", None
             ) is not None:
@@ -663,7 +688,16 @@ class GuidanceExecutor:
                         % (tracker.last_fallback_reason, sample_t)
                     )
 
+            # jaxa_rrt: no timed trajectory; a failed plan ends the goal.
+            if getattr(tracker, "failed", None) is not None:
+                self._log.error("[GuidanceExecutor] planning failed mid-goal (%s), aborting"
+                                % tracker.failed)
+                return STATUS_PLANNING_FAILED
+            # jaxa_rrt's total_duration is inf until its tracking point reaches the
+            # goal; the action's Duration feedback cannot carry inf, so report 0 (unknown).
             time_to_go = max(0.0, tracker.total_duration - elapsed)
+            if not np.isfinite(time_to_go):
+                time_to_go = 0.0
             p_goal = _goal_position(tracker, p_target)
             p_to_go = (p_goal - np.asarray(p)).tolist()
             feedback_cb(time_to_go, p_to_go, q.tolist())

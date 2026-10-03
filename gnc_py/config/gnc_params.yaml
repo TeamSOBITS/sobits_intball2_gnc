@@ -139,7 +139,7 @@
       # below `rate` to avoid coupling two feedback loops reading the same TF.
       velocity_estimate_rate: 10.0  # [Hz]
       velocity_estimate_alpha: 0.3  # EMA blend weight (1.0 = no filtering)
-      motion_profile: fast                 # fast / avoidance; latched when a goal is accepted
+      motion_profile: fast                 # fast / avoidance / jaxa_baseline; latched when a goal is accepted
       # Expert defaults overridden by motion_profile. They remain available for
       # future profiles and direct planner experiments.
       attitude_reference_mode: face_travel
@@ -160,6 +160,14 @@
       global_corridor_avoidance: false       # A*6 + FIRI enhancement; false keeps the established local-only tracker
       minco_local_piece_length_m: 1.5        # [m] local piece length when avoiding (EGO v2 polyTraj_piece_length)
       minco_obstacle_clearance_soft: 0.2     # [m] soft clearance from collided obstacles
+      # jaxa_rrt (JAXA IAC-22 baseline, docs/jaxa_baseline_gazebo_port_plan.md); the
+      # jaxa_baseline profile sets these except jaxa_rrt_bounds
+      jaxa_lookahead_m: 0.11                 # [m] tracking-point lookahead d = v*kd/kp (JAXA gains): 0.11=0.06 m/s (paper), 0.27=0.15, 0.36=0.20
+      jaxa_ompl_solve_time_s: 0.1            # [s] OMPL RRTstar solve time per attempt
+      jaxa_max_attempts: 50                  # attempts until the smoothed path passes the half-voxel check
+      jaxa_collision_check_period: 0.05      # [s]
+      jaxa_goal_facing_hold_m: 0.3           # [m] hold attitude this close to the goal
+      jaxa_rrt_bounds: [9.6, -11.9, 3.6, 12.3, -2.4, 6.0]  # RRT* sampling box [xmin, ymin, zmin, xmax, ymax, zmax] (JEM)
       obstacle_map_file: jem_octomap.bt      # static map, relative = share/maps/; "" = boxes only (read-only)
       obstacle_grid_resolution: 0.1          # [m] (read-only)
       obstacle_grid_inflation: 0.2           # [m] robot radius 0.1 + 0.1 margin, whole cells (read-only)

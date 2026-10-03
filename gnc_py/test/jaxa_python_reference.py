@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Offline re-implementation of the IAC-22-D1.6.2 (Nishishita et al.) local
-planner and tracking-point follower, used only as a comparison baseline.
+"""Frozen Python reference for native JAXA planner equivalence tests.
 
-Pipeline per plan: RRT* on the inflated occupancy grid -> shortcut
-simplification -> cubic B-spline interpolation sampled into waypoints ->
-collision check (replan on collision).  The follower commands the paper's
-tracking point (Eqs. (1)-(2)), with ``v_des = a_des = 0`` (feedback only).  Parameters the paper does not state are listed in
-``docs/jaxa_baseline_offline_verification.md``.  Not connected to guidance.
+Re-implements T. Nishishita et al., "Dynamic Motion Planning of FPV Camera
+Free-Flyers for Autonomous Crew Tracking and Collision Avoidance", IAC-22-D1.6.2
+(2022), 3.1-3.2 from the paper's text (no JAXA source exists for this part):
+RRT* on the inflated occupancy grid -> cubic B-spline interpolation of the RRT*
+nodes sampled into waypoints -> collision check, replanning on collision; and
+the tracking point of Eqs. (1)-(2). The paper names no separate simplification
+step: Fig. 4(b) is "the path simplified and smoothed by B-Spline interpolation".
+``trajectory_tracking/jaxa_tracking_point_tracker.py`` drives it. Design and the
+values the paper does not give: docs/jaxa_baseline_gazebo_port_plan.md.
 """
 import time
+from dataclasses import dataclass
 
 import numpy as np
 from scipy.interpolate import make_interp_spline
@@ -16,11 +20,29 @@ from scipy.interpolate import make_interp_spline
 from sobits_intball2_gnc.guidance.global_planner.path_shortcut import (
     point_is_free,
     segment_is_free,
-    shortcut_path,
 )
 
 
+class JaxaPlanError(RuntimeError):
+    """No collision-free path (start/goal occupied, RRT* failed, or every attempt collided)."""
+
+
+@dataclass(frozen=True)
+class JaxaPlannerConfig:
+    """Values the paper does not give; see docs/jaxa_baseline_gazebo_port_plan.md 2 節."""
+    rrt_step_m: float = 0.3
+    rrt_radius_m: float = 0.6
+    rrt_iterations: int = 1000
+    rrt_goal_bias: float = 0.1
+    rrt_goal_tolerance_m: float = 0.3
+    waypoint_spacing_m: float = 0.5
+    max_attempts: int = 5
+
+
 class RRTStar:
+    """RRT* (fixed rewire radius) on the inflated grid inside ``bounds``; searches
+    the full iteration budget and returns the cheapest start->goal path."""
+
     def __init__(self, grid, bounds, step=0.3, radius=0.6, max_iterations=1000,
                  goal_bias=0.1, goal_tolerance=0.3, seed=None):
         self.grid = grid
@@ -38,11 +60,9 @@ class RRTStar:
     def plan(self, start, goal):
         start, goal = np.asarray(start, dtype=float), np.asarray(goal, dtype=float)
         if not point_is_free(start, self.grid, self.bounds):
-            raise RuntimeError("start occupied")
+            raise JaxaPlanError("start occupied")
         if not point_is_free(goal, self.grid, self.bounds):
-            raise RuntimeError("goal occupied")
-        if self._free(start, goal):
-            return [start, goal]
+            raise JaxaPlanError("goal occupied")
         n_max = self.max_iterations + 1
         nodes = np.empty((n_max, 3))
         parent = np.full(n_max, -1)
@@ -97,7 +117,7 @@ class RRTStar:
                 best_goal_cost = min(best_goal_cost, cost[best_goal_parent]
                                      + np.linalg.norm(goal - nodes[best_goal_parent]))
         if best_goal_parent < 0:
-            raise RuntimeError("RRT* found no path")
+            raise JaxaPlanError("RRT* found no path")
         path, idx = [goal], best_goal_parent
         while idx != -1:
             path.append(nodes[idx].copy())
@@ -114,6 +134,8 @@ def bspline_waypoints(points, spacing=0.5):
     steps give that.  0.5 m is the paper's tracking-test waypoint spacing.
     """
     pts = np.asarray(points, dtype=float)
+    # RRT* may end with a node at the goal plus the appended goal; knots must be distinct.
+    pts = pts[np.concatenate(([True], np.linalg.norm(np.diff(pts, axis=0), axis=1) > 1e-9))]
     chord = np.linalg.norm(np.diff(pts, axis=0), axis=1)
     length = float(chord.sum())
     count = max(2, int(np.ceil(length / spacing)) + 1)
@@ -129,23 +151,26 @@ def path_is_free(path, grid, bounds):
     return all(segment_is_free(a, b, grid, bounds) for a, b in zip(path[:-1], path[1:]))
 
 
-def plan_local_path(start, goal, grid, bounds, seed, rrt_kwargs, max_attempts=5, spacing=0.5):
-    """Returns ``(waypoints (N,3), info)``; raises RuntimeError if every attempt fails.
+def plan_local_path(start, goal, grid, bounds, seed, config):
+    """Returns ``(waypoints (N,3), info)``; raises :class:`JaxaPlanError` if every attempt fails.
 
     A colliding smoothed path is replanned with a fresh RRT*, as in the paper;
     the attempt limit is ours (the paper gives none).
     """
     t0 = time.perf_counter()
     info = {"attempts": 0}
+    max_attempts = config.max_attempts
     for attempt in range(max_attempts):
         info["attempts"] = attempt + 1
-        raw = RRTStar(grid, bounds, seed=seed + attempt, **rrt_kwargs).plan(start, goal)
-        path = bspline_waypoints(shortcut_path(raw, grid, bounds), spacing)
+        raw = RRTStar(grid, bounds, step=config.rrt_step_m, radius=config.rrt_radius_m,
+                      max_iterations=config.rrt_iterations, goal_bias=config.rrt_goal_bias,
+                      goal_tolerance=config.rrt_goal_tolerance_m, seed=seed + attempt).plan(start, goal)
+        path = bspline_waypoints(raw, config.waypoint_spacing_m)
         if path_is_free(path, grid, bounds):
             info["plan_s"] = time.perf_counter() - t0
             return path, info
     info["plan_s"] = time.perf_counter() - t0
-    raise RuntimeError("no collision-free smoothed path after %d attempts" % max_attempts)
+    raise JaxaPlanError("no collision-free smoothed path after %d attempts" % max_attempts)
 
 
 def tracking_point(path, p, lookahead):
@@ -170,64 +195,3 @@ def tracking_point(path, p, lookahead):
     if i == len(path) - 2 and (t - r_n) @ unit > 0.0:
         t = r_n
     return p + t, i
-
-
-def facing_quat(direction, fallback):
-    """+X toward ``direction`` with no roll (attitude only sets the body-frame force clamp offline)."""
-    d = np.asarray(direction, dtype=float)
-    if np.linalg.norm(d) < 1e-6:
-        return fallback
-    yaw = np.arctan2(d[1], d[0])
-    pitch = -np.arctan2(d[2], np.hypot(d[0], d[1]))
-    cy, sy, cp, sp = np.cos(yaw / 2), np.sin(yaw / 2), np.cos(pitch / 2), np.sin(pitch / 2)
-    return np.array([-sy * sp, cy * sp, sy * cp, cy * cp])
-
-
-class JaxaLookaheadFollower:
-    """Tracking-point follower with collision-triggered replanning (sync, offline)."""
-
-    def __init__(self, start, goal, grid, bounds, lookahead_m, q0, seed=0,
-                 rrt_kwargs=None, collision_check_period=0.05):
-        self.goal = np.asarray(goal, dtype=float)
-        self.bounds = bounds
-        self.grid = grid
-        self.lookahead = float(lookahead_m)
-        self.rrt_kwargs = rrt_kwargs or {}
-        self.collision_check_period = float(collision_check_period)
-        self.seed = int(seed)
-        self.q = np.asarray(q0, dtype=float)
-        self.plans = []
-        self.failed = None
-        self._last_check_t = -np.inf
-        self._replan(np.asarray(start, dtype=float))
-
-    def _replan(self, p):
-        self.seed += 100
-        try:
-            path, info = plan_local_path(p, self.goal, self.grid, self.bounds, self.seed, self.rrt_kwargs)
-        except RuntimeError as error:
-            self.failed = str(error)
-            self.plans.append({"plan_s": float("nan"), "attempts": 0})
-            return False
-        self.plans.append(info)
-        self.path = path
-        return True
-
-    def set_obstacle_grid(self, grid):
-        self.grid = grid
-        self._last_check_t = -np.inf
-
-    def setpoint(self, t, p):
-        """Returns ``(p_des, q_des)``; holds ``p`` once planning has failed."""
-        if self.failed:
-            return p, self.q
-        target, i = tracking_point(self.path, p, self.lookahead)
-        if t - self._last_check_t >= self.collision_check_period - 1e-9:
-            self._last_check_t = t
-            remaining = self.path[i:]
-            if len(remaining) >= 2 and not path_is_free(remaining, self.grid, self.bounds):
-                if not self._replan(p):
-                    return p, self.q
-                target, _i = tracking_point(self.path, p, self.lookahead)
-        self.q = facing_quat(target - p, self.q)
-        return target, self.q

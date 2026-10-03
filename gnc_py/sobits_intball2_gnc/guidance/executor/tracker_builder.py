@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Builds the tracker for one move_to goal's ``trajectory_tracking_mode`` (ROS-agnostic).
 
+``jaxa_rrt`` is the JAXA IAC-22 baseline (docs/jaxa_baseline_gazebo_port_plan.md):
+it has no timed trajectory, so ``build`` returns ``traj=None`` for it.
+
 Split out of ``GuidanceExecutor.execute()`` (``guidance/executor/guidance_executor.py``),
 which calls :meth:`TrackerBuilder.build` once per goal. ``replan_minco``
 falls back to ``static_toppra`` on failure; any other failure raises
@@ -10,6 +13,10 @@ import time
 
 import numpy as np
 
+from sobits_intball2_gnc.guidance.local_planner.jaxa_rrt_local_planner import (
+    JaxaPlanError,
+    JaxaPlannerConfig,
+)
 from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
     MincoInfeasibleError,
     MincoTrajectory,
@@ -24,12 +31,15 @@ from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker impor
     ReplanMincoTracker,
 )
 from sobits_intball2_gnc.guidance.trajectory_tracking.corridor_session import CorridorSession
+from sobits_intball2_gnc.guidance.trajectory_tracking.jaxa_tracking_point_tracker import (
+    JaxaTrackingPointTracker,
+)
 from sobits_intball2_gnc.guidance.trajectory_tracking.static_trajectory_tracker import (
     StaticTrajectoryTracker,
 )
 
 TRAJECTORY_TRACKING_MODES = frozenset(
-    {"static_toppra", "static_minco", "replan_minco"}
+    {"static_toppra", "static_minco", "replan_minco", "jaxa_rrt"}
 )
 
 
@@ -71,9 +81,10 @@ class TrackerBuilder:
               minco_replan_face_travel=False, minco_local_max_vel=None,
               minco_async_replan=False, minco_obstacle_avoidance=False,
               minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2,
-              global_corridor_avoidance=False):
+              global_corridor_avoidance=False, jaxa_options=None):
         """Returns ``(tracker, traj)``: ``traj`` is the trajectory to preview (the
-        tracked one, or the global one for ``replan_minco``).
+        tracked one, the global one for ``replan_minco``, ``None`` for ``jaxa_rrt``).
+        ``jaxa_options``: ``jaxa_rrt`` only, see :meth:`_build_jaxa`.
         ``forward_axis`` must already be resolved (never ``None``).
         Raises :class:`TrajectoryBuildError` if no trajectory can be built."""
         waypoints = [p0, *via_waypoints, p_target]
@@ -95,6 +106,9 @@ class TrackerBuilder:
         traj = None
         replan_tracker = None
         self._obstacle_tracker = None
+        if mode == "jaxa_rrt":
+            return self._build_jaxa(p0, q0, p_target, via_waypoints, forward_axis,
+                                    jaxa_options or {}), None
         obstacle_kwargs = {}
         if mode == "replan_minco" and minco_obstacle_avoidance:
             obstacle_kwargs = self._obstacle_tracker_kwargs(
@@ -193,6 +207,32 @@ class TrackerBuilder:
         if mode == "replan_minco":
             return replan_tracker, traj
         return StaticTrajectoryTracker(traj), traj
+
+    def _build_jaxa(self, p0, q0, p_target, via_waypoints, forward_axis, options):
+        """``options``: ``lookahead_m``, ``bounds`` ([xmin, ymin, zmin, xmax, ymax, zmax]),
+        ``collision_check_period``, ``goal_facing_hold_m`` and the
+        :class:`JaxaPlannerConfig` fields."""
+        if self._obstacle_map is None:
+            raise TrajectoryBuildError("jaxa_rrt needs an obstacle map")
+        if via_waypoints:
+            raise TrajectoryBuildError("jaxa_rrt does not take via_waypoints")
+        options = dict(options)
+        bounds = [float(x) for x in options.pop("bounds")]
+        tracker_kwargs = {key: options.pop(key) for key in
+                          ("lookahead_m", "collision_check_period", "goal_facing_hold_m")}
+        try:
+            tracker = JaxaTrackingPointTracker(
+                p0, p_target, pose_fn=self._tf.get_pose, tf_fresh_fn=self._tf_fresh_fn,
+                q0=q0, obstacle_grid=self._obstacle_map.grid,
+                bounds=(bounds[:3], bounds[3:]), config=JaxaPlannerConfig(**options),
+                forward_axis=forward_axis, async_replan=True, **tracker_kwargs)
+        except JaxaPlanError as exc:
+            raise TrajectoryBuildError("jaxa_rrt initial plan failed (%s)" % exc) from exc
+        self._obstacle_tracker = tracker
+        self._log.info(
+            "[TrackerBuilder] jaxa_rrt initial plan took %.2fs (%d attempt(s), %d waypoints)"
+            % (tracker.last_replan_solve_seconds, tracker.plans[0]["attempts"], len(tracker.path)))
+        return tracker
 
     def _build_toppra(self, waypoints, q0, forward_axis, face_travel):
         missing = [name for name, value in (

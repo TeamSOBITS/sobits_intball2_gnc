@@ -43,6 +43,7 @@ guidance/
 │   └── rrt_planner.py                       # オフライン比較用。実行時の切替先には未接続
 ├── local_planner/                        # 障害物を見たlocalの計画
 │   ├── minco_local_planner.py                # replan_mincoのglobal/localの作り方（EGO-Planner v2のplanner_manager）
+│   ├── jaxa_rrt_local_planner.py             # JAXA手法のC++プランナーのPythonインターフェース
 │   ├── obstacle_map.py                       # 静的地図＋仮想箱または最新depthから格子地図を作る
 │   └── corridor_constraints.py               # A*回廊を現在local状態から最大0.75mのMINCO区間へ再対応付け
 ├── trajectory/                           # 軌道の表現と生成
@@ -56,6 +57,7 @@ guidance/
 │   ├── base_trajectory_tracker.py            # 共通インターフェース
 │   ├── static_trajectory_tracker.py          # 開ループ単一軌道を最後まで追従（static_toppra・static_minco）
 │   ├── replan_minco_tracker.py               # global MINCO軌道を一度だけ解き、local区間を一定周期で再計画しながら追従（衝突確認・非常停止）
+│   ├── jaxa_tracking_point_tracker.py        # jaxa_rrt: 追従点をp_desに出し（v=a=0）、経路が衝突したら非同期で再計画、ゴールを向く
 │   └── corridor_session.py                   # optional A*→FIRI→local MINCOの状態と更新判断
 ├── align/                                # 事前/事後アラインメント（SLERP+台形角速度ランプ）
 │   ├── angular_trajectory.py                 # 角度台形プロファイル（角速度・角加速度上限からランプ軌道を生成）
@@ -141,10 +143,15 @@ python3 gnc_py/test/manual/move_to_cancel_brake_test.py inspection_entry_2   # �
 |---|---|---|
 | `fast`（既定） | 障害物がない場所を速く移動 | `static_toppra`、姿勢固定、出発前・到着時の姿勢合わせなし、障害物回避なし |
 | `avoidance` | 深度または仮想障害物を避けて移動 | `replan_minco`、進行方向を向く、出発前・到着時の姿勢合わせあり、1秒ごとの非同期再計画、障害物回避あり、local速度上限`0.15 m/s` |
+| `jaxa_baseline` | 比較用のJAXA手法（IAC-22）で障害物を避けて移動 | `jaxa_rrt`、ゴールを向く、出発前・到着時の姿勢合わせあり、経路が衝突したら非同期で再計画、先読み距離`jaxa_lookahead_m`=0.11 m（論文の0.06 m/s相当） |
 
 ```sh
 ros2 param set /guidance_node guidance.motion_profile avoidance
 ```
+
+`jaxa_rrt` の RRT*・B スプライン補間・衝突確認・追従点は `gnc_cpp/src/guidance/jaxa/local_planner.cpp` で計算します。再試行を含む計画は1つの地図 snapshot を読み、計算中は GIL を解放して depth 更新と setpoint の処理を進めます。Python 版は `gnc_py/test/jaxa_python_reference.py` に比較用として残しています。
+
+`jaxa_baseline`は両手法とも JAXA 制御器（`jaxa_control_node`）で比べる前提です。速度を変えるときは`jaxa_lookahead_m`だけを`ros2 param set`します（0.15 m/s 相当は 0.27、0.20 m/s 相当は 0.36）。計画に失敗するとgoalを`planning_failed`で終えます。設計は`docs/jaxa_baseline_gazebo_port_plan.md`。
 
 `avoidance`には、起動時に`guidance.obstacle_source: depth`または`boxes`を設定する必要があります。`depth`では新鮮な深度フレームをまだ受け取っていない場合、goalをabortします。回避なしで移動するよう自動的に切り替わることはありません。
 
@@ -190,6 +197,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
    - `static_toppra`: 力・トルクの制約付きで一度だけ計画した軌道（TOPP-RA）
    - `static_minco`: MINCOで一度だけ計画した軌道
    - `replan_minco`: ゴールまでのglobal軌道を一度だけ作り、そこから先読み距離先までのlocal軌道を1秒ごとに作り直す（EGO-Planner v2と同じ構成）。最初のglobal軌道を作れなければ`static_toppra`で作り直す
+   - `jaxa_rrt`: JAXA手法ベースライン。RRT*→Bスプライン補間の経路を作り、論文の追従点（`v_des = a_des = 0`）を出す。残りの経路が衝突したら別スレッドで再計画し、終わるまで古い経路を追う。時間で決まる軌道がないので、追従点がゴールに達してから下の位置の収束を待つ
    - `global_corridor_avoidance=true`の`replan_minco`: initial A*折線をFIRI凸回廊へ変換し、その回廊内のlocal MINCOを作る。現在localと未走行A*折線が空いている間は継続し、塞がった時だけ現在位置・速度からA*→FIRI→localを更新する
    - 軌道を作れないとき（TOPP-RA・MINCOが解けない、wrench envelope・質量・慣性・`max_angular_rate`が未設定）はgoalを`TERMINATE_ABORTED`で返し、下の4と同じ制動で止まる
    - 計画時間が過ぎても、位置誤差が`align_pos_tolerance_m`以下に`align_pos_settle_time`秒続くまで待つ（最大`align_pos_timeout`秒）
@@ -242,8 +250,8 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 
 | パラメータ名 | 役割 | デフォルト値 |
 |---|---|---|
-| `guidance.motion_profile` | 通常の移動方式（`fast` / `avoidance`）。下記の追従・姿勢・MINCO回避設定をgoalごとに上書きする | `fast` |
-| `guidance.trajectory_tracking_mode` | 軌道追従方式（`static_toppra` / `static_minco` / `replan_minco`、[実行の流れ](#execution-flow)参照） | `static_toppra` |
+| `guidance.motion_profile` | 通常の移動方式（`fast` / `avoidance` / `jaxa_baseline`）。下記の追従・姿勢・MINCO回避設定をgoalごとに上書きする | `fast` |
+| `guidance.trajectory_tracking_mode` | 軌道追従方式（`static_toppra` / `static_minco` / `replan_minco` / `jaxa_rrt`、[実行の流れ](#execution-flow)参照） | `static_toppra` |
 | `guidance.via_waypoints` | 経由点のTFフレーム名の配列（順に経由）。`['']`で経由なし | `['']` |
 | `guidance.attitude_reference_mode` | 移動中の姿勢参照。profileが上書きする。`look_at`は未実装で`face_travel`にフォールバック（警告ログ） | `face_travel` |
 | `guidance.face_travel_camera` | `face_travel`で進行方向に向けるカメラ軸（`main`/`stereo`） | `main` |
@@ -267,6 +275,19 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `guidance.global_corridor_avoidance` | `true`で、depth snapshotからA*6→FIRI回廊→local MINCOを使う。`avoidance` profileかつ`obstacle_source=depth`でのみ有効。goal受付時に固定され、`false`なら既存local-only trackerのまま | `false` |
 | `guidance.minco_local_piece_length_m` | 障害物を避けるときのlocalの1区間の長さ[m]（EGO-Planner v2の`polyTraj_piece_length`） | `1.5` |
 | `guidance.minco_obstacle_clearance_soft` | 障害物を避けるときの緩い余裕[m]（ぶつかった障害物から離す距離） | `0.2` |
+
+### JAXA手法（`jaxa_rrt`）
+
+`jaxa_baseline` profileが`jaxa_rrt_bounds`以外をまとめて設定する。局所経路はOMPL `RRTstar`→`partialShortcutPath`→`smoothBSpline`（OMPLの既定値）で作り、最終経路を半ボクセル刻みで確認して衝突ならやり直す。論文に値がないものは`docs/jaxa_baseline_ompl_reproduction.md`。
+
+| パラメータ名 | 役割 | デフォルト値 |
+|---|---|---|
+| `guidance.jaxa_lookahead_m` | 追従点の先読み距離 d[m]。巡航速度 ≈ d·kp/kd（JAXA ゲインで d = 1.793·v） | `0.11` |
+| `guidance.jaxa_ompl_solve_time_s` | 1回の試行でOMPL RRTstarが解く時間[s] | `0.1` |
+| `guidance.jaxa_max_attempts` | 平滑化後の経路が衝突したとき（またはRRT*が経路を見つけられないとき）に解き直す回数の上限 | `50` |
+| `guidance.jaxa_collision_check_period` | 残りの経路の衝突確認の周期[s] | `0.05` |
+| `guidance.jaxa_goal_facing_hold_m` | ゴールからこの距離[m]以内では姿勢を固定する | `0.3` |
+| `guidance.jaxa_rrt_bounds` | RRT*のサンプリング範囲 `[xmin, ymin, zmin, xmax, ymax, zmax]`（JEM） | `[9.6, -11.9, 3.6, 12.3, -2.4, 6.0]` |
 
 ### 姿勢合わせ・到着判定
 

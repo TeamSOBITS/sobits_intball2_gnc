@@ -59,6 +59,7 @@ from sobits_intball2_gnc.guidance.ros.marker_publisher import MarkerPublisher
 from sobits_intball2_gnc.guidance.ros.depth_image_subscriber import DepthImageSubscriber
 from sobits_intball2_gnc.guidance.ros.corridor_marker_publisher import CorridorMarkerPublisher
 from sobits_intball2_gnc.guidance.ros.path_publisher import PathPublisher
+from sobits_intball2_gnc.guidance.ros.point_marker_publisher import PointMarkerPublisher
 from sobits_intball2_gnc.guidance.ros.speed_path_publisher import SpeedPathPublisher
 from sobits_intball2_gnc.guidance.executor.tracker_builder import (
     TRAJECTORY_TRACKING_MODES,
@@ -77,6 +78,8 @@ TRAJECTORY_SPEED_PATH_TOPIC = "/gnc/trajectory_path_speed"
 LOCAL_TRAJECTORY_SPEED_PATH_TOPIC = "/gnc/trajectory_path_speed_local"
 GLOBAL_ASTAR_PATH_TOPIC = "/gnc/global_corridor_astar"
 GLOBAL_CORRIDOR_MARKERS_TOPIC = "/gnc/global_corridor_markers"
+JAXA_LOCAL_PATH_TOPIC = "/gnc/jaxa_local_path"
+JAXA_TRACKING_POINT_TOPIC = "/gnc/jaxa_tracking_point"
 TF_STARTUP_TIMEOUT = 5.0
 # Separate lock file from control_node's: a leftover process once survived
 # kill as a child and answered /gnc/move_to alongside the new one,
@@ -178,6 +181,10 @@ class GuidanceNode(Node):
             self, GLOBAL_ASTAR_PATH_TOPIC, reference_frame=reference_frame)
         self._corridor_marker_pub = CorridorMarkerPublisher(
             self, GLOBAL_CORRIDOR_MARKERS_TOPIC, reference_frame=reference_frame)
+        self._jaxa_path_pub = PathPublisher(
+            self, JAXA_LOCAL_PATH_TOPIC, reference_frame=reference_frame)
+        self._jaxa_tracking_point_pub = PointMarkerPublisher(
+            self, JAXA_TRACKING_POINT_TOPIC, reference_frame=reference_frame)
 
         # Guidance-side TF velocity estimate (docs/
         # guidance_velocity_estimator_design.md): driven by its own low-rate
@@ -248,6 +255,8 @@ class GuidanceNode(Node):
             },
             speed_path_publisher=self._speed_path_pub,
             local_speed_path_publisher=self._local_speed_path_pub,
+            jaxa_path_publisher=self._jaxa_path_pub,
+            jaxa_tracking_point_publisher=self._jaxa_tracking_point_pub,
             max_accel=trajectory_max_force / trajectory_mass,
             wrench_envelope=wrench_envelope,
             mass=trajectory_mass,

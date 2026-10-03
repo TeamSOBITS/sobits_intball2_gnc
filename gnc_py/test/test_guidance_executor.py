@@ -1506,3 +1506,78 @@ def test_execute_aligns_at_arrival_on_the_trackers_moved_goal(monkeypatch):
         face_travel=False, align_at_arrival=True)
     assert status == STATUS_SUCCESS
     assert len(aligned_at) == 1 and np.allclose(aligned_at[0], moved_goal)
+
+
+class _UntimedTracker(_MovedGoalTracker):
+    """jaxa_rrt-like: total_duration is inf until the goal is reached."""
+
+    def __init__(self, goal_position):
+        super().__init__(goal_position)
+        self.total_duration = np.inf
+        self.failed = None
+        self._calls = 0
+
+    def sample(self, t):
+        self._calls += 1
+        if self._calls == 3:
+            self.total_duration = t
+        return super().sample(t)
+
+
+def test_run_trajectory_feedback_is_finite_while_total_duration_is_inf():
+    goal = [0.55, 0.0, 0.0]
+    executor = _make_executor(
+        FakeTf(goal, [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
+        FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05), FakeLogger(),
+        target_speed=1.0, align_pos_tolerance_m=0.05, align_pos_settle_time=0.2,
+        align_pos_timeout=5.0,
+    )
+    times = []
+    status = executor._run_trajectory(
+        _UntimedTracker(goal), goal, feedback_cb=lambda t, *_a: times.append(t),
+        is_cancel_requested=lambda: False)
+    assert status == STATUS_SUCCESS
+    assert times and all(np.isfinite(t) for t in times)
+
+
+def test_run_trajectory_returns_planning_failed_when_the_tracker_fails():
+    goal = [0.55, 0.0, 0.0]
+    executor = _make_executor(
+        FakeTf(goal, [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
+        FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05), FakeLogger(),
+        target_speed=1.0, align_pos_tolerance_m=0.05, align_pos_settle_time=0.2,
+        align_pos_timeout=5.0,
+    )
+    tracker = _UntimedTracker(goal)
+    tracker.failed = "RRT* found no path"
+    status = executor._run_trajectory(tracker, goal, feedback_cb=lambda *a: None,
+                                      is_cancel_requested=lambda: False)
+    assert status == STATUS_PLANNING_FAILED
+
+
+class _Recorder:
+    def __init__(self):
+        self.published = []
+
+    def publish(self, value):
+        self.published.append(value)
+
+
+def test_run_trajectory_publishes_the_jaxa_tracking_point_and_path():
+    goal = [0.55, 0.0, 0.0]
+    path_pub, point_pub = _Recorder(), _Recorder()
+    executor = _make_executor(
+        FakeTf(goal, [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
+        FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05), FakeLogger(),
+        target_speed=1.0, align_pos_tolerance_m=0.05, align_pos_settle_time=0.2,
+        align_pos_timeout=5.0, jaxa_path_publisher=path_pub,
+        jaxa_tracking_point_publisher=point_pub,
+    )
+    tracker = _UntimedTracker(goal)
+    tracker.path = np.array([[0.0, 0.0, 0.0], goal])
+    executor._publish_jaxa_path(tracker)
+    status = executor._run_trajectory(tracker, goal, feedback_cb=lambda *a: None,
+                                      is_cancel_requested=lambda: False)
+    assert status == STATUS_SUCCESS
+    assert len(path_pub.published[0]) == 2
+    np.testing.assert_allclose(point_pub.published[0], goal)

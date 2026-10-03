@@ -114,6 +114,16 @@ GUIDANCE_PARAM_DEFAULTS = {
     "guidance.minco_replan_face_travel": True,
     "guidance.minco_local_max_vel": 0.15,
     "guidance.minco_async_replan": True,
+    # "jaxa_rrt" only (JAXA IAC-22 baseline, docs/jaxa_baseline_gazebo_port_plan.md 5 節,
+    # planner: docs/jaxa_baseline_ompl_reproduction.md);
+    # the jaxa_baseline profile sets all but jaxa_rrt_bounds. lookahead d = v * kd/kp
+    # with JAXA position gains (kd/kp = 1.793): 0.11 = 0.06 m/s (paper), 0.27 = 0.15, 0.36 = 0.20.
+    "guidance.jaxa_lookahead_m": 0.11,
+    "guidance.jaxa_ompl_solve_time_s": 0.1,
+    "guidance.jaxa_max_attempts": 50,
+    "guidance.jaxa_collision_check_period": 0.05,
+    "guidance.jaxa_goal_facing_hold_m": 0.3,
+    "guidance.jaxa_rrt_bounds": [9.6, -11.9, 3.6, 12.3, -2.4, 6.0],  # RRT* sampling box (JEM)
     # replan_minco obstacle avoidance (docs/2026-09-24_obstacle_avoidance_
     # production_integration_plan.md). The map/grid ones are read once at startup;
     # the minco_* ones latch per goal like the rest.
@@ -199,6 +209,20 @@ MOTION_PROFILES = {
         "minco_local_piece_length_m": 1.5,
         "minco_obstacle_clearance_soft": 0.2,
     },
+    # face_travel only drives pre_align here (chord to the goal = the tracker's
+    # goal-facing attitude); in flight the jaxa_rrt tracker sets the attitude.
+    "jaxa_baseline": {
+        "attitude_reference_mode": "face_travel",
+        "trajectory_tracking_mode": "jaxa_rrt",
+        "pre_align": True,
+        "align_at_arrival": True,
+        "minco_obstacle_avoidance": False,
+        "jaxa_lookahead_m": 0.11,
+        "jaxa_ompl_solve_time_s": 0.1,
+        "jaxa_max_attempts": 50,
+        "jaxa_collision_check_period": 0.05,
+        "jaxa_goal_facing_hold_m": 0.3,
+    },
 }
 MOTION_PROFILE_FIELDS = frozenset(
     field for profile in MOTION_PROFILES.values() for field in profile
@@ -226,6 +250,12 @@ _GOAL_EXECUTE_PARAMS = {
     "global_corridor_avoidance": ("global_corridor_avoidance", bool),
     "minco_local_piece_length_m": ("minco_local_piece_length_m", float),
     "minco_obstacle_clearance_soft": ("minco_obstacle_clearance_soft", float),
+    "jaxa_lookahead_m": ("jaxa_lookahead_m", float),
+    "jaxa_ompl_solve_time_s": ("jaxa_ompl_solve_time_s", float),
+    "jaxa_max_attempts": ("jaxa_max_attempts", int),
+    "jaxa_collision_check_period": ("jaxa_collision_check_period", float),
+    "jaxa_goal_facing_hold_m": ("jaxa_goal_facing_hold_m", float),
+    "jaxa_rrt_bounds": ("jaxa_rrt_bounds", lambda v: [float(x) for x in v]),
 }
 
 

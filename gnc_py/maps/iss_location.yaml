@@ -179,6 +179,26 @@ location_pose:
       x: 10.5
       y: -9.0
       z: 4.3
+  jaxa_paper_goal:
+    rotation:
+      w: 0.0
+      x: -0.707106
+      y: 0.707106
+      z: 0.0
+    translation:
+      x: 10.936
+      y: -8.33
+      z: 5.0
+  jaxa_paper_start:
+    rotation:
+      w: 0.0
+      x: -0.707106
+      y: 0.707106
+      z: 0.0
+    translation:
+      x: 10.936
+      y: -3.03
+      z: 5.0
   initial_point:
     rotation:
       w: -0.00783924293435741
