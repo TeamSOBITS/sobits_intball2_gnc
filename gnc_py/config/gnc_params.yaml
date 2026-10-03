@@ -169,7 +169,7 @@
       jaxa_goal_facing_hold_m: 0.3           # [m] hold attitude this close to the goal
       jaxa_rrt_bounds: [9.6, -11.9, 3.6, 12.3, -2.4, 6.0]  # RRT* sampling box [xmin, ymin, zmin, xmax, ymax, zmax] (JEM)
       obstacle_map_file: jem_octomap.bt      # static map, relative = share/maps/; "" = boxes only (read-only)
-      obstacle_grid_resolution: 0.1          # [m] (read-only)
+      obstacle_grid_resolution: 0.05         # [m] = jem_octomap.bt; 0.1 closed gaps in JAXA layout1 (read-only)
       obstacle_grid_inflation: 0.2           # [m] robot radius 0.1 + 0.1 margin, whole cells (read-only)
       # boxes = /guidance/virtual_obstacles, depth = depth camera log-odds layer
       # (docs/archive/2026-09-28_virtual_camera_depth_mapping_plan.md); read-only

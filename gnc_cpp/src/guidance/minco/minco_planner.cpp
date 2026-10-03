@@ -84,7 +84,7 @@ bool corridorFree(const MatrixX3d &coeffs, const VectorXd &T,
             for (const Vector4d &plane : planes[k])
                 // FIRI planes and MINCO coefficients are double precision;
                 // accept only a sub-voxel numerical residual, not a geometric
-                // relaxation (grid resolution is 0.10 m in this use case).
+                // relaxation (grid resolution is 0.05 m in this use case).
                 if (plane.head<3>().dot(p) + plane(3) > 1e-4) return false;
         }
     }

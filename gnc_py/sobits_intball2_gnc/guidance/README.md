@@ -329,7 +329,7 @@ ros2 param set /guidance_node guidance.via_waypoints "['']"
 | `guidance.stopping.duration_goal` | 上の範囲にこの秒数いたら制動終了[s] | `3.0` |
 | `guidance.stopping.wait_cancel` | 軌道時間＋この秒数で打ち切って静止保持[s] | `10.0` |
 | `guidance.obstacle_map_file` | 障害物の地図（OctoMap `.bt`）。相対パスは`share/sobits_intball2_gnc/maps/`から。`""`で静的な地図なし（仮想の箱だけ） | `jem_octomap.bt` |
-| `guidance.obstacle_grid_resolution` | 障害物の格子の解像度[m] | `0.1` |
+| `guidance.obstacle_grid_resolution` | 障害物の格子の解像度[m]（静的地図と同じ） | `0.05` |
 | `guidance.relative_move_max_distance` | 相対移動goalの移動量の上限[m]。打ち間違いよけで、衝突は防がない | `10.0` |
 | `guidance.obstacle_grid_inflation` | 障害物の格子の膨張[m]（機体半径0.1m＋余裕0.1m）。マス単位で効く（解像度0.1mなら0.15は0.2と同じ） | `0.2` |
 | `guidance.obstacle_source` | 障害物入力。`depth`は静的OctoMapへ最新深度占有を重ね、`boxes`は`/guidance/virtual_obstacles`だけを重ねる。global corridor modeは`depth`だけを受け付ける | `depth` |

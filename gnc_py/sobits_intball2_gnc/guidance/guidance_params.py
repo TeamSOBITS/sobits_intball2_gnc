@@ -128,7 +128,7 @@ GUIDANCE_PARAM_DEFAULTS = {
     # production_integration_plan.md). The map/grid ones are read once at startup;
     # the minco_* ones latch per goal like the rest.
     "guidance.obstacle_map_file": "jem_octomap.bt",  # relative = share/maps/; "" = no static map
-    "guidance.obstacle_grid_resolution": 0.1,
+    "guidance.obstacle_grid_resolution": 0.05,
     # Robot radius 0.1 m + 0.1 m margin, applied in whole cells (0.15 = 0.2 at 0.1 m resolution).
     "guidance.obstacle_grid_inflation": 0.2,
     "guidance.minco_obstacle_avoidance": False,
