@@ -1,12 +1,11 @@
-"""TeleopReference (keyboard-driven moving reference) and the key layout."""
+"""Python reference implementation of the teleop moving reference (the C++ port is checked against it)."""
 import numpy as np
 import pytest
 
 from sobits_intball2_gnc.control.utils.quat_math import quat_rotate
 from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
 from sobits_intball2_gnc.guidance.constraints.actuation_envelope import wrench_envelope_halfspaces
-from sobits_intball2_gnc.teleop.keymap import axes_from_pressed
-from sobits_intball2_gnc.teleop.reference import TeleopLimits, TeleopReference
+from teleop_reference_py import TeleopLimits, TeleopReference
 
 DT = 0.02
 Q0 = [0.0, 0.0, 0.0, 1.0]
@@ -168,16 +167,8 @@ def test_key_values_are_clipped():
     assert sp.v[0] == pytest.approx(0.05)
 
 
-def test_keymap_opposite_keys_cancel_and_combine():
-    assert axes_from_pressed({"w"}) == (1.0, 0, 0, 0, 0, 0)
-    assert axes_from_pressed({"w", "s"}) == (0, 0, 0, 0, 0, 0)
-    assert axes_from_pressed({"w", "left"}) == (1.0, 0, 0, 0, 0, 1.0)
-    assert axes_from_pressed({"q"}) == (0, 0, 0, -1.0, 0, 0)
-    assert axes_from_pressed({"up", "d", "unknown"}) == (0, -1.0, 0, 0, 1.0, 0)
-
-
 def test_make_limits_follow_the_fan_envelope():
-    from sobits_intball2_gnc.teleop.reference import axis_maxima, make_limits
+    from teleop_reference_py import axis_maxima, make_limits
     plant = ThrustAllocator()
     env = wrench_envelope_halfspaces(plant.A, plant.fj_max)
     m = axis_maxima(env)
@@ -189,32 +180,8 @@ def test_make_limits_follow_the_fan_envelope():
                                        0.25 * 0.00819 / INERTIA], abs=1e-3)
 
 
-def test_link_releases_keys_when_gui_goes_quiet_and_delivers_estop_once():
-    from sobits_intball2_gnc.teleop.link import TeleopLink
-    from sobits_intball2_gnc.teleop.state import KeyState
-    now = [0.0]
-    link = TeleopLink(key_timeout=0.5, clock=lambda: now[0])
-    assert link.take_key() == KeyState()                    # nothing received yet
-    link.set_key(KeyState(axes=(1.0, 0, 0, 0, 0, 0), enable=True))
-    assert link.take_key().axes[0] == 1.0 and link.take_key().enable
-    now[0] = 0.6                                            # GUI silent for longer than the timeout
-    assert link.take_key() == KeyState()
-    link.set_key(KeyState(enable=True, estop=True))
-    assert link.take_key().estop
-    assert not link.take_key().estop                        # one-shot
-
-
-def test_guidance_status_codes():
-    from action_msgs.msg import GoalStatus
-    from sobits_intball2_gnc.teleop.ros.guidance_status_subscriber import any_active
-    assert any_active([GoalStatus.STATUS_EXECUTING])
-    assert any_active([GoalStatus.STATUS_SUCCEEDED, GoalStatus.STATUS_CANCELING])
-    assert not any_active([GoalStatus.STATUS_SUCCEEDED, GoalStatus.STATUS_ABORTED, GoalStatus.STATUS_CANCELED])
-    assert not any_active([])
-
-
 def test_error_limits_follow_the_speed_caps():
-    from sobits_intball2_gnc.teleop.reference import error_limits
+    from teleop_reference_py import error_limits
     assert error_limits(0.05, 0.1)[0] == pytest.approx(0.020)
     assert error_limits(0.10, 0.2)[0] == pytest.approx(0.035)
     assert error_limits(0.15, 0.3)[0] == pytest.approx(0.050)
@@ -224,7 +191,7 @@ def test_error_limits_follow_the_speed_caps():
 
 
 def test_limits_for_levels_scale_with_the_setting():
-    from sobits_intball2_gnc.teleop.reference import limits_for_levels
+    from teleop_reference_py import limits_for_levels
     plant = ThrustAllocator()
     env = wrench_envelope_halfspaces(plant.A, plant.fj_max)
     slow = limits_for_levels(env, MASS, INERTIA, 0.05, 0.5, 2.0, 0.5)
