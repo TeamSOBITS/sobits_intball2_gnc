@@ -112,3 +112,14 @@ def test_updated_flags_new_commands_only():
     assert c.updated  # nonzero -> zero once
     c.step(1.04, None, G0, None, None)
     assert not c.updated
+
+
+def test_release_drops_old_target_and_holds_the_pose_seen_next():
+    c = make()
+    c.set_checkpoints([([0.5, 0.0, 0.0], Q0)])
+    f, _ = c.step(1.0, ([0.0, 0.0, 0.0], Q0, 1.0), G0, None, None)
+    assert f[0] > 0.0
+    c.release()
+    f, t = c.step(2.0, ([3.0, 1.0, 0.0], Q0, 2.0), G0, None, None)
+    assert np.allclose(f, 0.0) and np.allclose(t, 0.0) and c.status == "holding"
+    assert c.velocity == [0.0, 0.0, 0.0]

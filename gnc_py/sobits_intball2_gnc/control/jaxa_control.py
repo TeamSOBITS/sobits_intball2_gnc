@@ -14,6 +14,9 @@ Launch with ``control_jaxa.launch.py`` (``gnc_params.yaml`` + ``jaxa_control.yam
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.qos import DurabilityPolicy, QoSProfile
+from std_msgs.msg import Bool
+from std_srvs.srv import SetBool
 
 from sobits_intball2_gnc.common.ros.tf_client import TfClient
 from sobits_intball2_gnc.control.ros.ctl_status_subscriber import CtlStatusSubscriber
@@ -83,6 +86,13 @@ class JaxaControlNode(Node):
         self._fsm_pub = WrenchPublisher(self, topic=JAXA_FSM_WRENCH_TOPIC)
         self._total_pub = WrenchPublisher(self, topic=WRENCH_TOTAL_TOPIC)
         self._sent = self._held = 0
+        # Free drift: fans are cut (zero wrench) until released; nothing resumes control on its own.
+        self._free_drift = False
+        self.create_service(SetBool, "~/free_drift", self._on_free_drift)
+        self._free_drift_pub = self.create_publisher(
+            Bool, "~/free_drift_active",
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self._free_drift_pub.publish(Bool(data=False))
         self._last_sent_t = None
         self._timer = self.create_timer(1.0 / POLL_RATE_HZ, self._on_timer)
         self._status_timer = self.create_timer(STATUS_LOG_PERIOD_S, self._on_status_log)
@@ -101,8 +111,35 @@ class JaxaControlNode(Node):
         return ({"p_des": sub.p_des, "v_des": sub.v_des, "a_des": sub.a_des,
                  "q_des": sub.q_des, "omega_des": sub.omega_des}, sub.last_received_t)
 
+    def _on_free_drift(self, request, response):
+        if request.data == self._free_drift:
+            response.success, response.message = True, "unchanged"
+            return response
+        self._free_drift = request.data
+        if self._free_drift:
+            self._publish_zero_wrench()
+            self.get_logger().warn("free drift ON: fans cut until released")
+        else:
+            self._ctrl.release()
+            self._last_sent_t = None
+            self.get_logger().info("free drift OFF: control resumed, holding the current pose")
+        self._free_drift_pub.publish(Bool(data=self._free_drift))
+        response.success, response.message = True, "free drift %s" % ("on" if self._free_drift else "off")
+        return response
+
+    def _publish_zero_wrench(self) -> None:
+        now = self.get_clock().now().nanoseconds * 1e-9
+        self._total_pub.publish([0.0] * 3, [0.0] * 3)
+        if self._ctl_status.jaxa_ctl_idle(now, JAXA_CTL_STATUS_TIMEOUT):
+            self._fsm_pub.publish([0.0] * 3, [0.0] * 3)
+        self._last_sent_t = now
+
     def _on_timer(self) -> None:
         now = self.get_clock().now().nanoseconds * 1e-9
+        if self._free_drift:
+            if self._last_sent_t is None or now - self._last_sent_t >= WRENCH_KEEPALIVE_S:
+                self._publish_zero_wrench()
+            return
         setpoint, setpoint_t = self._setpoint()
         force, torque = self._ctrl.step(now, self._tf.get_pose(), self._imu.gyro, setpoint, setpoint_t)
         due = self._last_sent_t is None or now - self._last_sent_t >= WRENCH_KEEPALIVE_S
