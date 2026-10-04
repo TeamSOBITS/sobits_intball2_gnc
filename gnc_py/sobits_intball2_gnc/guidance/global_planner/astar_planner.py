@@ -9,6 +9,9 @@ from sobits_intball2_gnc.guidance.global_planner.base_global_planner import (
     BaseGlobalPlanner,
 )
 
+# Legacy (non-occupancy) mode only; occupancy mode sizes its cap from the box.
+LEGACY_MAX_EXPANSIONS = 200000
+
 _NEIGHBOR_OFFSETS = [
     (dx, dy, dz)
     for dx in (-1, 0, 1)
@@ -61,7 +64,7 @@ class AStarPlanner(BaseGlobalPlanner):
     obstacle corner-cutting.
     """
 
-    def __init__(self, resolution=0.1, search_margin=10, max_expansions=200000,
+    def __init__(self, resolution=0.1, search_margin=10, max_expansions=None,
                  grid=None, search_bounds=None, connectivity=26):
         if (grid is None) != (search_bounds is None):
             raise ValueError("grid and search_bounds must be supplied together")
@@ -71,10 +74,21 @@ class AStarPlanner(BaseGlobalPlanner):
             raise ValueError("connectivity must be 6 or 26")
         self.resolution = float(resolution if grid is None else grid.resolution)
         self.search_margin = int(search_margin)
-        self.max_expansions = int(max_expansions)
         self._grid = grid
         self._search_bounds_world = self._validate_search_bounds(search_bounds)
         self.connectivity = int(connectivity)
+        if max_expansions is not None:
+            self.max_expansions = int(max_expansions)
+        elif grid is None:
+            self.max_expansions = LEGACY_MAX_EXPANSIONS
+        else:
+            # Every cell of the box, which the search cannot exceed: it never
+            # leaves the box and never expands a cell twice. A smaller cap
+            # cannot tell "no path exists" from "I stopped looking", and the
+            # 200000 it used to default to is 36% of the free cells of one JEM
+            # (docs/minco_astar_reference_global.md 3.8).
+            lo, hi = self._occupancy_bounds()
+            self.max_expansions = (hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1)
         self.last_expansions = 0
 
     def plan(self, start, goal, obstacles=None):
