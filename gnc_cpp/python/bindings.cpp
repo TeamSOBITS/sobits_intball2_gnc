@@ -12,6 +12,7 @@
 #include "sobits_intball2_gnc_cpp/control/jaxa_position_controller.hpp"
 #include "sobits_intball2_gnc_cpp/control/jaxa_thrust_allocator.hpp"
 #include "sobits_intball2_gnc_cpp/guidance/minco/constraint_points.hpp"
+#include "sobits_intball2_gnc_cpp/guidance/search/global_a_star.hpp"
 #include "sobits_intball2_gnc_cpp/guidance/minco/minco_planner.hpp"
 #include "sobits_intball2_gnc_cpp/mapping/octomap_io.hpp"
 #include "sobits_intball2_gnc_cpp/guidance/rebound/rebound.hpp"
@@ -471,4 +472,50 @@ PYBIND11_MODULE(sobits_intball2_gnc_cpp, m) {
              return toList(a.duty(toVec3(force, "force"), toVec3(torque, "torque")));
            }, py::arg("force"), py::arg("torque"), "Per-fan PWM duty after saturation.")
       .def_property_readonly("last_saturated_count", &control::JaxaThrustAllocator::lastSaturatedCount);
+  namespace guidance = sobits_intball2_gnc::guidance;
+  py::class_<guidance::GlobalAStar> gridAStar(m, "GlobalAStar",
+      "A* over a world box of an OccupancyGrid, for the pre-departure reference route. "
+      "Every knob is a constructor argument, so tuning never needs a rebuild. Separate from "
+      "the rebound guide's A*, which relocates endpoints that lie in the inflation instead of "
+      "reporting them.");
+  py::enum_<guidance::GlobalAStar::Result>(gridAStar, "Result")
+      .value("Success", guidance::GlobalAStar::Result::Success)
+      .value("StartOccupied", guidance::GlobalAStar::Result::StartOccupied)
+      .value("GoalOccupied", guidance::GlobalAStar::Result::GoalOccupied)
+      .value("OutOfBounds", guidance::GlobalAStar::Result::OutOfBounds)
+      .value("NoPath", guidance::GlobalAStar::Result::NoPath)
+      .value("ExceededMaxExpansions", guidance::GlobalAStar::Result::ExceededMaxExpansions);
+  gridAStar
+      .def(py::init([](const mapping::OccupancyGrid &grid, const std::vector<double> &lower,
+                       const std::vector<double> &upper, int connectivity,
+                       std::int64_t max_expansions, double narrow_margin_m) {
+             if (connectivity != 6 && connectivity != 26)
+             {
+               throw std::invalid_argument("connectivity must be 6 or 26");
+             }
+             return guidance::GlobalAStar(grid, toVec3(lower, "lower"), toVec3(upper, "upper"),
+                                        connectivity, max_expansions, narrow_margin_m);
+           }),
+           py::arg("grid"), py::arg("lower"), py::arg("upper"), py::arg("connectivity") = 6,
+           py::arg("max_expansions") = 0, py::arg("narrow_margin_m") = 0.0,
+           py::keep_alive<1, 2>(),
+           "max_expansions <= 0 sizes the cap from the box, which the search cannot exceed. "
+           "narrow_margin_m > 0 tries the endpoints' box grown by that margin first and widens "
+           "to the whole box on failure; 0 (the default) searches the whole box once.")
+      .def("search", [](guidance::GlobalAStar &a, const std::vector<double> &start,
+                        const std::vector<double> &goal) {
+             std::vector<Eigen::Vector3d> path;
+             const auto result = a.search(toVec3(start, "start"), toVec3(goal, "goal"), path);
+             std::vector<std::vector<double>> out;
+             out.reserve(path.size());
+             for (const Eigen::Vector3d &p : path)
+             {
+               out.push_back({p.x(), p.y(), p.z()});
+             }
+             return std::make_pair(result, out);
+           }, py::arg("start"), py::arg("goal"),
+           "(Result, [[x, y, z], ...]); the path is empty unless the result is Success.")
+      .def_property_readonly("last_expansions", &guidance::GlobalAStar::lastExpansions)
+      .def_property_readonly("last_widened", &guidance::GlobalAStar::lastWidened)
+      .def_property_readonly("max_expansions", &guidance::GlobalAStar::maxExpansions);
 }

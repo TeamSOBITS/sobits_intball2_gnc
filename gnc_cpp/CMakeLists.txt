@@ -65,6 +65,7 @@ add_library(gnc_cpp_core STATIC
   src/guidance/minco/wrench_envelope.cpp
   src/guidance/rebound/rebound.cpp
   src/guidance/search/local_a_star.cpp
+  src/guidance/search/global_a_star.cpp
   src/mapping/occupancy_grid.cpp
   src/mapping/octomap_io.cpp
   src/perception/depth_renderer.cpp

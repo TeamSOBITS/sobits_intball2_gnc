@@ -8,13 +8,23 @@ supply the grid snapshot and the bounds.
 
 import numpy as np
 
-from sobits_intball2_gnc.guidance.global_planner.astar_planner import AStarPlanner
+from sobits_intball2_gnc.guidance.global_planner.astar_planner import (
+    AStarPlanningError,
+    GoalOccupiedError,
+    SearchBoundsError,
+    StartOccupiedError,
+)
 from sobits_intball2_gnc.guidance.global_planner.path_shortcut import (
     segment_is_free,
     shortcut_path,
 )
 
 ASTAR_CONNECTIVITY = 6
+# Try the endpoints' box grown by this margin before the whole one; 0 disables
+# it. Off by default: measured over a JEM the narrow box saves nothing, because
+# A* is goal-directed and barely leaves it anyway, while a route that does need
+# the room pays for both passes (docs/minco_astar_reference_global.md 3.8).
+ASTAR_NARROW_MARGIN_M = 0.0
 
 
 def plan_reference_route(start, goal, grid, bounds):
@@ -23,9 +33,36 @@ def plan_reference_route(start, goal, grid, bounds):
     Raises :class:`AStarPlanningError` when either end is occupied or outside
     ``bounds``, or when no path exists.
     """
-    path = AStarPlanner(grid.resolution, grid=grid, search_bounds=bounds,
-                        connectivity=ASTAR_CONNECTIVITY).plan(start, goal)
+    import sobits_intball2_gnc_cpp  # deferred, as obstacle_map.py does
+
+    lower, upper = bounds
+    search = sobits_intball2_gnc_cpp.GlobalAStar(
+        grid, list(np.asarray(lower, dtype=float)), list(np.asarray(upper, dtype=float)),
+        ASTAR_CONNECTIVITY, 0, ASTAR_NARROW_MARGIN_M)
+    result, path = search.search(list(np.asarray(start, dtype=float)),
+                                 list(np.asarray(goal, dtype=float)))
+    _raise_for(result, sobits_intball2_gnc_cpp.GlobalAStar.Result, search)
+    # The search works in cell centres; the ends are what the caller asked for.
+    path = [np.asarray(start, dtype=float)] + [np.asarray(p, dtype=float) for p in path[1:-1]] \
+        + [np.asarray(goal, dtype=float)]
     return [np.asarray(point, dtype=float) for point in shortcut_path(path, grid, bounds)]
+
+
+def _raise_for(result, codes, search):
+    if result == codes.Success:
+        return
+    if result == codes.StartOccupied:
+        raise StartOccupiedError("the start is in the inflated grid")
+    if result == codes.GoalOccupied:
+        raise GoalOccupiedError("the goal is in the inflated grid")
+    if result == codes.OutOfBounds:
+        raise SearchBoundsError("the start or the goal is outside the search bounds")
+    if result == codes.ExceededMaxExpansions:
+        # The cap is the box's own cell count, which a search cannot reach, so
+        # this means the cap was overridden or the box was mis-sized.
+        raise AStarPlanningError(
+            "A* exceeded max_expansions (%d)" % search.max_expansions)
+    raise AStarPlanningError("A* found no path inside search_bounds")
 
 
 def route_is_free(route, grid, bounds):
