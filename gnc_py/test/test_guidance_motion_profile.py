@@ -88,3 +88,15 @@ def test_reselecting_the_profile_drops_a_global_planner_override():
     _profile, _mode, kwargs = goal_motion_profile(
         _node("avoidance", global_planner="straight"))
     assert kwargs["global_planner"] == "astar"
+
+
+def test_avoidance_profile_keeps_the_hard_clearance_at_the_binding_default():
+    _profile, _mode, kwargs = goal_motion_profile(_node("avoidance"))
+    assert kwargs["minco_obstacle_clearance"] == 0.1
+
+
+def test_the_hard_clearance_can_be_raised_per_goal():
+    _profile, _mode, kwargs = goal_motion_profile(
+        _node("avoidance", minco_obstacle_clearance=0.15),
+        overrides=("minco_obstacle_clearance",))
+    assert kwargs["minco_obstacle_clearance"] == 0.15

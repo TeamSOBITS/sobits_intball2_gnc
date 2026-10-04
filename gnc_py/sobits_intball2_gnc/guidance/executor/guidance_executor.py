@@ -318,6 +318,7 @@ class GuidanceExecutor:
                 minco_replan_face_travel=False, minco_local_max_vel=None,
                 minco_async_replan=False, minco_obstacle_avoidance=False,
                 minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2,
+                minco_obstacle_clearance=None,
                 global_corridor_avoidance=False, global_planner="straight",
                 jaxa_lookahead_m=0.11,
                 jaxa_ompl_solve_time_s=0.1, jaxa_max_attempts=50,
@@ -527,6 +528,7 @@ class GuidanceExecutor:
                 minco_obstacle_avoidance=minco_obstacle_avoidance,
                 minco_local_piece_length_m=minco_local_piece_length_m,
                 minco_obstacle_clearance_soft=minco_obstacle_clearance_soft,
+                minco_obstacle_clearance=minco_obstacle_clearance,
                 global_corridor_avoidance=global_corridor_avoidance,
                 reference_route=reference_route,
                 jaxa_options=dict(

@@ -154,6 +154,8 @@ class MincoTrajectory:
             constraint_kwargs["grid"] = obstacle_grid
             constraint_kwargs["obstacle_touch_goal"] = bool(obstacle_touch_goal)
             constraint_kwargs["obstacle_clearance_soft"] = float(obstacle_clearance_soft)
+            if obstacle_clearance is not None:
+                constraint_kwargs["obstacle_clearance"] = float(obstacle_clearance)
 
         if attitude_resample_spacing_m is not None:
             position_waypoints = self._densify(
@@ -206,7 +208,7 @@ class MincoTrajectory:
                               wrench_safety_margin=1.0, max_vel=None,
                               warm_start_segment_times=None, body_frame_wrench=False,
                               obstacle_grid=None, obstacle_touch_goal=False,
-                              obstacle_clearance_soft=0.5):
+                              obstacle_clearance_soft=0.5, obstacle_clearance=None):
         """Free-time ``plan_minco`` solve with caller-given ``q0``-relative
         ``rotvecs`` (``rotvecs[0]`` is the head attitude) and head rotvec
         rate/accel, for a segment that starts mid-rotation (the constructor
@@ -233,7 +235,9 @@ class MincoTrajectory:
             else [float(t) for t in warm_start_segment_times],
             **({} if obstacle_grid is None else dict(
                 grid=obstacle_grid, obstacle_touch_goal=bool(obstacle_touch_goal),
-                obstacle_clearance_soft=float(obstacle_clearance_soft))),
+                obstacle_clearance_soft=float(obstacle_clearance_soft),
+                **({} if obstacle_clearance is None
+                   else dict(obstacle_clearance=float(obstacle_clearance))))),
         )
         self._set_solution(segment_times, coeffs, duration,
                            time.perf_counter() - solve_t0, len(position_waypoints))

@@ -781,3 +781,48 @@ def test_without_a_reference_route_the_global_is_still_minco():
 
     planner = _reference_route_planner(_L_ROUTE)
     assert isinstance(planner.global_trajectory, MincoTrajectory)
+
+
+def test_a_larger_hard_clearance_pushes_the_local_plan_further_from_the_box():
+    """penalties.cpp's hard term is the enforced floor; the soft one saturates
+    and only expresses a preference."""
+    import sobits_intball2_gnc_cpp as core
+
+    def closest(clearance):
+        grid = core.OccupancyGrid(0.1, 0.2)
+        grid.add_points(np.array(
+            [[1.5, y, z] for y in np.arange(-0.4, 0.41, 0.05)
+             for z in np.arange(-0.4, 0.41, 0.05)]).ravel().tolist())
+        tracker = _make_tracker(
+            _IdealTrackingTf(), p_target=np.array([3.0, 0.0, 0.0]), face_travel=True,
+            local_max_vel=FACE_TRAVEL_MAX_VEL, local_piece_length_m=1.5,
+            obstacle_grid=grid, obstacle_clearance_soft=0.3,
+            obstacle_clearance=clearance)
+        local = tracker.local_trajectory
+        points = np.array([local.sample(t)[0] for t in
+                           np.linspace(0.0, local.global_total_duration, 200)])
+        return float(np.min(np.abs(points[:, 0] - 1.5)))
+
+    assert closest(0.25) > closest(0.05)
+
+
+@pytest.mark.parametrize("clearance", [0.3, 0.4, 0.0, -0.1])
+def test_a_hard_clearance_not_below_the_soft_one_is_rejected(clearance):
+    """At or above the soft clearance, penalties.cpp silently drops the soft term."""
+    import sobits_intball2_gnc_cpp as core
+
+    with pytest.raises(ValueError):
+        _make_tracker(
+            _IdealTrackingTf(), face_travel=True, local_max_vel=FACE_TRAVEL_MAX_VEL,
+            local_piece_length_m=1.5, obstacle_grid=core.OccupancyGrid(0.1, 0.2),
+            obstacle_clearance_soft=0.3, obstacle_clearance=clearance)
+
+
+def test_the_hard_clearance_defaults_to_the_binding_value():
+    """None leaves bindings.cpp's 0.1 in place, so existing goals are unchanged."""
+    import sobits_intball2_gnc_cpp as core
+
+    tracker = _make_tracker(
+        _IdealTrackingTf(), face_travel=True, local_max_vel=FACE_TRAVEL_MAX_VEL,
+        local_piece_length_m=1.5, obstacle_grid=core.OccupancyGrid(0.1, 0.2))
+    assert tracker._planner._obstacle_clearance is None

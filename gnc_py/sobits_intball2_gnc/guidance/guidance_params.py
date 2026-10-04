@@ -142,6 +142,10 @@ GUIDANCE_PARAM_DEFAULTS = {
     "guidance.global_planner": "straight",
     "guidance.minco_local_piece_length_m": 1.5,
     "guidance.minco_obstacle_clearance_soft": 0.2,
+    # Hard clearance from the rebound guide path, the floor the local solve
+    # actually enforces (cubic penalty). Must stay below the soft one, which
+    # penalties.cpp drops once the hard one reaches it.
+    "guidance.minco_obstacle_clearance": 0.1,
     # Obstacles from boxes (/guidance/virtual_obstacles) or the depth camera
     # (docs/archive/2026-09-28_virtual_camera_depth_mapping_plan.md). Read once at startup.
     "guidance.obstacle_source": "boxes",
@@ -214,6 +218,7 @@ MOTION_PROFILES = {
         "minco_obstacle_avoidance": True,
         "minco_local_piece_length_m": 1.5,
         "minco_obstacle_clearance_soft": 0.2,
+        "minco_obstacle_clearance": 0.1,
         "global_planner": "astar",
     },
     # face_travel only drives pre_align here (chord to the goal = the tracker's
@@ -262,6 +267,7 @@ _GOAL_EXECUTE_PARAMS = {
     "global_planner": ("global_planner", str),
     "minco_local_piece_length_m": ("minco_local_piece_length_m", float),
     "minco_obstacle_clearance_soft": ("minco_obstacle_clearance_soft", float),
+    "minco_obstacle_clearance": ("minco_obstacle_clearance", float),
     "jaxa_lookahead_m": ("jaxa_lookahead_m", float),
     "jaxa_ompl_solve_time_s": ("jaxa_ompl_solve_time_s", float),
     "jaxa_max_attempts": ("jaxa_max_attempts", int),

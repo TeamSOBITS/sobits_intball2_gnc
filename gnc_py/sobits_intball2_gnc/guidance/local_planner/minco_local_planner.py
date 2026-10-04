@@ -93,7 +93,7 @@ class MincoLocalPlanner:
                  planning_horizon_m, via_half_width, wrench_safety_margin,
                  attitude_resample_spacing_m, face_travel, forward_axis, local_max_vel,
                  local_piece_length_m, obstacle_grid, obstacle_clearance_soft, corridor_planes=None,
-                 reference_route=None):
+                 reference_route=None, obstacle_clearance=None):
         self.p_target = np.asarray(p_target, dtype=float)
         self._q0 = np.asarray(q0, dtype=float)
         self._target_speed = None if target_speed is None else float(target_speed)
@@ -109,6 +109,17 @@ class MincoLocalPlanner:
             None if local_piece_length_m is None else float(local_piece_length_m))
         self.obstacle_grid = obstacle_grid
         self._obstacle_clearance_soft = float(obstacle_clearance_soft)
+        self._obstacle_clearance = None if obstacle_clearance is None else float(obstacle_clearance)
+        if self._obstacle_clearance is not None:
+            if not self._obstacle_clearance > 0.0:
+                raise ValueError("obstacle_clearance must be positive")
+            if self._obstacle_clearance >= self._obstacle_clearance_soft:
+                # penalties.cpp's `useSoft = clearanceSoft > clearance` drops the
+                # soft term entirely once the hard one catches up with it.
+                raise ValueError(
+                    "obstacle_clearance (%.3f) must stay below obstacle_clearance_soft "
+                    "(%.3f), which would otherwise be ignored"
+                    % (self._obstacle_clearance, self._obstacle_clearance_soft))
         self._corridor_planes = corridor_planes
         self._rng = np.random.default_rng(0)
         self._replan_failures = 0
@@ -374,7 +385,8 @@ class MincoLocalPlanner:
                 warm_start_segment_times=warm_start_segment_times,
                 body_frame_wrench=True, obstacle_grid=obstacle_grid,
                 obstacle_touch_goal=touch_goal,
-                obstacle_clearance_soft=self._obstacle_clearance_soft)
+                obstacle_clearance_soft=self._obstacle_clearance_soft,
+                obstacle_clearance=self._obstacle_clearance)
 
         obstacle_grid = self.obstacle_grid
         if obstacle_grid is not None and hasattr(obstacle_grid, "snapshot"):
