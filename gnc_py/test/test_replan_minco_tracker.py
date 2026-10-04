@@ -679,3 +679,40 @@ def test_rest_replan_into_an_obstacle_is_not_adopted():
     assert tracker._stop_profile is None
     assert tracker.last_replan_source == "rest"
     assert tracker.last_replan_collides is False
+
+
+def test_failed_local_retries_straight_then_random_seed(monkeypatch):
+    """EGO-Planner v2 planFromLocalTraj (warm start, straight, widened random seed) plus our A*
+    seed before the random one, all aiming at the same local target; the failure count resets."""
+    import sobits_intball2_gnc_cpp as core
+
+    tf = _IdealTrackingTf()
+    tracker = _make_tracker(
+        tf, face_travel=True, local_max_vel=FACE_TRAVEL_MAX_VEL, local_piece_length_m=1.5,
+        obstacle_grid=core.OccupancyGrid(0.1, 0.2))
+    planner = tracker._planner
+    state = tracker._reference_start_state()
+    cursor = planner._global_search_t
+    real = planner._build_local_seeded
+    calls = []
+
+    def scripted(*args):
+        calls.append((args[-1], args[-2], planner._global_search_t))
+        if args[-1] != "random":  # scripted: only the last tier solves
+            raise MincoInfeasibleError("scripted")
+        return real(*args)
+
+    monkeypatch.setattr(planner, "_build_local_seeded", scripted)
+    planner.build_local(*state)
+    assert [c[0] for c in calls] == ["warm", "straight", "astar", "random"]
+    assert calls[3][1] >= 1  # random seed widened
+    assert all(c[2] == cursor for c in calls)
+    assert planner._replan_failures == 0
+
+    def always_fail(*_args):
+        raise MincoInfeasibleError("scripted")
+
+    monkeypatch.setattr(planner, "_build_local_seeded", always_fail)
+    with pytest.raises(MincoInfeasibleError):
+        planner.build_local(*state)
+    assert planner._replan_failures == 1

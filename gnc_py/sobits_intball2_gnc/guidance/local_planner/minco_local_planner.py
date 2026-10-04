@@ -48,7 +48,15 @@ import math
 
 import numpy as np
 
-from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import MincoTrajectory
+from sobits_intball2_gnc.guidance.global_planner.astar_planner import (
+    AStarPlanner,
+    AStarPlanningError,
+)
+from sobits_intball2_gnc.guidance.global_planner.path_shortcut import shortcut_path
+from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
+    MincoInfeasibleError,
+    MincoTrajectory,
+)
 
 # Resolution for the internal forward-scan of the (already-solved, analytic)
 # global trajectory in _get_local_target -- not a control-loop timing
@@ -57,6 +65,16 @@ from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import MincoTrajec
 _LOCAL_TARGET_SEARCH_DT = 0.05
 DEFAULT_LOCAL_ATTITUDE_SPACING_M = 0.3
 _SELF_PATH_SAMPLES = 400
+# A* seed search box: both ends plus this margin; the static map bounds it further.
+_ASTAR_SEED_MARGIN_M = 1.0
+# A local target inside the inflated grid moves forward along the global trajectory to a free
+# point at least this far past the last occupied sample (None: no move). The rebound check
+# fails outright on an occupied target, and with depth the first free sample past a seen face
+# can be inside the unseen obstacle (docs/jaxa_baseline_ompl_reproduction.md 9.4).
+_LOCAL_TARGET_OBSTACLE_MARGIN_M = 1.0
+# How an occupied local target is replaced: "forward" along the global trajectory (above) or
+# "astar": ``planning_horizon_m`` along an A*6 path from the vehicle to the goal.
+_LOCAL_TARGET_IN_OBSTACLE = "forward"
 
 
 class MincoLocalPlanner:
@@ -85,6 +103,7 @@ class MincoLocalPlanner:
         self._obstacle_clearance_soft = float(obstacle_clearance_soft)
         self._corridor_planes = corridor_planes
         self._rng = np.random.default_rng(0)
+        self._replan_failures = 0
 
         route_waypoints = (
             np.zeros((0, 3)) if route_waypoints is None
@@ -149,6 +168,35 @@ class MincoLocalPlanner:
 
     def build_local(self, p0, v0, a0, rv0, rv_rate0, rv_accel0, prev_local, prev_elapsed,
                     rest_failures=0):
+        """:meth:`_build_local_seeded` with EGO-Planner v2 ``planFromLocalTraj``'s fallback:
+        with obstacles, a failed warm-started solve is retried from a straight seed, then from
+        a random one widening with consecutive failures, so a local minimum is not retried with
+        the same seed forever. Before the random seed an A* seed is tried (ours, not in EGO v2):
+        EGO's random midpoint scales with the chord, so it cannot reach a goal right behind an
+        obstacle (docs/jaxa_baseline_ompl_reproduction.md 9.3). Raises
+        :class:`MincoInfeasibleError` when every tier fails."""
+        tiers = ("warm",)
+        if (self.obstacle_grid is not None and self._face_travel
+                and self._local_piece_length_m is not None and self._corridor_planes is None):
+            tiers = ("warm", "straight", "astar", "random")
+        cursor = self._global_search_t
+        for k, seed_mode in enumerate(tiers):
+            self._global_search_t = cursor  # every tier aims at the same local target
+            try:
+                result = self._build_local_seeded(
+                    p0, v0, a0, rv0, rv_rate0, rv_accel0, prev_local, prev_elapsed,
+                    max(rest_failures, self._replan_failures) + 1 if seed_mode == "random"
+                    else rest_failures, seed_mode)
+            except MincoInfeasibleError:
+                if k == len(tiers) - 1:
+                    self._replan_failures += 1
+                    raise
+                continue
+            self._replan_failures = 0
+            return result
+
+    def _build_local_seeded(self, p0, v0, a0, rv0, rv_rate0, rv_accel0, prev_local, prev_elapsed,
+                            rest_failures, seed_mode):
         """Solve a fresh free-time local segment from the head state (position
         ``p0``/``v0``/``a0``, ``q0``-relative rotvec ``rv0`` and its rate/accel)
         to the look-ahead target, ending at the global trajectory's velocity
@@ -156,13 +204,23 @@ class MincoLocalPlanner:
         docstring for the ``face_travel`` two-solve. ``prev_local`` (sampled at
         ``prev_elapsed`` for the head state, ``None`` for the first plan and from
         rest) seeds the multi-piece shape solve; ``rest_failures`` (consecutive
-        failed replans from rest) widens the random seed. Returns
+        failed replans from rest) widens the random seed. ``seed_mode`` (``face_travel`` with
+        ``local_piece_length_m`` only): ``"warm"`` as above, ``"straight"`` seeds from the
+        chord to the target, ``"random"`` from the chord midpoint pushed sideways by
+        ``rest_failures`` (EGO-Planner v2 ``planFromLocalTraj``'s three tiers). Returns
         ``(local, touch_goal)``."""
         prev_target_global_t = self._global_search_t
         target_pos, target_vel, touch_goal = self._get_local_target(p0)
         v_tail = np.zeros(3) if touch_goal else target_vel
         if self._face_travel:
-            if self._corridor_planes is not None and prev_local is None:
+            if seed_mode == "astar":
+                shape_seed = self._astar_shape_seed(p0, target_pos)
+            elif seed_mode != "warm" and self._local_piece_length_m is not None:
+                n_pieces = max(2, math.ceil(np.linalg.norm(np.asarray(target_pos) - np.asarray(p0))
+                                            / self._local_piece_length_m))
+                shape_seed = self._rest_shape_seed(
+                    p0, target_pos, n_pieces, rest_failures if seed_mode == "random" else 0)
+            elif self._corridor_planes is not None and prev_local is None:
                 shape_seed = self._global_shape_seed(p0, target_pos)
             else:
                 shape_seed = self._shape_seed(p0, target_pos, prev_local, prev_elapsed,
@@ -216,6 +274,33 @@ class MincoLocalPlanner:
             inner_directions.append(v)
         return (np.asarray(inner_points, dtype=float), np.asarray(inner_directions, dtype=float),
                 np.full(n_pieces, total_span / n_pieces))
+
+    def _astar_shape_seed(self, p0, target_pos):
+        """Seed along the shortcut A*6 path to the target, in a box around both ends."""
+        p0 = np.asarray(p0, dtype=float)
+        target_pos = np.asarray(target_pos, dtype=float)
+        grid = self.obstacle_grid
+        if hasattr(grid, "snapshot"):
+            grid = grid.snapshot()
+        bounds = (np.minimum(p0, target_pos) - _ASTAR_SEED_MARGIN_M,
+                  np.maximum(p0, target_pos) + _ASTAR_SEED_MARGIN_M)
+        try:
+            path = np.asarray(shortcut_path(
+                AStarPlanner(grid.resolution, grid=grid, search_bounds=bounds,
+                             connectivity=6).plan(p0, target_pos), grid, bounds), dtype=float)
+        except (AStarPlanningError, ValueError) as exc:
+            raise MincoInfeasibleError("A* seed: %s" % exc) from exc
+        # Two pieces per A* leg so the seed keeps the detour's corners; piece length alone
+        # (1.5 m) can leave a U-turn around a box with a single inner point.
+        n_pieces = max(2 * (len(path) - 1),
+                       math.ceil(_polyline_length(path) / self._local_piece_length_m))
+        cuts = _equal_arc_cuts(path, n_pieces)
+        if cuts is None:
+            raise MincoInfeasibleError("A* seed: degenerate path")
+        length, inner_points, segments = cuts
+        inner_directions = np.array([_unit(path[seg + 1] - path[seg]) for seg in segments])
+        return (inner_points, inner_directions,
+                np.full(n_pieces, length / self.global_avg_speed / n_pieces))
 
     def _rest_shape_seed(self, p0, target_pos, n_pieces, rest_failures):
         """Seed for replanning from rest (e.g. after an emergency stop): a two-leg polyline
@@ -296,13 +381,23 @@ class MincoLocalPlanner:
         """Walk the global trajectory forward from the last search cursor to the first point
         ``planning_horizon_m`` (straight-line) from ``p_from``; returns ``(pos, vel,
         touch_goal)`` with the global velocity there, zeroed once that target is within braking
-        distance of the goal (with ``max_accel`` only). Past the end: the goal at rest."""
+        distance of the goal (with ``max_accel`` only). A target in the inflated grid moves
+        forward (:meth:`_free_target_from`). Past the end: the goal at rest."""
         p_from = np.asarray(p_from, dtype=float)
         duration = self.global_trajectory.global_total_duration
         t = self._global_search_t
         while t < duration:
             p, v, _a, _q = self.global_trajectory.sample(t)
             if np.linalg.norm(np.asarray(p) - p_from) >= self._planning_horizon_m:
+                if _LOCAL_TARGET_IN_OBSTACLE == "astar":
+                    found = self._astar_target(p_from, t)
+                    if found is not None:
+                        self._global_search_t = t
+                        return found
+                moved = self._free_target_from(t)
+                if moved is None:
+                    break
+                t, p, v = moved
                 self._global_search_t = t
                 vel = np.asarray(v, dtype=float)
                 if self._max_accel is not None and self._max_accel > 0.0:
@@ -313,6 +408,64 @@ class MincoLocalPlanner:
             t += _LOCAL_TARGET_SEARCH_DT
         self._global_search_t = duration
         return self.p_target.copy(), np.zeros(3), True
+
+    def _astar_target(self, p_from, t):
+        """``(pos, vel, touch_goal)`` ``planning_horizon_m`` along an A*6 path from ``p_from``
+        to the goal when the global trajectory at ``t`` is in the inflated grid, else ``None``
+        (also when A* fails). The velocity is the global speed at ``t`` (capped at
+        ``local_max_vel``) along the path."""
+        grid = self.obstacle_grid
+        p, v, _a, _q = self.global_trajectory.sample(t)
+        if grid is None or not grid.inflated_occupied(list(np.asarray(p, dtype=float))):
+            return None
+        if hasattr(grid, "snapshot"):
+            grid = grid.snapshot()
+        goal = np.asarray(self.p_target, dtype=float)
+        bounds = (np.minimum(p_from, goal) - _ASTAR_SEED_MARGIN_M,
+                  np.maximum(p_from, goal) + _ASTAR_SEED_MARGIN_M)
+        try:
+            path = np.asarray(shortcut_path(
+                AStarPlanner(grid.resolution, grid=grid, search_bounds=bounds,
+                             connectivity=6).plan(p_from, goal), grid, bounds), dtype=float)
+        except (AStarPlanningError, ValueError):
+            return None
+        remaining = self._planning_horizon_m
+        for a, b in zip(path[:-1], path[1:]):
+            length = float(np.linalg.norm(b - a))
+            if length >= remaining:
+                speed = float(np.linalg.norm(v))
+                if self.local_max_vel:
+                    # The global speed can exceed the local cap; an end velocity above it is
+                    # infeasible for the local solve.
+                    speed = min(speed, float(self.local_max_vel))
+                return a + (b - a) * (remaining / length), _unit(b - a) * speed, False
+            remaining -= length
+        return goal.copy(), np.zeros(3), True
+
+    def _free_target_from(self, t):
+        """``(t, pos, vel)`` of the global trajectory at ``t``, or past it at the first free
+        sample ``_LOCAL_TARGET_OBSTACLE_MARGIN_M`` beyond the last occupied one when ``t`` is in
+        the inflated grid; ``None`` when no such point comes before the goal."""
+        grid = self.obstacle_grid
+        p, v, _a, _q = self.global_trajectory.sample(t)
+        if (grid is None or _LOCAL_TARGET_OBSTACLE_MARGIN_M is None
+                or not grid.inflated_occupied(list(np.asarray(p, dtype=float)))):
+            return t, p, v
+        duration = self.global_trajectory.global_total_duration
+        last_occupied = np.asarray(p, dtype=float)
+        while t < duration:
+            t += _LOCAL_TARGET_SEARCH_DT
+            p, v, _a, _q = self.global_trajectory.sample(min(t, duration))
+            p = np.asarray(p, dtype=float)
+            if grid.inflated_occupied(list(p)):
+                last_occupied = p
+            elif np.linalg.norm(p - last_occupied) >= _LOCAL_TARGET_OBSTACLE_MARGIN_M:
+                return t, p, v
+        return None
+
+
+def _polyline_length(points):
+    return float(np.sum(np.linalg.norm(np.diff(points, axis=0), axis=1)))
 
 
 def _unit(v):
