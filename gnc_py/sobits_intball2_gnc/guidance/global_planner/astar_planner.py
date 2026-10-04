@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Grid-based A* global planner (ROS-agnostic, pure)."""
 import heapq
+import math
 
 import numpy as np
 
@@ -19,6 +20,11 @@ _FACE_NEIGHBOR_OFFSETS = (
     (-1, 0, 0), (1, 0, 0), (0, -1, 0),
     (0, 1, 0), (0, 0, -1), (0, 0, 1),
 )
+# (offset, step cost) pairs: the cost is fixed per offset, and recomputing it
+# with np.linalg.norm per edge cost ~38% of a whole JEM-wide search.
+_NEIGHBOR_STEPS = tuple(
+    (offset, math.sqrt(sum(c * c for c in offset))) for offset in _NEIGHBOR_OFFSETS)
+_FACE_NEIGHBOR_STEPS = tuple((offset, 1.0) for offset in _FACE_NEIGHBOR_OFFSETS)
 
 
 class AStarPlanningError(RuntimeError):
@@ -144,7 +150,9 @@ class AStarPlanner(BaseGlobalPlanner):
         return lo, hi
 
     def _occupied(self, index):
-        return bool(self._grid.inflated_occupied(list(self._to_cell_center(index))))
+        res = self.resolution
+        return bool(self._grid.inflated_occupied(
+            [(index[0] + 0.5) * res, (index[1] + 0.5) * res, (index[2] + 0.5) * res]))
 
     def _search_bounds(self, start_idx, goal_idx):
         lo = tuple(min(s, g) - self.search_margin for s, g in zip(start_idx, goal_idx))
@@ -154,11 +162,15 @@ class AStarPlanner(BaseGlobalPlanner):
     @staticmethod
     def _in_bounds(idx, bounds):
         lo, hi = bounds
-        return all(lo[a] <= idx[a] <= hi[a] for a in range(3))
+        return (lo[0] <= idx[0] <= hi[0] and lo[1] <= idx[1] <= hi[1]
+                and lo[2] <= idx[2] <= hi[2])
 
     @staticmethod
     def _heuristic(a, b):
-        return float(np.linalg.norm(np.array(a) - np.array(b)))
+        dx = a[0] - b[0]
+        dy = a[1] - b[1]
+        dz = a[2] - b[2]
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
 
     def _search(self, start_idx, goal_idx, obstacles, bounds):
         open_heap = [(self._heuristic(start_idx, goal_idx), start_idx)]
@@ -183,12 +195,13 @@ class AStarPlanner(BaseGlobalPlanner):
                     "AStarPlanner: exceeded max_expansions without reaching goal"
                 )
 
-            offsets = _FACE_NEIGHBOR_OFFSETS if self.connectivity == 6 else _NEIGHBOR_OFFSETS
-            for offset in offsets:
-                neighbor = tuple(c + o for c, o in zip(current, offset))
+            steps = _FACE_NEIGHBOR_STEPS if self.connectivity == 6 else _NEIGHBOR_STEPS
+            for offset, step_cost in steps:
+                neighbor = (current[0] + offset[0], current[1] + offset[1],
+                            current[2] + offset[2])
                 if neighbor in obstacles or not self._in_bounds(neighbor, bounds):
                     continue
-                tentative_g = g_score[current] + float(np.linalg.norm(offset))
+                tentative_g = g_score[current] + step_cost
                 if tentative_g < g_score.get(neighbor, float("inf")):
                     g_score[neighbor] = tentative_g
                     came_from[neighbor] = current
@@ -217,13 +230,14 @@ class AStarPlanner(BaseGlobalPlanner):
             if expansions > self.max_expansions:
                 raise AStarPlanningError("A* exceeded max_expansions")
 
-            offsets = _FACE_NEIGHBOR_OFFSETS if self.connectivity == 6 else _NEIGHBOR_OFFSETS
-            for offset in offsets:
-                neighbor = tuple(c + o for c, o in zip(current, offset))
+            steps = _FACE_NEIGHBOR_STEPS if self.connectivity == 6 else _NEIGHBOR_STEPS
+            for offset, step_cost in steps:
+                neighbor = (current[0] + offset[0], current[1] + offset[1],
+                            current[2] + offset[2])
                 if (not self._in_bounds(neighbor, bounds)
                         or not self._edge_is_free(current, neighbor, bounds)):
                     continue
-                tentative_g = g_score[current] + float(np.linalg.norm(offset))
+                tentative_g = g_score[current] + step_cost
                 if tentative_g < g_score.get(neighbor, float("inf")):
                     g_score[neighbor] = tentative_g
                     came_from[neighbor] = current
@@ -239,8 +253,13 @@ class AStarPlanner(BaseGlobalPlanner):
         subset cells are the supercover at that crossing; checking them all
         prevents a route from slipping between inflated occupied voxels.
         """
-        delta = tuple(n - c for c, n in zip(current, neighbor))
-        active_axes = [axis for axis, step in enumerate(delta) if step != 0]
+        delta = (neighbor[0] - current[0], neighbor[1] - current[1],
+                 neighbor[2] - current[2])
+        active_axes = [axis for axis in (0, 1, 2) if delta[axis]]
+        if len(active_axes) == 1:
+            # A face move touches only the destination cell; the general
+            # supercover loop below would rebuild a list to say the same.
+            return self._in_bounds(neighbor, bounds) and not self._occupied(neighbor)
         for mask in range(1, 1 << len(active_axes)):
             touched = list(current)
             for bit, axis in enumerate(active_axes):
