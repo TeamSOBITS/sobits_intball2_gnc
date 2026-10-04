@@ -2,7 +2,7 @@
 
 // heuristic/moveEndpointsToFree are private; open them to this test only.
 #define private public
-#include "sobits_intball2_gnc_cpp/guidance/search/a_star.hpp"
+#include "sobits_intball2_gnc_cpp/guidance/search/local_a_star.hpp"
 #undef private
 
 #include "guidance/minco/detail/penalties.hpp"
@@ -158,17 +158,17 @@ TEST(Rebound, AllowReboundIterationAndTurnLimits)
     EXPECT_FALSE(guidance::allowRebound(polyline(31.0), 3));
 }
 
-TEST(AStar, OctileHeuristic)
+TEST(LocalAStar, OctileHeuristic)
 {
-    EXPECT_NEAR(guidance::AStar::heuristic(Vector3i(0, 0, 0), Vector3i(1, 1, 1)), std::sqrt(3.0), 1e-12);
-    EXPECT_NEAR(guidance::AStar::heuristic(Vector3i(0, 0, 0), Vector3i(2, -1, 0)), std::sqrt(2.0) + 1.0, 1e-12);
+    EXPECT_NEAR(guidance::LocalAStar::heuristic(Vector3i(0, 0, 0), Vector3i(1, 1, 1)), std::sqrt(3.0), 1e-12);
+    EXPECT_NEAR(guidance::LocalAStar::heuristic(Vector3i(0, 0, 0), Vector3i(2, -1, 0)), std::sqrt(2.0) + 1.0, 1e-12);
 }
 
-TEST(AStar, OccupiedStartIsMovedAlongTheSegment)
+TEST(LocalAStar, OccupiedStartIsMovedAlongTheSegment)
 {
     mapping::OccupancyGrid grid(0.1, 0.1);
     addTestBox(grid, Vector3d::Zero());
-    guidance::AStar astar(grid);
+    guidance::LocalAStar astar(grid);
     std::vector<Vector3d> path;
     ASSERT_TRUE(astar.search(0.1, Vector3d::Zero(), Vector3d(1.5, 0.0, 0.0), path));
     ASSERT_FALSE(path.empty());

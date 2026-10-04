@@ -3,7 +3,7 @@
 #include "sobits_intball2_gnc_cpp/common/trace.hpp"
 
 #include "sobits_intball2_gnc_cpp/guidance/minco/constraint_points.hpp"
-#include "sobits_intball2_gnc_cpp/guidance/search/a_star.hpp"
+#include "sobits_intball2_gnc_cpp/guidance/search/local_a_star.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -256,7 +256,7 @@ ReboundResult finelyCheckAndSetConstraintPoints(const mapping::OccupancyGrid &gr
         tangents[j] = velocityAt(coeffsPos, piece, s);
     }
 
-    AStar astar(grid);
+    LocalAStar astar(grid);
     for (const auto &[a, b] : stretches)
     {
         std::vector<Vector3d> guide;
@@ -314,7 +314,7 @@ ReboundResult roughlyCheckConstraintPoints(const mapping::OccupancyGrid &grid, c
         tangents[j] = 0.5 * (cps.col(std::min(j + 1, nPoints - 1)) - cps.col(std::max(j - 1, 0)));
     }
 
-    AStar astar(grid);
+    LocalAStar astar(grid);
     int added = 0;
     for (int j = 1; j <= lastId; j++)
     {

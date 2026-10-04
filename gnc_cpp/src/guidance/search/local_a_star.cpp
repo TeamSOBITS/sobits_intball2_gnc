@@ -1,4 +1,4 @@
-#include "sobits_intball2_gnc_cpp/guidance/search/a_star.hpp"
+#include "sobits_intball2_gnc_cpp/guidance/search/local_a_star.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -26,7 +26,7 @@ using OpenEntry = std::pair<double, std::int64_t>;
 
 }  // namespace
 
-bool AStar::search(double stepSize, Vector3d startPt, Vector3d endPt, std::vector<Vector3d> &path)
+bool LocalAStar::search(double stepSize, Vector3d startPt, Vector3d endPt, std::vector<Vector3d> &path)
 {
     path.clear();
     if (!(stepSize > 0.0))
@@ -109,14 +109,14 @@ bool AStar::search(double stepSize, Vector3d startPt, Vector3d endPt, std::vecto
     return true;
 }
 
-std::int64_t AStar::key(const Vector3i &idx)
+std::int64_t LocalAStar::key(const Vector3i &idx)
 {
     constexpr std::int64_t OFFSET = 1 << 20;
     constexpr std::int64_t MASK = (1 << 21) - 1;
     return ((idx.x() + OFFSET) & MASK) << 42 | ((idx.y() + OFFSET) & MASK) << 21 | ((idx.z() + OFFSET) & MASK);
 }
 
-double AStar::heuristic(const Vector3i &a, const Vector3i &b)
+double LocalAStar::heuristic(const Vector3i &a, const Vector3i &b)
 {
     double d[3] = {std::abs(static_cast<double>(a.x() - b.x())), std::abs(static_cast<double>(a.y() - b.y())),
                    std::abs(static_cast<double>(a.z() - b.z()))};
@@ -124,12 +124,12 @@ double AStar::heuristic(const Vector3i &a, const Vector3i &b)
     return (std::sqrt(3.0) - std::sqrt(2.0)) * d[2] + (std::sqrt(2.0) - 1.0) * d[1] + d[0];
 }
 
-Vector3d AStar::indexToCoord(const Vector3i &idx) const
+Vector3d LocalAStar::indexToCoord(const Vector3i &idx) const
 {
     return origin_ + (idx.array() - POOL / 2).cast<double>().matrix() * step_;
 }
 
-bool AStar::coordToIndex(const Vector3d &pt, Vector3i &idx) const
+bool LocalAStar::coordToIndex(const Vector3d &pt, Vector3i &idx) const
 {
     for (int d = 0; d < 3; d++)
     {
@@ -142,7 +142,7 @@ bool AStar::coordToIndex(const Vector3d &pt, Vector3i &idx) const
     return true;
 }
 
-bool AStar::moveEndpointsToFree(Vector3d startPt, Vector3d endPt, Vector3i &startIdx, Vector3i &endIdx) const
+bool LocalAStar::moveEndpointsToFree(Vector3d startPt, Vector3d endPt, Vector3i &startIdx, Vector3i &endIdx) const
 {
     if (!coordToIndex(startPt, startIdx) || !coordToIndex(endPt, endIdx))
     {

@@ -12,10 +12,14 @@ namespace sobits_intball2_gnc::guidance
 
 // Guide path for rebound (Zhou et al., RA-L 2021, Sec. VI-A): 26-connected A* with the
 // octile heuristic, confined to a 100^3 window around the start/end midpoint.
-class AStar
+//
+// "Local" as in the local planner's own solve, where it pushes a trajectory out of an
+// obstacle: endpoints start inside the inflation and are relocated to free cells. Routes
+// planned before departure need the opposite and use GlobalAStar (global_a_star.hpp).
+class LocalAStar
 {
 public:
-    explicit AStar(const mapping::OccupancyGrid &grid) : grid_(grid) {}
+    explicit LocalAStar(const mapping::OccupancyGrid &grid) : grid_(grid) {}
 
     bool search(double stepSize, Eigen::Vector3d startPt, Eigen::Vector3d endPt,
                 std::vector<Eigen::Vector3d> &path);
