@@ -1,9 +1,12 @@
 #include "sobits_intball2_gnc_cpp/guidance/rebound/rebound.hpp"
 
+#include "sobits_intball2_gnc_cpp/common/trace.hpp"
+
 #include "sobits_intball2_gnc_cpp/guidance/minco/constraint_points.hpp"
 #include "sobits_intball2_gnc_cpp/guidance/search/a_star.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -188,6 +191,8 @@ ReboundResult finelyCheckAndSetConstraintPoints(const mapping::OccupancyGrid &gr
     const int nPoints = K * CONSTRAINT_POINTS_PER_PIECE + 1;
     if (K < 1)
     {
+        if (common::reboundTraceEnabled())
+            std::fprintf(stderr, "[trace] rebound error: fine:no_pieces\n");
         return ReboundResult::Error;
     }
     if (static_cast<int>(pairsByPoint.size()) != nPoints)
@@ -200,6 +205,8 @@ ReboundResult finelyCheckAndSetConstraintPoints(const mapping::OccupancyGrid &gr
 
     if (grid.inflatedOccupied(points.front().position))
     {
+        if (common::reboundTraceEnabled())
+            std::fprintf(stderr, "[trace] rebound error: fine:start_occupied\n");
         return ReboundResult::Error;
     }
 
@@ -230,6 +237,8 @@ ReboundResult finelyCheckAndSetConstraintPoints(const mapping::OccupancyGrid &gr
     }
     if (inside && touchGoal)
     {
+        if (common::reboundTraceEnabled())
+            std::fprintf(stderr, "[trace] rebound error: fine:ends_inside_touch_goal\n");
         return ReboundResult::Error;
     }
     if (stretches.empty())
@@ -253,6 +262,8 @@ ReboundResult finelyCheckAndSetConstraintPoints(const mapping::OccupancyGrid &gr
         std::vector<Vector3d> guide;
         if (!astar.search(res, points[a].position, points[b].position, guide) || guide.empty())
         {
+            if (common::reboundTraceEnabled())
+                std::fprintf(stderr, "[trace] rebound error: fine:astar_failed\n");
             return ReboundResult::Error;
         }
         int firstId = points[a].interval + 1;
@@ -286,6 +297,8 @@ ReboundResult roughlyCheckConstraintPoints(const mapping::OccupancyGrid &grid, c
     const int lastId = lastObstacleConstrainedId(nPoints, touchGoal);
     if (grid.inflatedOccupied(cps.col(nPoints - 1)))
     {
+        if (common::reboundTraceEnabled())
+            std::fprintf(stderr, "[trace] rebound error: rough:last_point_occupied\n");
         return ReboundResult::Error;
     }
 
@@ -328,6 +341,8 @@ ReboundResult roughlyCheckConstraintPoints(const mapping::OccupancyGrid &grid, c
         std::vector<Vector3d> guide;
         if (!astar.search(grid.resolution(), cps.col(before), cps.col(after), guide) || guide.empty())
         {
+            if (common::reboundTraceEnabled())
+                std::fprintf(stderr, "[trace] rebound error: rough:astar_failed\n");
             return ReboundResult::Error;
         }
         added += addPairsAlongGuide(guide, cps, tangents, runStart, runEnd, true, pairsByPoint);
