@@ -53,10 +53,12 @@ from sobits_intball2_gnc.guidance.global_planner.astar_planner import (
     AStarPlanningError,
 )
 from sobits_intball2_gnc.guidance.global_planner.path_shortcut import shortcut_path
+from sobits_intball2_gnc.guidance.global_planner.reference_route import densify
 from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
     MincoInfeasibleError,
     MincoTrajectory,
 )
+from sobits_intball2_gnc.guidance.trajectory.reference_polynomial import MinJerkReference
 
 # Resolution for the internal forward-scan of the (already-solved, analytic)
 # global trajectory in _get_local_target -- not a control-loop timing
@@ -75,6 +77,11 @@ _LOCAL_TARGET_OBSTACLE_MARGIN_M = 1.0
 # How an occupied local target is replaced: "forward" along the global trajectory (above) or
 # "astar": ``planning_horizon_m`` along an A*6 path from the vehicle to the goal.
 _LOCAL_TARGET_IN_OBSTACLE = "forward"
+# Spacing of the points the reference global spline is pinned to. At the 0.5 m
+# of SCAN-Planner's reference mode the spline still rounds a corner into the
+# inflated grid; 0.25 m keeps every layout clear of the vehicle radius
+# (docs/minco_astar_reference_global.md 1).
+_REFERENCE_SPACING_M = 0.25
 
 
 class MincoLocalPlanner:
@@ -85,7 +92,8 @@ class MincoLocalPlanner:
     def __init__(self, p0, v0, p_target, q0, target_speed, max_accel, route_waypoints,
                  planning_horizon_m, via_half_width, wrench_safety_margin,
                  attitude_resample_spacing_m, face_travel, forward_axis, local_max_vel,
-                 local_piece_length_m, obstacle_grid, obstacle_clearance_soft, corridor_planes=None):
+                 local_piece_length_m, obstacle_grid, obstacle_clearance_soft, corridor_planes=None,
+                 reference_route=None):
         self.p_target = np.asarray(p_target, dtype=float)
         self._q0 = np.asarray(q0, dtype=float)
         self._target_speed = None if target_speed is None else float(target_speed)
@@ -109,6 +117,16 @@ class MincoLocalPlanner:
             np.zeros((0, 3)) if route_waypoints is None
             else np.asarray(route_waypoints, dtype=float).reshape(-1, 3)
         )
+        self._reference_route = reference_route is not None
+        if self._reference_route:
+            if len(route_waypoints):
+                raise ValueError("reference_route and route_waypoints are exclusive")
+            route = np.asarray(reference_route, dtype=float).reshape(-1, 3)
+            if len(route) < 2:
+                raise ValueError("reference_route needs at least a start and a goal")
+            # The ends come from p0/p_target: the route was planned before the
+            # final TF read, so its own ends can be centimetres away by now.
+            route_waypoints = route[1:-1]
         if len(route_waypoints):
             waypoints = np.vstack([p0, route_waypoints, self.p_target])
         else:
@@ -125,6 +143,12 @@ class MincoLocalPlanner:
         self._global_search_t = 0.0
 
     def _build_global(self, waypoints, v0):
+        if self._reference_route:
+            # Position-only, so the global carries no attitude or wrench limits
+            # and its time does not blow up as the waypoint count grows; the
+            # local solves own both (docs/minco_astar_reference_global.md 1).
+            speed = self.local_max_vel or self._target_speed
+            return MinJerkReference(densify(waypoints, _REFERENCE_SPACING_M), speed, self._q0)
         return MincoTrajectory(
             waypoints, self._q0, v0=v0, w0=np.zeros(3), face_travel=self._face_travel,
             forward_axis=self._forward_axis, body_frame_wrench=self._face_travel,

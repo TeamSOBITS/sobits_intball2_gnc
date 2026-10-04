@@ -716,3 +716,68 @@ def test_failed_local_retries_straight_then_random_seed(monkeypatch):
     with pytest.raises(MincoInfeasibleError):
         planner.build_local(*state)
     assert planner._replan_failures == 1
+
+
+def _reference_route_planner(route, **kwargs):
+    import sobits_intball2_gnc_cpp as core
+    from sobits_intball2_gnc.guidance.local_planner.minco_local_planner import MincoLocalPlanner
+    return MincoLocalPlanner(
+        route[0], np.zeros(3), route[-1], Q0, None, None, kwargs.pop("route_waypoints", None),
+        4.0, 0.3, 1.0, None, True, (1.0, 0.0, 0.0), 0.15, 1.5,
+        core.OccupancyGrid(0.05, 0.2), 0.2, None, **kwargs)
+
+
+_L_ROUTE = [np.array([0.0, 0.0, 0.0]), np.array([1.5, 0.8, 0.0]), np.array([3.0, 0.0, 0.0])]
+
+
+def test_a_reference_route_makes_the_global_a_min_jerk_through_it():
+    """docs/minco_astar_reference_global.md 2: the global follows the shared
+    A* route instead of the chord, so the local target is already clear of the
+    obstacles seen before departure."""
+    from sobits_intball2_gnc.guidance.trajectory.reference_polynomial import MinJerkReference
+
+    planner = _reference_route_planner(_L_ROUTE, reference_route=_L_ROUTE)
+    assert isinstance(planner.global_trajectory, MinJerkReference)
+    traj = planner.global_trajectory
+    samples = np.array([traj.sample(t)[0]
+                        for t in np.linspace(0.0, traj.global_total_duration, 400)])
+    assert np.min(np.linalg.norm(samples - _L_ROUTE[1], axis=1)) < 0.02, "it rounds the corner"
+    assert np.max(samples[:, 1]) > 0.5, "the chord would stay on y=0"
+
+
+def test_the_local_target_lies_on_the_reference_route():
+    planner = _reference_route_planner(_L_ROUTE, reference_route=_L_ROUTE)
+    planner._planning_horizon_m = 1.0
+    target = planner._get_local_target(_L_ROUTE[0])[0]
+    traj = planner.global_trajectory
+    samples = np.array([traj.sample(t)[0]
+                        for t in np.linspace(0.0, traj.global_total_duration, 800)])
+    assert np.min(np.linalg.norm(samples - target, axis=1)) < 1e-3  # sampling step
+    assert target[1] > 0.1, "already heading around the corner, not down the chord"
+
+
+def test_the_reference_global_speed_is_capped_at_the_local_max():
+    planner = _reference_route_planner(_L_ROUTE, reference_route=_L_ROUTE)
+    traj = planner.global_trajectory
+    ts = np.linspace(0.0, traj.global_total_duration, 400)
+    assert max(np.linalg.norm(traj.sample(t)[1]) for t in ts) <= 0.15 + 1e-9
+
+
+def test_a_reference_route_and_via_waypoints_are_exclusive():
+    with pytest.raises(ValueError):
+        _reference_route_planner(_L_ROUTE, reference_route=_L_ROUTE,
+                                 route_waypoints=[[1.0, 1.0, 1.0]])
+
+
+def test_the_route_ends_are_taken_from_the_actual_start_and_goal():
+    """The route is planned before the final TF read, so its own ends are stale."""
+    moved = [_L_ROUTE[0] + 0.05, _L_ROUTE[1], _L_ROUTE[2]]
+    planner = _reference_route_planner(moved, reference_route=_L_ROUTE)
+    np.testing.assert_allclose(planner.global_trajectory.sample(0.0)[0], moved[0], atol=1e-6)
+
+
+def test_without_a_reference_route_the_global_is_still_minco():
+    from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import MincoTrajectory
+
+    planner = _reference_route_planner(_L_ROUTE)
+    assert isinstance(planner.global_trajectory, MincoTrajectory)

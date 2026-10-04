@@ -135,6 +135,11 @@ GUIDANCE_PARAM_DEFAULTS = {
     # Optional A*6 + FIRI enhancement of the depth local-avoidance profile.
     # Latched per goal; False preserves the established tracker path exactly.
     "guidance.global_corridor_avoidance": False,
+    # "straight": the local planner aims along the chord to the goal, as
+    # EGO-Planner v2 does. "astar": an A*6 route planned once before departure,
+    # shared with the JAXA baseline so the two differ only in the local layer
+    # (docs/minco_astar_reference_global.md 2).
+    "guidance.global_planner": "straight",
     "guidance.minco_local_piece_length_m": 1.5,
     "guidance.minco_obstacle_clearance_soft": 0.2,
     # Obstacles from boxes (/guidance/virtual_obstacles) or the depth camera
@@ -194,6 +199,7 @@ MOTION_PROFILES = {
         "pre_align": False,
         "align_at_arrival": False,
         "minco_obstacle_avoidance": False,
+        "global_planner": "straight",
     },
     "avoidance": {
         "attitude_reference_mode": "face_travel",
@@ -208,6 +214,7 @@ MOTION_PROFILES = {
         "minco_obstacle_avoidance": True,
         "minco_local_piece_length_m": 1.5,
         "minco_obstacle_clearance_soft": 0.2,
+        "global_planner": "astar",
     },
     # face_travel only drives pre_align here (chord to the goal = the tracker's
     # goal-facing attitude); in flight the jaxa_rrt tracker sets the attitude.
@@ -217,6 +224,10 @@ MOTION_PROFILES = {
         "pre_align": True,
         "align_at_arrival": True,
         "minco_obstacle_avoidance": False,
+        # The baseline's own global stays the straight chord for now; sharing
+        # the A* route with it is the next step (docs/
+        # minco_astar_reference_global.md 2).
+        "global_planner": "straight",
         "jaxa_lookahead_m": 0.11,
         "jaxa_ompl_solve_time_s": 0.1,
         "jaxa_max_attempts": 50,
@@ -248,6 +259,7 @@ _GOAL_EXECUTE_PARAMS = {
     "minco_async_replan": ("minco_async_replan", bool),
     "minco_obstacle_avoidance": ("minco_obstacle_avoidance", bool),
     "global_corridor_avoidance": ("global_corridor_avoidance", bool),
+    "global_planner": ("global_planner", str),
     "minco_local_piece_length_m": ("minco_local_piece_length_m", float),
     "minco_obstacle_clearance_soft": ("minco_obstacle_clearance_soft", float),
     "jaxa_lookahead_m": ("jaxa_lookahead_m", float),

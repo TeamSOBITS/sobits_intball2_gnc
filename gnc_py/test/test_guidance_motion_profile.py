@@ -65,3 +65,26 @@ def test_avoidance_profile_selects_replanning_and_obstacle_settings():
 def test_unknown_motion_profile_is_rejected():
     with pytest.raises(ValueError, match="motion_profile"):
         goal_motion_profile(_node("unknown"))
+
+
+def test_avoidance_profile_selects_the_shared_astar_global():
+    _profile, _mode, kwargs = goal_motion_profile(_node("avoidance"))
+    assert kwargs["global_planner"] == "astar"
+
+
+@pytest.mark.parametrize("profile", ["fast", "jaxa_baseline"])
+def test_the_other_profiles_keep_the_straight_global(profile):
+    _profile, _mode, kwargs = goal_motion_profile(_node(profile))
+    assert kwargs["global_planner"] == "straight"
+
+
+def test_global_planner_set_after_the_profile_overrides_it():
+    _profile, _mode, kwargs = goal_motion_profile(
+        _node("avoidance", global_planner="straight"), overrides=("global_planner",))
+    assert kwargs["global_planner"] == "straight"
+
+
+def test_reselecting_the_profile_drops_a_global_planner_override():
+    _profile, _mode, kwargs = goal_motion_profile(
+        _node("avoidance", global_planner="straight"))
+    assert kwargs["global_planner"] == "astar"

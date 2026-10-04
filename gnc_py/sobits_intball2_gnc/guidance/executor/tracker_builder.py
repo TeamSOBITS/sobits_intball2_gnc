@@ -81,7 +81,7 @@ class TrackerBuilder:
               minco_replan_face_travel=False, minco_local_max_vel=None,
               minco_async_replan=False, minco_obstacle_avoidance=False,
               minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2,
-              global_corridor_avoidance=False, jaxa_options=None):
+              global_corridor_avoidance=False, jaxa_options=None, reference_route=None):
         """Returns ``(tracker, traj)``: ``traj`` is the trajectory to preview (the
         tracked one, the global one for ``replan_minco``, ``None`` for ``jaxa_rrt``).
         ``jaxa_options``: ``jaxa_rrt`` only, see :meth:`_build_jaxa`.
@@ -113,6 +113,14 @@ class TrackerBuilder:
         if mode == "replan_minco" and minco_obstacle_avoidance:
             obstacle_kwargs = self._obstacle_tracker_kwargs(
                 minco_local_piece_length_m, minco_obstacle_clearance_soft)
+        if reference_route is not None:
+            if mode != "replan_minco":
+                raise TrajectoryBuildError("reference_route requires replan_minco")
+            if global_corridor_avoidance:
+                raise TrajectoryBuildError(
+                    "reference_route and global_corridor_avoidance are exclusive")
+            if via_waypoints:
+                raise TrajectoryBuildError("reference_route and via_waypoints are exclusive")
         corridor_session = None
         if global_corridor_avoidance:
             if mode != "replan_minco" or not minco_obstacle_avoidance:
@@ -148,6 +156,7 @@ class TrackerBuilder:
                     local_max_vel=minco_local_max_vel,
                     async_replan=minco_async_replan,
                     corridor_session=corridor_session,
+                    reference_route=reference_route,
                     **obstacle_kwargs,
                 )
                 if getattr(replan_tracker, "initial_local_collides", False):

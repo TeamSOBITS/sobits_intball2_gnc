@@ -282,6 +282,7 @@ class GuidanceNode(Node):
             stopping_wait_cancel=float(g("stopping.wait_cancel")),
             obstacle_map=self._obstacle_map,
             corridor_plan_callback=self._publish_global_corridor,
+            reference_route_callback=self._publish_reference_route,
         )
         if self._obstacle_map is not None and self._obstacle_map.uses_depth:
             self._depth_timeout = float(g("depth.timeout"))
@@ -362,6 +363,11 @@ class GuidanceNode(Node):
         self._astar_path_pub.publish(
             ((point, (0.0, 0.0, 0.0, 1.0)) for point in plan.route))
         self._corridor_marker_pub.publish(plan.planes)
+
+    def _publish_reference_route(self, route) -> None:
+        """Render the shared pre-departure route; planner code remains ROS-free."""
+        self._astar_path_pub.publish(
+            ((point, (0.0, 0.0, 0.0, 1.0)) for point in route))
 
     def _on_depth(self, depth, fx, fy, cx, cy, rotation, origin, stamp) -> None:
         points, cells_updated, _flipped = self._obstacle_map.integrate_depth(

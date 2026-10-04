@@ -31,6 +31,11 @@ checkpoint chaining) is still out of scope here.
 import numpy as np
 
 from sobits_intball2_gnc.guidance.align.attitude_aligner import AttitudeAligner
+from sobits_intball2_gnc.guidance.global_planner.astar_planner import AStarPlanningError
+from sobits_intball2_gnc.guidance.global_planner.reference_route import (
+    plan_reference_route,
+    route_is_free,
+)
 from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import (
     DEFAULT_LOCAL_REPLAN_PERIOD_S,
     DEFAULT_PLANNING_HORIZON_M,
@@ -49,6 +54,23 @@ STATUS_SUCCESS = "success"
 STATUS_ABORTED = "aborted"
 STATUS_CANCELED = "canceled"
 STATUS_PLANNING_FAILED = "planning_failed"
+
+# Depth frames integrated before the reference route is planned, and how long
+# the sim clock waits for them (docs/minco_astar_reference_global.md 3.1).
+REFERENCE_DEPTH_FRAMES = 6
+REFERENCE_DEPTH_TIMEOUT_S = 3.0
+
+
+class ReferenceRouteError(RuntimeError):
+    """No usable pre-departure reference route; the goal ends planning_failed."""
+
+
+class AlignmentAborted(RuntimeError):
+    """A pre-alignment inside route planning returned a non-success status."""
+
+    def __init__(self, status):
+        super().__init__(status)
+        self.status = status
 
 # Below this, a goal is an in-place reorientation: TOPP-RA can't parameterize a
 # zero-length path, and face_travel would chase sensor noise's direction.
@@ -127,12 +149,14 @@ class GuidanceExecutor:
                  stopping_profile_kwargs=None, stopping_tolerance_pos=0.30,
                  stopping_tolerance_att=1.0, stopping_duration_goal=3.0,
                  stopping_wait_cancel=10.0, obstacle_map=None,
-                 corridor_plan_callback=None):
+                 corridor_plan_callback=None, reference_route_callback=None):
         self._tf = tf_client
         self._setpoint_pub = setpoint_publisher
         self._checkpoint_pub = checkpoint_publisher
         self._clock_seconds = clock_seconds_fn
         self._spin = spin_fn
+        self._obstacle_map = obstacle_map
+        self._reference_route_callback = reference_route_callback
         self._log = logger
         self._target_speed = float(target_speed)
         # Vehicle's achievable acceleration [m/s^2], e.g.
@@ -215,7 +239,7 @@ class GuidanceExecutor:
         self._tracker_builder = TrackerBuilder(
             tf_client, self._tf_pose_fresh, logger, self._target_speed, self._max_accel,
             self._max_angular_rate, self._wrench_envelope,
-            self._mass, self._inertia, obstacle_map=obstacle_map,
+            self._mass, self._inertia, obstacle_map=self._obstacle_map,
             stop_profile_fn=self._brake.profile_from if self._brake.available else None,
             corridor_plan_callback=corridor_plan_callback,
         )
@@ -294,7 +318,8 @@ class GuidanceExecutor:
                 minco_replan_face_travel=False, minco_local_max_vel=None,
                 minco_async_replan=False, minco_obstacle_avoidance=False,
                 minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2,
-                global_corridor_avoidance=False, jaxa_lookahead_m=0.11,
+                global_corridor_avoidance=False, global_planner="straight",
+                jaxa_lookahead_m=0.11,
                 jaxa_ompl_solve_time_s=0.1, jaxa_max_attempts=50,
                 jaxa_collision_check_period=0.05, jaxa_goal_facing_hold_m=0.3,
                 jaxa_rrt_bounds=(9.6, -11.9, 3.6, 12.3, -2.4, 6.0)):
@@ -468,47 +493,23 @@ class GuidanceExecutor:
             # pre_align chases a functionally unnecessary roll change (see
             # docs/archive/achieved/2026-08-21_tf_correction_align_optimization.md 8節).
             pre_align_target = via_waypoints[0] if via_waypoints else p_target
-            q_align = compute_q_des(
-                np.asarray(pre_align_target, dtype=float) - np.asarray(p0, dtype=float),
-                q0, self._attitude_speed_threshold, forward_axis
-            )
-            if self._aligner.needs_align(q0, q_align):
-                self._log.info(
-                    "[GuidanceExecutor] pre-aligning to initial tangent "
-                    "direction before departure"
-                )
-                status = self._aligner.align_to(p0, q_align, is_cancel_requested)
-                if status != STATUS_SUCCESS:
-                    return status
+            status, p0, q0, _rotated = self._pre_align_toward(
+                pre_align_target, p0, q0, forward_axis, is_cancel_requested)
+            if status != STATUS_SUCCESS:
+                return status
 
-            # Re-read TF: pre_align may have just rotated the vehicle to
-            # q_align, but (p0, q0) above are from BEFORE that rotation.
-            # Without this re-read, the tracker's q0 below seeds
-            # face-travel's reference with the STALE pre-pre_align attitude
-            # -- once translation speed crosses attitude_speed_threshold,
-            # compute_q_des then has to visibly (rate-limited) catch up from
-            # that stale value to q_align, commanding a large, functionally
-            # unnecessary re-orientation away from where the vehicle
-            # actually already is. Confirmed in sim: pre_align correctly
-            # converges to q_align, yet the very first in-flight q_des
-            # differs from the vehicle's actual (already-aligned) attitude
-            # by ~127 degrees -- see docs/
-            # guidance_attitude_saturation_investigation.md 7節.
-            pose = self._tf.get_pose()
-            if pose is None:
-                self._log.warn(
-                    "[GuidanceExecutor] no TF pose available after "
-                    "pre_align, aborting"
-                )
-                return STATUS_ABORTED
-            p0, q0, stamp = pose
-            if not self._tf_pose_fresh(stamp):
-                self._log.warn(
-                    "[GuidanceExecutor] TF pose is stale after pre_align "
-                    "(stamp not advancing for >%.1fs), aborting"
-                    % self._tf_staleness_timeout
-                )
-                return STATUS_ABORTED
+        reference_route = None
+        if global_planner == "astar":
+            try:
+                reference_route, p0, q0 = self._plan_reference_route(
+                    p0, q0, p_target, forward_axis,
+                    can_align=bool(face_travel and pre_align),
+                    is_cancel_requested=is_cancel_requested)
+            except ReferenceRouteError as exc:
+                self._log.error("[GuidanceExecutor] %s, aborting" % exc)
+                return STATUS_PLANNING_FAILED
+            except AlignmentAborted as exc:
+                return exc.status
 
         try:
             tracker, traj = self._tracker_builder.build(
@@ -527,6 +528,7 @@ class GuidanceExecutor:
                 minco_local_piece_length_m=minco_local_piece_length_m,
                 minco_obstacle_clearance_soft=minco_obstacle_clearance_soft,
                 global_corridor_avoidance=global_corridor_avoidance,
+                reference_route=reference_route,
                 jaxa_options=dict(
                     lookahead_m=jaxa_lookahead_m, ompl_solve_time_s=jaxa_ompl_solve_time_s,
                     max_attempts=int(jaxa_max_attempts),
@@ -551,6 +553,132 @@ class GuidanceExecutor:
             return self._align_at_arrival(
                 p_arrival, q_target, align_at_arrival_camera, is_cancel_requested)
         return STATUS_SUCCESS
+
+    def _pre_align_toward(self, point, p0, q0, forward_axis, is_cancel_requested):
+        """Rotate to face ``point`` and re-read TF. Returns
+        ``(status, p0, q0, rotated)``; ``p0``/``q0`` are unchanged unless the
+        status is ``STATUS_SUCCESS``."""
+        q_align = compute_q_des(
+            np.asarray(point, dtype=float) - np.asarray(p0, dtype=float),
+            q0, self._attitude_speed_threshold, forward_axis
+        )
+        rotated = self._aligner.needs_align(q0, q_align)
+        if rotated:
+            self._log.info(
+                "[GuidanceExecutor] pre-aligning to initial tangent "
+                "direction before departure"
+            )
+            status = self._aligner.align_to(p0, q_align, is_cancel_requested)
+            if status != STATUS_SUCCESS:
+                return status, p0, q0, rotated
+
+            # Re-read TF: pre_align may have just rotated the vehicle to
+            # q_align, but (p0, q0) above are from BEFORE that rotation.
+            # Without this re-read, the tracker's q0 below seeds
+            # face-travel's reference with the STALE pre-pre_align attitude
+            # -- once translation speed crosses attitude_speed_threshold,
+            # compute_q_des then has to visibly (rate-limited) catch up from
+            # that stale value to q_align, commanding a large, functionally
+            # unnecessary re-orientation away from where the vehicle
+            # actually already is. Confirmed in sim: pre_align correctly
+            # converges to q_align, yet the very first in-flight q_des
+            # differs from the vehicle's actual (already-aligned) attitude
+            # by ~127 degrees -- see docs/
+            # guidance_attitude_saturation_investigation.md 7節.
+            pose = self._tf.get_pose()
+            if pose is None:
+                self._log.warn(
+                    "[GuidanceExecutor] no TF pose available after "
+                    "pre_align, aborting"
+                )
+                return STATUS_ABORTED, p0, q0, rotated
+            p0, q0, stamp = pose
+            if not self._tf_pose_fresh(stamp):
+                self._log.warn(
+                    "[GuidanceExecutor] TF pose is stale after pre_align "
+                    "(stamp not advancing for >%.1fs), aborting"
+                    % self._tf_staleness_timeout
+                )
+                return STATUS_ABORTED, p0, q0, rotated
+        return STATUS_SUCCESS, p0, q0, rotated
+
+    def _plan_reference_route(self, p0, q0, p_target, forward_axis, can_align,
+                              is_cancel_requested):
+        """The pre-departure route both tracking methods share
+        (docs/minco_astar_reference_global.md 2 and 3.1).
+
+        Depth is integrated facing the goal, A* runs, the vehicle turns to the
+        route's first leg and integrates again, and the route is re-checked
+        against the grid that has grown meanwhile; a blocked route is replanned
+        once. Returns ``(route, p0, q0)``, raising :class:`ReferenceRouteError`
+        when no usable route comes out and :class:`AlignmentAborted` when the
+        turn itself was cancelled or aborted.
+        """
+        if self._obstacle_map is None:
+            raise ReferenceRouteError("global_planner='astar' needs an obstacle map")
+        self._wait_for_depth()
+        route = self._solve_route(p0, p_target)
+
+        if can_align and len(route) > 1:
+            status, p0, q0, rotated = self._pre_align_toward(
+                route[1], p0, q0, forward_axis, is_cancel_requested)
+            if status != STATUS_SUCCESS:
+                raise AlignmentAborted(status)
+            if rotated:
+                self._wait_for_depth()
+                route = self._solve_route(p0, p_target)
+
+        # Depth keeps arriving while A* runs, so re-check against the grid as
+        # it is now rather than waiting for more frames.
+        grid, bounds = self._obstacle_snapshot()
+        if not route_is_free(route, grid, bounds):
+            self._log.warn(
+                "[GuidanceExecutor] the reference route is blocked by newer depth "
+                "-- replanning once")
+            route = self._solve_route(p0, p_target)
+            grid, bounds = self._obstacle_snapshot()
+            if not route_is_free(route, grid, bounds):
+                raise ReferenceRouteError("the replanned reference route is still blocked")
+        self._log.info(
+            "[GuidanceExecutor] reference route: %d vertices, %.2f m"
+            % (len(route), sum(float(np.linalg.norm(b - a))
+                               for a, b in zip(route[:-1], route[1:]))))
+        if self._reference_route_callback is not None:
+            self._reference_route_callback(route)
+        return route, p0, q0
+
+    def _obstacle_snapshot(self):
+        grid = self._obstacle_map.grid
+        grid = grid.snapshot() if hasattr(grid, "snapshot") else grid
+        return grid, self._obstacle_map.depth_bounds
+
+    def _solve_route(self, p0, p_target):
+        grid, bounds = self._obstacle_snapshot()
+        try:
+            return plan_reference_route(p0, p_target, grid, bounds)
+        except AStarPlanningError as exc:
+            raise ReferenceRouteError("the reference route could not be planned (%s)" % exc)
+
+    def _wait_for_depth(self):
+        """Block until ``REFERENCE_DEPTH_FRAMES`` depth frames arrive, on the sim
+        clock. A timeout is not fatal on its own: the route is checked against
+        whatever the grid holds, and a blocked one fails there."""
+        if not self._obstacle_map.uses_depth:
+            return
+        seen = 0
+        last = self._obstacle_map.last_depth_stamp
+        deadline = self._clock_seconds() + REFERENCE_DEPTH_TIMEOUT_S
+        while seen < REFERENCE_DEPTH_FRAMES and self._clock_seconds() < deadline:
+            self._spin(self._dt)
+            stamp = self._obstacle_map.last_depth_stamp
+            if stamp is not None and stamp != last:
+                last = stamp
+                seen += 1
+        if seen < REFERENCE_DEPTH_FRAMES:
+            self._log.warn(
+                "[GuidanceExecutor] only %d of %d depth frames arrived in %.1fs "
+                "before planning the reference route"
+                % (seen, REFERENCE_DEPTH_FRAMES, REFERENCE_DEPTH_TIMEOUT_S))
 
     def _align_at_arrival(self, p_arrival, q_target, align_at_arrival_camera,
                           is_cancel_requested):
