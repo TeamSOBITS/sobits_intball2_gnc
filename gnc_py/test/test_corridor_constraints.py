@@ -1,6 +1,6 @@
 import numpy as np
 
-from sobits_intball2_gnc.guidance.local_planner.corridor_constraints import (
+from sobits_intball2_gnc.guidance.legacy.firi.corridor_constraints import (
     local_corridor_prefix,
 )
 

@@ -48,12 +48,11 @@ import math
 
 import numpy as np
 
-from sobits_intball2_gnc.guidance.global_planner.astar_planner import (
-    AStarPlanner,
-    AStarPlanningError,
+from sobits_intball2_gnc.guidance.search.reference_route import AStarPlanningError
+from sobits_intball2_gnc.guidance.search.reference_route import (
+    densify,
+    plan_reference_route,
 )
-from sobits_intball2_gnc.guidance.global_planner.path_shortcut import shortcut_path
-from sobits_intball2_gnc.guidance.global_planner.reference_route import densify
 from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
     MincoInfeasibleError,
     MincoTrajectory,
@@ -320,9 +319,7 @@ class MincoLocalPlanner:
         bounds = (np.minimum(p0, target_pos) - _ASTAR_SEED_MARGIN_M,
                   np.maximum(p0, target_pos) + _ASTAR_SEED_MARGIN_M)
         try:
-            path = np.asarray(shortcut_path(
-                AStarPlanner(grid.resolution, grid=grid, search_bounds=bounds,
-                             connectivity=6).plan(p0, target_pos), grid, bounds), dtype=float)
+            path = np.asarray(plan_reference_route(p0, target_pos, grid, bounds), dtype=float)
         except (AStarPlanningError, ValueError) as exc:
             raise MincoInfeasibleError("A* seed: %s" % exc) from exc
         # Two pieces per A* leg so the seed keeps the detour's corners; piece length alone
@@ -460,9 +457,7 @@ class MincoLocalPlanner:
         bounds = (np.minimum(p_from, goal) - _ASTAR_SEED_MARGIN_M,
                   np.maximum(p_from, goal) + _ASTAR_SEED_MARGIN_M)
         try:
-            path = np.asarray(shortcut_path(
-                AStarPlanner(grid.resolution, grid=grid, search_bounds=bounds,
-                             connectivity=6).plan(p_from, goal), grid, bounds), dtype=float)
+            path = np.asarray(plan_reference_route(p_from, goal, grid, bounds), dtype=float)
         except (AStarPlanningError, ValueError):
             return None
         remaining = self._planning_horizon_m

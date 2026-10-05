@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from sobits_intball2_gnc.guidance.global_planner.astar_planner import AStarPlanningError
-from sobits_intball2_gnc.guidance.global_planner.reference_route import (
+from sobits_intball2_gnc.guidance.search.reference_route import (
+    AStarPlanningError,
     densify,
     plan_reference_route,
     route_is_free,
@@ -54,6 +54,19 @@ def test_a_box_on_the_chord_is_detoured_and_the_route_stays_free():
 def test_a_route_planned_before_the_box_appeared_is_reported_blocked():
     route = plan_reference_route([0.0, 0.0, 0.0], [3.0, 0.0, 0.0], _grid(), BOUNDS)
     assert not route_is_free(route, _grid(_box([1.5, 0.0, 0.0], [0.3, 0.3, 0.3])), BOUNDS)
+
+
+def test_a_wall_across_the_search_box_leaves_no_path():
+    wall = _box([1.5, 0.0, 0.0], [0.1, 7.0, 7.0], step=RESOLUTION / 2.0)
+    with pytest.raises(AStarPlanningError):
+        plan_reference_route([0.0, 0.0, 0.0], [3.0, 0.0, 0.0], _grid(wall), BOUNDS)
+
+
+def test_the_route_is_deterministic():
+    grid = _grid(_box([1.5, 0.0, 0.0], [0.3, 0.3, 0.3]))
+    a = plan_reference_route([0.0, 0.0, 0.0], [3.0, 0.0, 0.0], grid, BOUNDS)
+    b = plan_reference_route([0.0, 0.0, 0.0], [3.0, 0.0, 0.0], grid, BOUNDS)
+    np.testing.assert_allclose(a, b)
 
 
 @pytest.mark.parametrize("start, goal", [

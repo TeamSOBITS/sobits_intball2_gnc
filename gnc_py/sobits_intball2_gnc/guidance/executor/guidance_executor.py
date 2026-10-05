@@ -31,8 +31,8 @@ checkpoint chaining) is still out of scope here.
 import numpy as np
 
 from sobits_intball2_gnc.guidance.align.attitude_aligner import AttitudeAligner
-from sobits_intball2_gnc.guidance.global_planner.astar_planner import AStarPlanningError
-from sobits_intball2_gnc.guidance.global_planner.reference_route import (
+from sobits_intball2_gnc.guidance.search.reference_route import AStarPlanningError
+from sobits_intball2_gnc.guidance.search.reference_route import (
     plan_reference_route,
     route_is_free,
 )
@@ -149,7 +149,7 @@ class GuidanceExecutor:
                  stopping_profile_kwargs=None, stopping_tolerance_pos=0.30,
                  stopping_tolerance_att=1.0, stopping_duration_goal=3.0,
                  stopping_wait_cancel=10.0, obstacle_map=None,
-                 corridor_plan_callback=None, reference_route_callback=None):
+                 reference_route_callback=None):
         self._tf = tf_client
         self._setpoint_pub = setpoint_publisher
         self._checkpoint_pub = checkpoint_publisher
@@ -241,7 +241,6 @@ class GuidanceExecutor:
             self._max_angular_rate, self._wrench_envelope,
             self._mass, self._inertia, obstacle_map=self._obstacle_map,
             stop_profile_fn=self._brake.profile_from if self._brake.available else None,
-            corridor_plan_callback=corridor_plan_callback,
         )
         self._aligner = AttitudeAligner(
             tf_client, checkpoint_publisher, spin_fn, clock_seconds_fn, logger,
@@ -319,7 +318,7 @@ class GuidanceExecutor:
                 minco_async_replan=False, minco_obstacle_avoidance=False,
                 minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2,
                 minco_obstacle_clearance=None,
-                global_corridor_avoidance=False, global_planner="straight",
+                global_planner="straight",
                 jaxa_lookahead_m=0.11,
                 jaxa_ompl_solve_time_s=0.1, jaxa_max_attempts=50,
                 jaxa_collision_check_period=0.05, jaxa_goal_facing_hold_m=0.3,
@@ -529,7 +528,6 @@ class GuidanceExecutor:
                 minco_local_piece_length_m=minco_local_piece_length_m,
                 minco_obstacle_clearance_soft=minco_obstacle_clearance_soft,
                 minco_obstacle_clearance=minco_obstacle_clearance,
-                global_corridor_avoidance=global_corridor_avoidance,
                 reference_route=reference_route,
                 jaxa_options=dict(
                     lookahead_m=jaxa_lookahead_m, ompl_solve_time_s=jaxa_ompl_solve_time_s,

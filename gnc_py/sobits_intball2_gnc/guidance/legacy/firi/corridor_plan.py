@@ -9,8 +9,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from sobits_intball2_gnc.guidance.global_planner.astar_planner import AStarPlanner
-from sobits_intball2_gnc.guidance.global_planner.path_shortcut import shortcut_path, segment_is_free
+from sobits_intball2_gnc.guidance.search.path_shortcut import segment_is_free
+from sobits_intball2_gnc.guidance.search.reference_route import plan_reference_route
 
 
 @dataclass(frozen=True)
@@ -23,7 +23,7 @@ class GlobalCorridorPlan:
 
     @classmethod
     def astar_firi(cls, start, goal, grid, obstacle_points, bounds, *,
-                   inflation_m, local_margin_m=0.75, connectivity=6):
+                   inflation_m, local_margin_m=0.75):
         """Build an A*6 reference and its bounded FIRI corridor from one snapshot.
 
         ``obstacle_points`` must represent the same static and sensed obstacle
@@ -35,11 +35,7 @@ class GlobalCorridorPlan:
             raise ValueError("local_margin_m must be positive")
         import sobits_intball2_gnc_cpp as cpp
 
-        route = shortcut_path(
-            AStarPlanner(grid.resolution, grid=grid, search_bounds=bounds,
-                         connectivity=connectivity).plan(start, goal),
-            grid, bounds,
-        )
+        route = plan_reference_route(start, goal, grid, bounds)
         points = np.asarray(obstacle_points, dtype=float).reshape(-1, 3)
         planes = cpp.firi_corridor_planes(
             np.asarray(route, dtype=float).ravel().tolist(), points.ravel().tolist(),

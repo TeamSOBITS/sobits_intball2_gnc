@@ -379,18 +379,6 @@ Visualization Manager:
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
-      Name: "Guidance: FIRI safe corridor"
-      Namespaces:
-        firi_corridor: true
-      Topic:
-        Depth: 1
-        Durability Policy: Transient Local
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /gnc/global_corridor_markers
-      Value: true
-    - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
       Name: "Obstacles: planner active boxes"
       Namespaces:
         {}

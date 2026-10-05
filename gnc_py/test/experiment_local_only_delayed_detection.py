@@ -14,7 +14,7 @@ import numpy as np
 import sobits_intball2_gnc_cpp
 
 sys.path.insert(0, os.path.dirname(__file__))
-import experiment_global_planner_minco_jem_cases as base
+import offline_common as base
 from global_minco_candidate_selector import curve_is_free
 from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker import ReplanMincoTracker
 

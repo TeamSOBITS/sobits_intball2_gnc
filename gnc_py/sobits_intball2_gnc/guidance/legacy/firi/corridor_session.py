@@ -4,8 +4,8 @@ import threading
 import numpy as np
 
 from sobits_intball2_gnc.control.utils.quat_math import quat_exp, quat_mul
-from sobits_intball2_gnc.guidance.global_planner.corridor_plan import GlobalCorridorPlan
-from sobits_intball2_gnc.guidance.local_planner.corridor_constraints import local_corridor_prefix
+from sobits_intball2_gnc.guidance.legacy.firi.corridor_plan import GlobalCorridorPlan
+from sobits_intball2_gnc.guidance.legacy.firi.corridor_constraints import local_corridor_prefix
 from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import MincoTrajectory
 
 

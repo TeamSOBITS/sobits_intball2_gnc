@@ -4,7 +4,7 @@ import pytest
 
 sobits_intball2_gnc_cpp = pytest.importorskip("sobits_intball2_gnc_cpp")
 
-from sobits_intball2_gnc.guidance.global_planner.path_shortcut import (
+from sobits_intball2_gnc.guidance.search.path_shortcut import (
     segment_is_free,
     shortcut_path,
 )

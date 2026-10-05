@@ -157,7 +157,6 @@
       minco_async_replan: true        # replan_minco solves local off the setpoint loop (EGO v2 planner/traj_server split)
       # replan_minco obstacle avoidance (docs/archive/achieved/2026-09-24_obstacle_avoidance_production_integration_plan.md)
       minco_obstacle_avoidance: false        # avoid the obstacle map (needs face travel); latched per goal
-      global_corridor_avoidance: false       # A*6 + FIRI enhancement; false keeps the established local-only tracker
       global_planner: straight               # straight | astar; astar plans one shared A*6 route before departure (avoidance profile)
       minco_local_piece_length_m: 1.5        # [m] local piece length when avoiding (EGO v2 polyTraj_piece_length)
       minco_obstacle_clearance_soft: 0.2     # [m] soft clearance from collided obstacles

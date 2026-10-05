@@ -8,16 +8,27 @@ supply the grid snapshot and the bounds.
 
 import numpy as np
 
-from sobits_intball2_gnc.guidance.global_planner.astar_planner import (
-    AStarPlanningError,
-    GoalOccupiedError,
-    SearchBoundsError,
-    StartOccupiedError,
-)
-from sobits_intball2_gnc.guidance.global_planner.path_shortcut import (
+from sobits_intball2_gnc.guidance.search.path_shortcut import (
     segment_is_free,
     shortcut_path,
 )
+
+
+class AStarPlanningError(RuntimeError):
+    """Base error for a failed occupancy-grid A* request."""
+
+
+class StartOccupiedError(AStarPlanningError):
+    """The current-position cell is inflated occupied."""
+
+
+class GoalOccupiedError(AStarPlanningError):
+    """The requested goal cell is inflated occupied."""
+
+
+class SearchBoundsError(AStarPlanningError):
+    """Start or goal is outside the explicitly permitted search box."""
+
 
 ASTAR_CONNECTIVITY = 6
 # Try the endpoints' box grown by this margin before the whole one; 0 disables

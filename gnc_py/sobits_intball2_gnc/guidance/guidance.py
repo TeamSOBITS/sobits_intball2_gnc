@@ -57,7 +57,6 @@ from sobits_intball2_gnc.guidance.ros.marker_array_publisher import MarkerArrayP
 from sobits_intball2_gnc.guidance.ros.marker_array_subscriber import MarkerArraySubscriber
 from sobits_intball2_gnc.guidance.ros.marker_publisher import MarkerPublisher
 from sobits_intball2_gnc.guidance.ros.depth_image_subscriber import DepthImageSubscriber
-from sobits_intball2_gnc.guidance.ros.corridor_marker_publisher import CorridorMarkerPublisher
 from sobits_intball2_gnc.guidance.ros.path_publisher import PathPublisher
 from sobits_intball2_gnc.guidance.ros.point_marker_publisher import PointMarkerPublisher
 from sobits_intball2_gnc.guidance.ros.speed_path_publisher import SpeedPathPublisher
@@ -77,7 +76,6 @@ ACTION_NAME = "/gnc/move_to"
 TRAJECTORY_SPEED_PATH_TOPIC = "/gnc/trajectory_path_speed"
 LOCAL_TRAJECTORY_SPEED_PATH_TOPIC = "/gnc/trajectory_path_speed_local"
 GLOBAL_ASTAR_PATH_TOPIC = "/gnc/global_corridor_astar"
-GLOBAL_CORRIDOR_MARKERS_TOPIC = "/gnc/global_corridor_markers"
 JAXA_LOCAL_PATH_TOPIC = "/gnc/jaxa_local_path"
 JAXA_TRACKING_POINT_TOPIC = "/gnc/jaxa_tracking_point"
 TF_STARTUP_TIMEOUT = 5.0
@@ -179,8 +177,6 @@ class GuidanceNode(Node):
         )
         self._astar_path_pub = PathPublisher(
             self, GLOBAL_ASTAR_PATH_TOPIC, reference_frame=reference_frame)
-        self._corridor_marker_pub = CorridorMarkerPublisher(
-            self, GLOBAL_CORRIDOR_MARKERS_TOPIC, reference_frame=reference_frame)
         self._jaxa_path_pub = PathPublisher(
             self, JAXA_LOCAL_PATH_TOPIC, reference_frame=reference_frame)
         self._jaxa_tracking_point_pub = PointMarkerPublisher(
@@ -281,7 +277,6 @@ class GuidanceNode(Node):
             stopping_duration_goal=float(g("stopping.duration_goal")),
             stopping_wait_cancel=float(g("stopping.wait_cancel")),
             obstacle_map=self._obstacle_map,
-            corridor_plan_callback=self._publish_global_corridor,
             reference_route_callback=self._publish_reference_route,
         )
         if self._obstacle_map is not None and self._obstacle_map.uses_depth:
@@ -357,12 +352,6 @@ class GuidanceNode(Node):
         self.get_logger().info(
             "[GuidanceNode] %d virtual obstacle box(es) in the obstacle map"
             % len(self._obstacle_map.boxes()))
-
-    def _publish_global_corridor(self, plan) -> None:
-        """Render an immutable A*+FIRI plan; planner code remains ROS-free."""
-        self._astar_path_pub.publish(
-            ((point, (0.0, 0.0, 0.0, 1.0)) for point in plan.route))
-        self._corridor_marker_pub.publish(plan.planes)
 
     def _publish_reference_route(self, route) -> None:
         """Render the shared pre-departure route; planner code remains ROS-free."""

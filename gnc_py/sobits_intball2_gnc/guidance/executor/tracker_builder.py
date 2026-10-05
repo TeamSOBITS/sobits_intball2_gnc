@@ -30,7 +30,6 @@ from sobits_intball2_gnc.guidance.trajectory_tracking.replan_minco_tracker impor
     DEFAULT_PLANNING_HORIZON_M,
     ReplanMincoTracker,
 )
-from sobits_intball2_gnc.guidance.trajectory_tracking.corridor_session import CorridorSession
 from sobits_intball2_gnc.guidance.trajectory_tracking.jaxa_tracking_point_tracker import (
     JaxaTrackingPointTracker,
 )
@@ -56,7 +55,7 @@ class TrackerBuilder:
 
     def __init__(self, tf_client, tf_fresh_fn, logger, target_speed, max_accel,
                  max_angular_rate, wrench_envelope, mass, inertia, obstacle_map=None,
-                 stop_profile_fn=None, corridor_plan_callback=None):
+                 stop_profile_fn=None):
         self._tf = tf_client
         self._tf_fresh_fn = tf_fresh_fn
         self._log = logger
@@ -68,7 +67,6 @@ class TrackerBuilder:
         self._inertia = inertia
         self._obstacle_map = obstacle_map
         self._stop_profile_fn = stop_profile_fn
-        self._corridor_plan_callback = corridor_plan_callback
         self._obstacle_tracker = None
         if obstacle_map is not None:
             obstacle_map.add_listener(self._on_obstacle_grid)
@@ -82,7 +80,7 @@ class TrackerBuilder:
               minco_async_replan=False, minco_obstacle_avoidance=False,
               minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2,
               minco_obstacle_clearance=None,
-              global_corridor_avoidance=False, jaxa_options=None, reference_route=None):
+              jaxa_options=None, reference_route=None):
         """Returns ``(tracker, traj)``: ``traj`` is the trajectory to preview (the
         tracked one, the global one for ``replan_minco``, ``None`` for ``jaxa_rrt``).
         ``jaxa_options``: ``jaxa_rrt`` only, see :meth:`_build_jaxa`.
@@ -118,23 +116,8 @@ class TrackerBuilder:
         if reference_route is not None:
             if mode != "replan_minco":
                 raise TrajectoryBuildError("reference_route requires replan_minco")
-            if global_corridor_avoidance:
-                raise TrajectoryBuildError(
-                    "reference_route and global_corridor_avoidance are exclusive")
             if via_waypoints:
                 raise TrajectoryBuildError("reference_route and via_waypoints are exclusive")
-        corridor_session = None
-        if global_corridor_avoidance:
-            if mode != "replan_minco" or not minco_obstacle_avoidance:
-                raise TrajectoryBuildError(
-                    "global_corridor_avoidance requires replan_minco obstacle avoidance")
-            if self._obstacle_map is None or not self._obstacle_map.uses_depth:
-                raise TrajectoryBuildError(
-                    "global_corridor_avoidance requires a depth obstacle map")
-            corridor_session = CorridorSession(
-                self._obstacle_map, p_target, q0, forward_axis,
-                minco_planning_horizon_m, minco_wrench_safety_margin,
-                minco_obstacle_clearance_soft, self._corridor_plan_callback)
         if mode == "replan_minco":
             # Builds its own trajectory internally; `traj` is set to its
             # global MincoTrajectory only for the speed path preview.
@@ -157,7 +140,6 @@ class TrackerBuilder:
                     forward_axis=forward_axis,
                     local_max_vel=minco_local_max_vel,
                     async_replan=minco_async_replan,
-                    corridor_session=corridor_session,
                     reference_route=reference_route,
                     **obstacle_kwargs,
                 )
