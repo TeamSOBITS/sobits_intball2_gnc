@@ -3,6 +3,10 @@ import numpy as np
 import pytest
 import sobits_intball2_gnc_cpp as core
 native = pytest.importorskip("jaxa_cpp_probe", reason="build test/jaxa_cpp_probe and add its build directory to PYTHONPATH")
+# Unbuilt, the source dir test/jaxa_cpp_probe/ imports as an empty namespace
+# package, which importorskip accepts.
+if not hasattr(native, "spline"):
+    pytest.skip("jaxa_cpp_probe is not built", allow_module_level=True)
 from jaxa_python_reference import (
     RRTStar, bspline_waypoints, path_is_free,
 )
