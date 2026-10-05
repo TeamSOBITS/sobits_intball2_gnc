@@ -81,12 +81,10 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
 // (1) ヒューリスティックな初期T（経路全体の弧長比配分、v0-aware台形/三角形
 //     プロファイル、target_speed/max_accelベース）を計算し、
 // (2) そのTを固定して幾何のみをLBFGSで最適化し（fixed-T solve）、
-// (3) wrench envelope違反があれば違反セグメントのTを解析的に伸長して(2)へ
-//     戻る（Fast-Planner reallocateTime方式、最大3回）
-// をC++内部で完結させ、1回の呼び出しでfeasibleな解を返す
-// （docs/archive/2026-09-01_replanning_minco_v4_production_port_plan.md Phase 1、
-// gnc/test/experiment_minco_native/bench_v4_analytic_stretch.cpp・
-// bench_v5_multiscenario.cppのsolveGlobal()を本番へ移植したもの）。
+// (3) wrench envelope違反があれば、違反量から解析的に求めた比を全セグメントの
+//     Tに一律に掛けて(2)へ戻る（回数と比の上限はminco_planner.cppのSTRETCH_*）
+// をC++内部で完結させ、1回の呼び出しでfeasibleな解を返す。
+// 違反セグメントだけを伸ばす方式はMINCOでは区間が結合されていて収束しないため使わない。
 // target_speed/max_accel: ヒューリスティックT計算にのみ使う
 // （必須・共に>0）。
 PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
