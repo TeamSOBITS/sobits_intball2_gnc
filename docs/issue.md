@@ -31,7 +31,7 @@ warm・straightのMINCO解き直しが失敗するまでに時間がかかり、
 depthで見えた面だけが障害物になり、箱の奥の見えていない部分を通る計画で接触する（両手法に共通）。候補は(1)見えた面の奥を一定厚さ占有にする、(2)未観測を占有とみなす、(3)横を通るときカメラを障害物へ向ける。詳細: `docs/archive/minco_astar_reference_global.md`（1.2）
 
 ### [G] 微小移動指令のデッドゾーン
-5cm未満のような微小指令でもA*→Hermite→TOPP-RAのフルパイプラインが走り、`static_minco`時は3〜5秒ブロックする。閾値未満は即`STATUS_SUCCEEDED`で返す。詳細: `docs/arch/2026-09-20_jaxa_to_sobits_backport_candidates.md`（B-2）
+5cm未満のような微小指令でもA*→Hermite→TOPP-RAのフルパイプラインが走り、`static_minco`時は3〜5秒ブロックする。閾値未満は即`STATUS_SUCCEEDED`で返す。詳細: `docs/archive/2026-09-20_jaxa_to_sobits_backport_candidates.md`（B-2）
 
 ### [G] K分離(2自由度版)、短距離レグでのduration悪化が未改良
 MINCOの姿勢waypoint密度↑時のduration悪化は圧縮できた（+133%→+21%等）が、短距離レグでは悪化が
@@ -111,7 +111,7 @@ Phase 2で契約は確定済みだがコア実装が未着手。pure functionと
 `trajectory_controller.attitude_feedforward`は既定`false`のまま。`static_toppra`の1ルートではON時に移動中の姿勢誤差が最大3.23°→0.51°だったが、新コードでのOFF再計測と`static_minco`・`replan_minco`での検証が未実施。これらを済ませてから既定をONにするか決める。詳細: `docs/archive/achieved/2026-09-23_attitude_feedforward_implementation_and_sim_verification.md`
 
 ### [C] omega_errを数値微分から解析値へ置き換え
-現状50Hzの数値微分（`att_filter_alpha=1.0`で無フィルタ）でノイズと位相遅れを抱えている。姿勢FF導入（2026-09-23、`docs/archive/achieved/2026-09-23_attitude_feedforward_implementation_and_sim_verification.md`）で`w_des`が取れるようになったため、`omega_imu - R(qe)*w_des`で解析的に算出できる。詳細: `docs/arch/2026-09-20_jaxa_to_sobits_backport_candidates.md`（A-2）
+現状50Hzの数値微分（`att_filter_alpha=1.0`で無フィルタ）でノイズと位相遅れを抱えている。姿勢FF導入（2026-09-23、`docs/archive/achieved/2026-09-23_attitude_feedforward_implementation_and_sim_verification.md`）で`w_des`が取れるようになったため、`omega_imu - R(qe)*w_des`で解析的に算出できる。詳細: `docs/archive/2026-09-20_jaxa_to_sobits_backport_candidates.md`（A-2）
 
 ### [C] thrust_allocatorの決定的な配分フォールバック
 `lsq_linear`（反復ソルバ、計算時間が非決定的）に時間上限を設け、超過・失敗時はJAXA型の行列配分（事前計算行列の積と最小値減算のみ、固定時間）に落とす。詳細: 同上（B-4）
@@ -141,7 +141,7 @@ move_to中に`f_des`が瞬間的に0.68N超まで跳ねる事象を観測、計�
 静止ホールド中にpx 1.0mm/pz 4.0mm peak-to-peak、周期8-9秒の微小な振動を確認。同じ仕組みの`kd_att_hold`（TF有限差分角速度ノイズの増幅）を半減して振幅が約1/11に減った実績があり、`kd_pos`（TF有限差分速度）も同様の見直しで改善する可能性がある。ただし周期が姿勢側(0.67秒)よりだいぶ遅く、`smooth_window`のTF平滑化による位相遅れなど別要因が絡む可能性もあり未検証。
 
 ### [C] 積分項の追加（実験・優先度低）
-JAXAは`ki`と飽和付き積分器（`fi_max=0.02`）が配線済み（現状`ki=0`）だが、SOBITSには無い。重心オフセット・配分行列誤差由来の定常バイアス切り分け材料として、`ki=0`から始めればリスクなく実験できる。詳細: `docs/arch/2026-09-20_jaxa_to_sobits_backport_candidates.md`（B-3）
+JAXAは`ki`と飽和付き積分器（`fi_max=0.02`）が配線済み（現状`ki=0`）だが、SOBITSには無い。重心オフセット・配分行列誤差由来の定常バイアス切り分け材料として、`ki=0`から始めればリスクなく実験できる。詳細: `docs/archive/2026-09-20_jaxa_to_sobits_backport_candidates.md`（B-3）
 
 ### [N] 実機用の自己位置・姿勢推定（IMU単独）
 実機にTFは存在しない（TFはシム限定のオラクル）。並進はIMU二重積分で誤差が時間の2乗で発散し長時間精度維持が原理的に困難。姿勢はジャイロ一重積分でより現実的だが、無重力下では加速度計による重力基準補正が使えない。`navigation/utils/`を新設する方針で合意済みだが着手時期・優先度は未定。詳細: `docs/archive/achieved/2026-08-19_phase0_findings.md`（観測13）
