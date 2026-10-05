@@ -73,6 +73,8 @@ openspec/
 /.github
 AGENTS.md
 CLAUDE.md
+# 論文・資料のPDFは絶対にpushしない
+*.pdf
 # docsはissue.md以外pushしない
 /docs/*
 !/docs/issue.md
