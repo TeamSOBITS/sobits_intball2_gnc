@@ -18,6 +18,18 @@
 
 ## 未達成タスク（カテゴリ別・各カテゴリ内は優先度順）
 
+### [G] JAXA手法側を共通グローバルに対応させる
+JAXA手法はまだ直線のグローバルのままで、両手法に同じ出発前の経路（A*6→shortcut）を与える方針（`docs/archive/minco_astar_reference_global.md`の2節）が片側にしか入っていない。折れ線をウェイポイントにして追従点で追い、迂回後は折れ線へ戻る。
+
+### [G] replan_minco: 局所計画のlag（2〜4 s）と指令姿勢の飛びの対策
+warm・straightのMINCO解き直しが失敗するまでに時間がかかり、非同期の採用時に指令姿勢が最大26°飛ぶ。A*は原因ではない（C++化済み）。まず1回ごとのlagを段別に分け、失敗の早期打ち切りと「採用する時刻の状態から計画する」を比べる。姿勢誤差が30°を超える配置（layout0・4）の原因もここで確かめる。詳細: `docs/archive/minco_astar_reference_global.md`（1.5・1.6・4.6）
+
+### [G] replan_minco: ゴールが膨張のすぐ外（約0.1 m）にある配置で最後の局所計画が解けない
+ゴールで止まる最後の局所計画をreboundが解けず（押し出し用のA*の失敗か、上限まで回しても膨張から出られない）、初期値の段で遅れる。詳細: `docs/archive/minco_astar_reference_global.md`（1.5）
+
+### [G] 見えていない面を通る接触の扱いを決める
+depthで見えた面だけが障害物になり、箱の奥の見えていない部分を通る計画で接触する（両手法に共通）。候補は(1)見えた面の奥を一定厚さ占有にする、(2)未観測を占有とみなす、(3)横を通るときカメラを障害物へ向ける。詳細: `docs/archive/minco_astar_reference_global.md`（1.2）
+
 ### [G] 微小移動指令のデッドゾーン
 5cm未満のような微小指令でもA*→Hermite→TOPP-RAのフルパイプラインが走り、`static_minco`時は3〜5秒ブロックする。閾値未満は即`STATUS_SUCCEEDED`で返す。詳細: `docs/arch/2026-09-20_jaxa_to_sobits_backport_candidates.md`（B-2）
 
@@ -136,6 +148,9 @@ JAXAは`ki`と飽和付き積分器（`fi_max=0.02`）が配線済み（現状`k
 
 ### [障害物] 出発時に最初のローカルが交差 → 停止状態からの解き直しで暴れる
 `initial_local_collides`で出発を止めた後、停止状態からの解き直し（ランダムな初期形状）で長さ14 m・z=1.43 mまで潜るローカルが1回採用された（ほぼ動く前に置き換わり実害は小）。関連: `test_obstacle_map_depth.py::test_first_local_through_a_depth_seen_obstacle_starts_held`が失敗（修正で最初のローカルが突き抜けなくなり前提の状況が作れない、テストの作り直しが必要）。経緯は`archive/achieved/2026-09-28_gpl_derived_code_rewrite_plan.md`の末尾
+
+### [運用] JAXA手法とreplan_mincoをシムで複数回・複数配置で比べる
+両手法ともJAXA制御器で、到着時間と接触率を見る。layout0の1回は済み、計算時間の揺れでsetpointの更新間隔が変わるので複数回見る。詳細: `docs/archive/jaxa_baseline_plan_time_gil.md`（5節）
 
 ### [運用] move_toのgoal responseがタイムアウトする
 ゴール受付中に最初のローカル計画（約1 s）を解いている間に`failed to send response (timeout)`、クライアントが結果を受け取れない（09-29に3回）
