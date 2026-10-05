@@ -20,9 +20,9 @@ import numpy as np
 from scipy.interpolate import BSpline, make_interp_spline, splprep
 import sobits_intball2_gnc_cpp as core
 
-import experiment_global_planner_minco_jem_cases as base
+import offline_common as base
 from experiment_jaxa_baseline_offline import paper_scenario
-from sobits_intball2_gnc.guidance.global_planner.path_shortcut import point_is_free, segment_is_free, shortcut_path
+from sobits_intball2_gnc.guidance.search.path_shortcut import point_is_free, segment_is_free, shortcut_path
 from sobits_intball2_gnc.guidance.local_planner.jaxa_rrt_local_planner import (
     JaxaPlanError, RRTStar, bspline_waypoints, path_is_free,
 )

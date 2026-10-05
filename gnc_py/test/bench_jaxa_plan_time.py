@@ -19,7 +19,7 @@ import numpy as np
 import sobits_intball2_gnc_cpp
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import experiment_global_planner_minco_jem_cases as base
+import offline_common as base
 from sobits_intball2_gnc.guidance.local_planner.jaxa_rrt_local_planner import (
     JaxaPlanError, JaxaPlannerConfig, plan_local_path)
 

@@ -15,7 +15,7 @@ import numpy as np, sobits_intball2_gnc_cpp
 import experiment_jaxa_baseline_offline as e
 import sobits_intball2_gnc.guidance.local_planner.jaxa_rrt_local_planner as jp
 import sobits_intball2_gnc.guidance.trajectory_tracking.jaxa_tracking_point_tracker as jt
-from sobits_intball2_gnc.guidance.global_planner.path_shortcut import shortcut_path, point_is_free
+from sobits_intball2_gnc.guidance.search.path_shortcut import shortcut_path, point_is_free
 
 res, e.STATIC = sobits_intball2_gnc_cpp.load_octomap_points(e.base.MAP)
 e.WORLD = e.DepthWorld(e.STATIC, res)

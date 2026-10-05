@@ -153,3 +153,61 @@ def test_tracker_builder_builds_jaxa_rrt_and_forwards_grid_updates():
     new_grid = make_grid()
     obstacle_map.listeners[0](new_grid)
     assert tracker._grid is new_grid
+
+
+# --- shared reference route as the global path ---------------------------------
+
+L_ROUTE = [[0.5, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.8, 0.0], [3.5, 0.8, 0.0]]
+
+
+def make_route(grid, pose, route=L_ROUTE, goal=(3.5, 0.8, 0.0)):
+    return jt.JaxaTrackingPointTracker(
+        pose.p, goal, pose, lambda _s: True, (0., 0., 0., 1.), grid, BOUNDS, lookahead_m=0.3,
+        config=JaxaPlannerConfig(planner="rrt", rrt_iterations=300, max_attempts=5),
+        collision_check_period=0.05, goal_facing_hold_m=0.3, async_replan=False,
+        reference_route=route)
+
+
+def test_reference_route_is_densified_with_its_shape_and_ends_unchanged():
+    pose = Pose([0.5, 0.0, 0.0])
+    tracker = make_route(make_grid(), pose)
+    path = tracker.path
+    legs = np.linalg.norm(np.diff(path, axis=0), axis=1)
+    assert legs.max() <= jt.REFERENCE_SPACING_M + 1e-9
+    for vertex in L_ROUTE:
+        assert np.min(np.linalg.norm(path - vertex, axis=1)) < 1e-9
+    assert tracker.plans[0]["attempts"] == 0
+
+
+def test_reference_route_ends_are_set_to_the_start_and_the_goal():
+    pose = Pose([0.53, 0.02, 0.0])
+    tracker = make_route(make_grid(), pose, goal=(3.52, 0.8, 0.0))
+    np.testing.assert_allclose(tracker.path[0], pose.p)
+    np.testing.assert_allclose(tracker.path[-1], [3.52, 0.8, 0.0])
+
+
+def test_reference_route_needs_two_points():
+    import pytest
+    with pytest.raises(ValueError):
+        make_route(make_grid(), Pose([0.5, 0.0, 0.0]), route=[[0.5, 0.0, 0.0]])
+
+
+def test_tracking_point_stays_on_the_densified_corner():
+    pose = Pose([1.9, 0.0, 0.0])
+    tracker = make_route(make_grid(), pose)
+    target, _v, _a, _q = tracker.sample(0.0)
+    # Straight past the corner at x = 2.0 would leave y = 0 only after it; a sparse
+    # polyline would already aim at (2.0, 0.8) from here.
+    assert target[1] < 0.35
+
+
+def test_blocked_route_rejoins_it_and_keeps_the_rest_of_the_route():
+    pose = Pose([0.5, 0.0, 0.0])
+    grid = make_grid([((1.2, 0.0, 0.0), (0.15, 0.3, 0.5))])
+    tracker = make_route(grid, pose)
+    assert tracker.plans[0]["attempts"] >= 1
+    path = tracker.path
+    np.testing.assert_allclose(path[-1], [3.5, 0.8, 0.0])
+    # the route's corner survives after the rejoin: the path does not jump to the goal
+    assert np.min(np.linalg.norm(path - np.array([2.0, 0.8, 0.0]), axis=1)) < 1e-9
+    assert np.min(np.linalg.norm(path - np.array([2.0, 0.0, 0.0]), axis=1)) < 0.6

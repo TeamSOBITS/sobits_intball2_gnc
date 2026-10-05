@@ -67,14 +67,14 @@ def test_unknown_motion_profile_is_rejected():
         goal_motion_profile(_node("unknown"))
 
 
-def test_avoidance_profile_selects_the_shared_astar_global():
-    _profile, _mode, kwargs = goal_motion_profile(_node("avoidance"))
+@pytest.mark.parametrize("profile", ["avoidance", "jaxa_baseline"])
+def test_the_avoiding_profiles_select_the_shared_astar_global(profile):
+    _profile, _mode, kwargs = goal_motion_profile(_node(profile))
     assert kwargs["global_planner"] == "astar"
 
 
-@pytest.mark.parametrize("profile", ["fast", "jaxa_baseline"])
-def test_the_other_profiles_keep_the_straight_global(profile):
-    _profile, _mode, kwargs = goal_motion_profile(_node(profile))
+def test_the_fast_profile_keeps_the_straight_global():
+    _profile, _mode, kwargs = goal_motion_profile(_node("fast"))
     assert kwargs["global_planner"] == "straight"
 
 

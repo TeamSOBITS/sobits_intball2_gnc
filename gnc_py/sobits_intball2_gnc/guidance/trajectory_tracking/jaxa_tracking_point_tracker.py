@@ -6,8 +6,14 @@ Drives :mod:`~sobits_intball2_gnc.guidance.local_planner.jaxa_rrt_local_planner`
 ``sample(t)`` returns the paper's tracking point as ``p_des`` with
 ``v_des = a_des = 0`` (feedback only), so there is no timed trajectory.
 
-- The global path is the straight line from the start to the goal (no via
-  points). It is followed as is while it is free; the local planner runs only
+- The global path is the straight line from the start to the goal, or, with
+  ``reference_route``, the shared pre-departure route (A* shortcut polyline,
+  the one the MINCO tracker gets) with its ends set to the start and the goal
+  and densified to ``REFERENCE_SPACING_M``: the tracking point takes the
+  nearest vertex's segment, so a sparse polyline cuts every corner from far
+  before it (docs/2026-10-05_jaxa_astar_global_corner_offline.md). The shape is
+  not changed and corners are not rounded. It is followed as is while it is
+  free; the local planner runs only
   when it is blocked (paper Sec. 3: a local path is generated "when obstacles
   exist on the predefined global path"). The local path rejoins the global
   path (paper Fig. 2(a)): RRT* runs from the vehicle to the point
@@ -45,9 +51,12 @@ from sobits_intball2_gnc.guidance.local_planner.jaxa_rrt_local_planner import (
     plan_local_path,
     tracking_point,
 )
+from sobits_intball2_gnc.guidance.search.reference_route import densify
 from sobits_intball2_gnc.guidance.utils.attitude_reference import compute_q_des
 
 _ZERO3 = np.zeros(3)
+# Same spacing the MINCO tracker densifies the shared route to.
+REFERENCE_SPACING_M = 0.25
 # Rejoin this far past the last blocked sample of the global path: with depth only the seen
 # face of an obstacle is occupied, so the first free sample can lie inside it (ours, not in
 # the paper; 0.6 m box depth + 2 x 0.2 m inflation).
@@ -71,6 +80,9 @@ class JaxaTrackingPointTracker:
         config: :class:`JaxaPlannerConfig`.
         collision_check_period, goal_facing_hold_m: see module docstring.
         async_replan: solve replans in a background thread.
+        reference_route: shared route polyline (>= 2 points) used as the global
+            path in place of the start-goal line; its ends are replaced by
+            ``p0`` and ``p_target``, as the MINCO tracker does.
         seed: first RRT* seed.
 
     Raises :class:`JaxaPlanError` if the initial plan fails.
@@ -78,7 +90,7 @@ class JaxaTrackingPointTracker:
 
     def __init__(self, p0, p_target, pose_fn, tf_fresh_fn, q0, obstacle_grid, bounds,
                  lookahead_m, config, collision_check_period, goal_facing_hold_m,
-                 forward_axis=(1.0, 0.0, 0.0), async_replan=True, seed=0):
+                 forward_axis=(1.0, 0.0, 0.0), async_replan=True, seed=0, reference_route=None):
         self._goal = np.asarray(p_target, dtype=float)
         self._pose_fn = pose_fn
         self._tf_fresh_fn = tf_fresh_fn
@@ -109,7 +121,16 @@ class JaxaTrackingPointTracker:
         self.last_replan_source = None
         self.last_replan_attempts = None
         self.plans = []
-        self._global_path = np.array([p0, self._goal], dtype=float)
+        if reference_route is None:
+            self._global_path = np.array([p0, self._goal], dtype=float)
+        else:
+            route = np.asarray(reference_route, dtype=float).reshape(-1, 3)
+            if len(route) < 2:
+                raise ValueError("reference_route needs at least a start and a goal")
+            route = np.vstack((np.asarray(p0, dtype=float), route[1:-1], self._goal))
+            self._global_path = np.asarray(densify(route, REFERENCE_SPACING_M), dtype=float)
+        legs = np.linalg.norm(np.diff(self._global_path, axis=0), axis=1)
+        self._global_s = np.concatenate(([0.0], np.cumsum(legs)))
         if path_is_free(self._global_path, self._grid, self._bounds):
             path, info = self._global_path.copy(), {"plan_s": 0.0, "attempts": 0}
         else:
@@ -144,36 +165,53 @@ class JaxaTrackingPointTracker:
     def _solve(self, start):
         self._seed += _SEED_STRIDE
         start = np.asarray(start, dtype=float)
-        rejoin = self._rejoin_point(start)
+        rejoin, s_rejoin = self._rejoin_point(start)
         path, info = plan_local_path(start, rejoin, self._grid, self._bounds, self._seed, self._config)
-        if np.linalg.norm(rejoin - self._goal) > 1e-9:
-            path = np.vstack((path, self._goal))
+        if s_rejoin < self._global_s[-1]:
+            path = np.vstack((path, self._global_path[self._global_s > s_rejoin + 1e-9]))
         return path, info
 
+    def _global_at(self, s):
+        k = min(int(np.searchsorted(self._global_s, s, side="right")) - 1, len(self._global_path) - 2)
+        a, b = self._global_path[k], self._global_path[k + 1]
+        leg = self._global_s[k + 1] - self._global_s[k]
+        return a if leg < 1e-12 else a + (b - a) * (s - self._global_s[k]) / leg
+
+    def _global_arc_length(self, p):
+        """Arc length of the point of the global path nearest to ``p``."""
+        best, s_best = np.inf, 0.0
+        for k, (a, b) in enumerate(zip(self._global_path[:-1], self._global_path[1:])):
+            d = b - a
+            sq = float(np.dot(d, d))
+            t = 0.0 if sq < 1e-12 else float(np.clip(np.dot(p - a, d) / sq, 0.0, 1.0))
+            dist = float(np.linalg.norm(a + t * d - p))
+            if dist < best:
+                best, s_best = dist, self._global_s[k] + t * (self._global_s[k + 1] - self._global_s[k])
+        return s_best
+
     def _rejoin_point(self, p):
-        """Point ``_REJOIN_MARGIN_M`` past the last blocked stretch of the global path ahead of
-        ``p`` (sampled at half a voxel, as path_is_free), or the goal when none is blocked, the
-        goal itself is (the planner then reports it) or the margin reaches past it."""
-        origin, goal = self._global_path
-        length = float(np.linalg.norm(goal - origin))
-        if length < 1e-9:
-            return goal
-        u = (goal - origin) / length
-        s0 = float(np.clip(np.dot(p - origin, u), 0.0, length))
-        ss = np.append(np.arange(s0, length, 0.5 * float(self._grid.resolution)), length)
+        """``(point, arc length)`` ``_REJOIN_MARGIN_M`` past the last blocked stretch of the
+        global path ahead of ``p`` (sampled at half a voxel, as path_is_free), or the goal when
+        none is blocked, the goal itself is (the planner then reports it) or the margin reaches
+        past it."""
+        goal, total = self._global_path[-1], float(self._global_s[-1])
+        if total < 1e-9:
+            return goal, total
+        s0 = self._global_arc_length(p)
+        ss = np.append(np.arange(s0, total, 0.5 * float(self._grid.resolution)), total)
         lo, hi = (np.asarray(b, dtype=float) for b in self._bounds)
         blocked = [bool(np.any(q < lo) or np.any(q > hi) or self._grid.inflated_occupied(q.tolist()))
-                   for q in (origin + u * s for s in ss)]
+                   for q in (self._global_at(s) for s in ss)]
         if not any(blocked) or blocked[-1]:
-            return goal
+            return goal, total
         last = len(blocked) - 1 - blocked[::-1].index(True)
         s_rejoin = ss[last] + _REJOIN_MARGIN_M
-        if s_rejoin >= length:
-            return goal
+        if s_rejoin >= total:
+            return goal, total
         for s_free, b in zip(ss[last + 1:], blocked[last + 1:]):
             if s_free >= s_rejoin and not b:
-                return origin + u * s_free
-        return goal
+                return self._global_at(s_free), float(s_free)
+        return goal, total
 
     def _solve_in_background(self, start):
         try:

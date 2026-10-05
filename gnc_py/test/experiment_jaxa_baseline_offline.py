@@ -39,7 +39,7 @@ from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, os.path.dirname(__file__))
-import experiment_global_planner_minco_jem_cases as base
+import offline_common as base
 from experiment_local_only_delayed_detection import initial_facing_quat
 from sobits_intball2_gnc.control.utils.jaxa_control_params import (
     inertia_rows, load_jaxa_control, make_attitude_controller, make_position_controller,

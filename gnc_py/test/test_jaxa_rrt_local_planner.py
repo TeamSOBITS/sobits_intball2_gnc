@@ -108,7 +108,7 @@ def test_native_rrt_and_tracking_match_frozen_python_reference(seed):
 @pytest.mark.parametrize("seed", [100, 200, 300])
 def test_native_full_plan_matches_reference_across_paper_layouts(layout, seed):
     import sobits_intball2_gnc_cpp as core
-    import experiment_global_planner_minco_jem_cases as base
+    import offline_common as base
     import experiment_jaxa_baseline_offline as experiment
     import jaxa_python_reference as reference
 

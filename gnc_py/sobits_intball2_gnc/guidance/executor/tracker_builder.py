@@ -106,8 +106,10 @@ class TrackerBuilder:
         replan_tracker = None
         self._obstacle_tracker = None
         if mode == "jaxa_rrt":
+            if reference_route is not None and via_waypoints:
+                raise TrajectoryBuildError("reference_route and via_waypoints are exclusive")
             return self._build_jaxa(p0, q0, p_target, via_waypoints, forward_axis,
-                                    jaxa_options or {}), None
+                                    jaxa_options or {}, reference_route), None
         obstacle_kwargs = {}
         if mode == "replan_minco" and minco_obstacle_avoidance:
             obstacle_kwargs = self._obstacle_tracker_kwargs(
@@ -201,7 +203,8 @@ class TrackerBuilder:
             return replan_tracker, traj
         return StaticTrajectoryTracker(traj), traj
 
-    def _build_jaxa(self, p0, q0, p_target, via_waypoints, forward_axis, options):
+    def _build_jaxa(self, p0, q0, p_target, via_waypoints, forward_axis, options,
+                    reference_route=None):
         """``options``: ``lookahead_m``, ``bounds`` ([xmin, ymin, zmin, xmax, ymax, zmax]),
         ``collision_check_period``, ``goal_facing_hold_m`` and the
         :class:`JaxaPlannerConfig` fields."""
@@ -218,7 +221,8 @@ class TrackerBuilder:
                 p0, p_target, pose_fn=self._tf.get_pose, tf_fresh_fn=self._tf_fresh_fn,
                 q0=q0, obstacle_grid=self._obstacle_map.grid,
                 bounds=(bounds[:3], bounds[3:]), config=JaxaPlannerConfig(**options),
-                forward_axis=forward_axis, async_replan=True, **tracker_kwargs)
+                forward_axis=forward_axis, async_replan=True, reference_route=reference_route,
+                **tracker_kwargs)
         except JaxaPlanError as exc:
             raise TrajectoryBuildError("jaxa_rrt initial plan failed (%s)" % exc) from exc
         self._obstacle_tracker = tracker

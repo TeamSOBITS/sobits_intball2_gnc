@@ -226,10 +226,9 @@ MOTION_PROFILES = {
         "pre_align": True,
         "align_at_arrival": True,
         "minco_obstacle_avoidance": False,
-        # The baseline's own global stays the straight chord for now; sharing
-        # the A* route with it is the next step (docs/
-        # minco_astar_reference_global.md 2).
-        "global_planner": "straight",
+        # Same pre-departure A* route as replan_minco (docs/
+        # 2026-10-05_jaxa_astar_global_corner_offline.md).
+        "global_planner": "astar",
         "jaxa_lookahead_m": 0.11,
         "jaxa_ompl_solve_time_s": 0.1,
         "jaxa_max_attempts": 50,

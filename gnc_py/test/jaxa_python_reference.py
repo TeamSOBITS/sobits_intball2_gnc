@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.interpolate import make_interp_spline
 
-from sobits_intball2_gnc.guidance.global_planner.path_shortcut import (
+from sobits_intball2_gnc.guidance.search.path_shortcut import (
     point_is_free,
     segment_is_free,
 )
