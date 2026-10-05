@@ -9,7 +9,7 @@ RRT path is piecewise linear, so the raw direction jumps at its vertices).
 The roll is kept by ``compute_q_des`` as in the goal-facing case.
 
 Usage: python3 experiment_jaxa_attitude_offline.py <layouts> <speeds> <goal,travel> <repeats> [known]
-Results: docs/2026-10-05_jaxa_astar_global_corner_offline.md
+Results: docs/archive/2026-10-05_jaxa_astar_global_corner_offline.md
 """
 import os
 import sys

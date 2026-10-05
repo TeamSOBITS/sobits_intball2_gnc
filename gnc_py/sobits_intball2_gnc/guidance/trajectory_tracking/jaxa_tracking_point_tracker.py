@@ -11,7 +11,7 @@ Drives :mod:`~sobits_intball2_gnc.guidance.local_planner.jaxa_rrt_local_planner`
   the one the MINCO tracker gets) with its ends set to the start and the goal
   and densified to ``REFERENCE_SPACING_M``: the tracking point takes the
   nearest vertex's segment, so a sparse polyline cuts every corner from far
-  before it (docs/2026-10-05_jaxa_astar_global_corner_offline.md). The shape is
+  before it (docs/archive/2026-10-05_jaxa_astar_global_corner_offline.md). The shape is
   not changed and corners are not rounded. It is followed as is while it is
   free; the local planner runs only
   when it is blocked (paper Sec. 3: a local path is generated "when obstacles

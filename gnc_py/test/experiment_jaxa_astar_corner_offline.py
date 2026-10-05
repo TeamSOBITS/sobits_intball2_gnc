@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """JAXA baseline following the shared A* shortcut route: sparse vs densified (0.25 m).
 
-Results: docs/2026-10-05_jaxa_astar_global_corner_offline.md
+Results: docs/archive/2026-10-05_jaxa_astar_global_corner_offline.md
 
 Wraps experiment_jaxa_baseline_offline.py (sim-matched JAXA controller)
 and experiment_astar_reference_global_offline.py (MINCO with the same route).

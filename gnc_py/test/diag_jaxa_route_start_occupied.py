@@ -8,7 +8,7 @@ per guidance step, how long the vehicle is inside the static map's inflation.
 Runs the shared route (``route``) and the straight chord (``straight``).
 
 Usage: python3 diag_jaxa_route_start_occupied.py <layouts> <speed> <route|straight> <repeats>
-Results: docs/2026-10-05_jaxa_astar_global_corner_offline.md
+Results: docs/archive/2026-10-05_jaxa_astar_global_corner_offline.md
 """
 import os
 import sys
