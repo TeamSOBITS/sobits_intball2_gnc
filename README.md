@@ -187,9 +187,11 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
 詳細は各READMEを参照してください
 | 役割 | 内容 |
 |---|---|
-| **[Guidance](gnc_py/sobits_intball2_gnc/guidance/README.md)** | 目標軌道を生成 |
-| **[Navigation](gnc_py/sobits_intball2_gnc/navigation/README.md)** | 自己位置推定，移動先地点を配信 | 
+| **[Guidance](gnc_py/sobits_intball2_gnc/guidance/README.md)** | 経路・目標軌道を生成（障害物回避を含む） |
+| **[Navigation](gnc_py/sobits_intball2_gnc/navigation/README.md)** | 移動先地点のTFと地図を配信（自己位置推定は範囲外．自己位置はシミュレータのTFを使う） |
 | **[Control](gnc_py/sobits_intball2_gnc/control/README.md)** | 位置・姿勢保持，目標軌道を追従 |
+| **[C++実装](gnc_cpp/README.md)** | 軌道生成・地図・制御などの計算部分（Pythonから呼ぶ） |
+| **[Teleop](teleop/README.md)** | キーボードによる相対移動 |
 
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
@@ -197,7 +199,6 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
 ### 仮想カメラ（シム専用）
 
 機体のカメラから見える深度を，既知の地図（`jem_octomap.bt`）とGazeboに置いた障害物から幾何で作り，実物の深度カメラと同じ形（`32FC1`の深度画像＋`CameraInfo`，光学座標，REP 117の±inf）で出します．
-設計と実測の根拠は[仮想カメラの要件](docs/archive/achieved/2026-09-26_virtual_obstacle_sensor_requirements.md)・[ステレオカメラの実測](docs/archive/achieved/2026-09-28_stereo_camera_measurement.md)を参照してください．
 
 1. `gnc_bringup.launch.py`（TF）が動いている状態で，仮想カメラを起動します．
     ```sh
@@ -266,6 +267,9 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
 - Pham, Hung, and Quang-Cuong Pham. "A new approach to Time-Optimal Path Parameterization based on Reachability Analysis." *IEEE Transactions on Robotics*, vol. 34, no. 3, 2018, pp. 645-659. ([arXiv:1707.07239](https://arxiv.org/abs/1707.07239), [GitHub](https://github.com/hungpham2511/toppra))
 - Wang, Zhepei, Xin Zhou, Chao Xu, and Fei Gao. "Geometrically Constrained Trajectory Optimization for Multicopters." *IEEE Transactions on Robotics* (T-RO), vol. 38, no. 5, 2022, pp. 3259-3278. ([arXiv:2103.00190](https://arxiv.org/abs/2103.00190), [GitHub](https://github.com/ZJU-FAST-Lab/GCOPTER))
 - Zhou, Xin, et al. "Swarm of micro flying robots in the wild." *Science Robotics*, vol. 7, no. 66, 2022, eabm5954. ([DOI:10.1126/scirobotics.abm5954](https://www.science.org/doi/10.1126/scirobotics.abm5954), [GitHub](https://github.com/ZJU-FAST-Lab/EGO-Planner-v2))
+- Hornung, Armin, Kai M. Wurm, Maren Bennewitz, Cyrill Stachniss, and Wolfram Burgard. "OctoMap: an efficient probabilistic 3D mapping framework based on octrees." *Autonomous Robots*, vol. 34, no. 3, 2013, pp. 189-206. ([DOI:10.1007/s10514-012-9321-0](https://doi.org/10.1007/s10514-012-9321-0))
+- Nishishita, Taisei, Daichi Hirano, Shinji Mitani, and Seiko Piotr Yamaguchi. "Dynamic Motion Planning of FPV Camera Free-Flyers for Autonomous Crew Tracking and Collision Avoidance." *International Astronautical Congress (IAC-22)*, 2022, IAC-22,D1,6,2,x69912. ([IAF](https://iafastro.directory/iac/paper/id/69912/summary/))
+- Zheng, Han, Zhe Chen, Yiwen Fu, Ming Yang, and Tong Qin. "SCAN-Planner: Spatial Collision-Aware Local Planning for Route-Guided Long-Range Quadruped Navigation." arXiv preprint, 2026. ([arXiv:2606.19555](https://arxiv.org/abs/2606.19555))
 
 <!-- MARKDOWN LINKS & IMAGES -->
 <!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
