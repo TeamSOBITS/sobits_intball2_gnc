@@ -35,6 +35,7 @@ import types
 import numpy as np
 import sobits_intball2_gnc_cpp
 import yaml
+from ament_index_python.packages import get_package_share_directory
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
@@ -70,8 +71,8 @@ PERSONS = {
 }
 # Same drift as experiment_goal_to_arrival_depth_timing.py --moving-9.
 DRIFT_TARGET, DRIFT_SECONDS = np.array([10.974, -5.332, 5.243]), 10.0
-MESH = ("/home/space_project/colcon_ws/install/intball2_programs/share/intball2_programs/"
-        "media/meshes/human_obstacles/float_blue.dae")
+MESH = os.path.join(get_package_share_directory("intball2_programs"),
+                    "media/meshes/human_obstacles/float_blue.dae")
 VC = yaml.safe_load(open(os.path.join(base.HERE, "..", "config", "virtual_camera.yaml"),
                          encoding="utf-8"))["/**"]["ros__parameters"]["virtual_camera"]
 LINK_R_OPTICAL = np.array([[0., 0., 1.], [-1., 0., 0.], [0., -1., 0.]])
