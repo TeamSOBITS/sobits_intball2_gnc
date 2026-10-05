@@ -1,10 +1,10 @@
-# navigation （Navigation: GNCの「N」）
-
-**現状のスコープ**: 「名前付き地点をTFとして配信する」機能のみです。狭義の自己位置推定（自機の位置・姿勢をセンサーから推定すること）は範囲外で、自機位置はシミュレータのTF（`iss_body`<-`body`）が真値として配信するものをそのまま利用しています（`control/`側が消費）。
+# Navigation
+**現状のスコープ**: 「名前付き地点をTFとして配信する」機能と「OctoMapをRVizのMarkerとして配信する」機能です。狭義の自己位置推定（自機の位置・姿勢をセンサーから推定すること）は範囲外で、自機位置はシミュレータのTF（`iss_body`<-`body`）が真値として配信するものをそのまま利用しています（`control/`側が消費）。
 
 ```
 navigation/
 ├── location_broadcaster.py  # maps/iss_location.yaml の登録地点を TF として配信（10Hz）
+├── octomap_marker_publisher.py  # OctoMap（.bt）を RViz 用の Marker として1回配信
 └── location_setting.py      # ロケーション登録 GUI（Tkinter + Zenity）
 ```
 
@@ -24,6 +24,18 @@ navigation/
    - Zenity のファイル選択ダイアログが開きます（デフォルト: [maps/iss_location.yaml](../../maps/iss_location.yaml)）
    - シミュレータ内でロボットを登録したい地点・姿勢に移動させ，GUI で地点名を入力して **SNAP CURRENT POS** を押すと登録されます
    - 登録済みの地点の削除・リネームも GUI から行えます
+
+## 地図配信方法
+
+```sh
+ros2 run sobits_intball2_gnc octomap_marker_publisher
+```
+
+- [maps/jem_octomap.bt](../../maps/jem_octomap.bt)（JEM を切り出した OctoMap）を，占有ボクセルの cube list Marker として `octomap_marker` に1回だけ配信します（RELIABLE + TRANSIENT_LOCAL なので，後から起動した RViz も受け取れます）
+- `iss_body` 座標系に `frame_locked` で置くので，ISS が動いても RViz 上で追従します
+- パラメータ: `map_file`（別の `.bt` を指定），`frame_id`（既定 `iss_body`）
+- RViz で見るためだけのノードで，障害物判定などの計画側は別に地図を読み込みます
+- `gnc_bringup.launch.py` が自動で起動します
 
 ## 既知の制約（実機化に向けて）
 
