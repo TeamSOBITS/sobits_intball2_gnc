@@ -46,7 +46,7 @@ cancel後の制動プロファイルは`guidance/`の外、`common/utils/stoppin
 2つを別々に起動します。起動前に`ros2 node list`で、既に動いているノードがないか確認してください（多重起動すると機体が暴れます）。
 
 ```sh
-ros2 launch sobits_intball2_gnc gnc_bringup.launch.py   # control_node・TF・機体モデル・RViz・名前付き地点のTF配信
+ros2 launch sobits_intball2_gnc gnc_bringup.launch.py   # 制御・TF・機体モデル・RViz・名前付き地点のTF配信
 ros2 launch sobits_intball2_gnc guidance.launch.py      # guidance_node（gnc_params.yamlを読む）
 ```
 
@@ -66,7 +66,7 @@ ros2 run sobits_intball2_gnc move_to_client nav_entry
 ros2 run sobits_intball2_gnc move_relative_client -x 0.3 -w 90
 ```
 
-goalを受けた時点のTFの位置・姿勢を基準に絶対のgoalへ変換します（`docs/archive/achieved/2026-09-29_move_relative_design.md`）。簡単なテレオペ用なので、move_toの設定（姿勢モード・追従モード・経由地・障害物回避など）に関係なく、開始時の姿勢のまま直進し、着いてから回転します（`static_toppra`固定）。移動量が`guidance.relative_move_max_distance`を超えるgoalは拒否します。障害物回避はしないので、壁との距離は操作者が確認してください。
+goalを受けた時点のTFの位置・姿勢を基準に絶対のgoalへ変換します。簡単なテレオペ用なので、move_toの設定（姿勢モード・追従モード・経由地・障害物回避など）に関係なく、開始時の姿勢のまま直進し、着いてから回転します（`static_toppra`固定）。移動量が`guidance.relative_move_max_distance`を超えるgoalは拒否します。障害物回避はしないので、壁との距離は操作者が確認してください。
 
 任意の座標へ送る場合は標準の`ros2 action`を使います:
 
@@ -101,7 +101,7 @@ python3 gnc_py/test/manual/move_to_cancel_brake_test.py inspection_entry_2   # �
 |---|---|---|
 | `fast`（既定） | 障害物がない場所を速く移動 | `static_toppra`、姿勢固定、出発前・到着時の姿勢合わせなし、障害物回避なし |
 | `avoidance` | 深度または仮想障害物を避けて移動 | `replan_minco`、進行方向を向く、出発前・到着時の姿勢合わせあり、1秒ごとの非同期再計画、障害物回避あり、local速度上限`0.15 m/s` |
-| `jaxa_baseline` | 比較用のJAXA手法（IAC-22）で障害物を避けて移動 | `jaxa_rrt`、ゴールを向く、出発前・到着時の姿勢合わせあり、経路が衝突したら非同期で再計画、先読み距離`jaxa_lookahead_m`=0.11 m（論文の0.06 m/s相当）、グローバルは`avoidance`と同じ出発前のA* shortcut折線（両端をp0・ゴールに置き換え0.25 m間隔にする。丸めない） |
+| `jaxa_baseline` | 比較用のJAXA手法（IAC-22）で障害物を避けて移動 | `jaxa_rrt`、出発前・到着時の姿勢合わせあり、経路が衝突したら非同期で再計画。値は下のJAXA手法のパラメータ表を参照 |
 
 ```sh
 ros2 param set /guidance_node guidance.motion_profile avoidance
@@ -109,7 +109,7 @@ ros2 param set /guidance_node guidance.motion_profile avoidance
 
 `jaxa_rrt` の RRT*・B スプライン補間・衝突確認・追従点は `gnc_cpp/src/guidance/jaxa/local_planner.cpp` で計算します。再試行を含む計画は1つの地図 snapshot を読み、計算中は GIL を解放して depth 更新と setpoint の処理を進めます。Python 版は `gnc_py/test/jaxa_python_reference.py` に比較用として残しています。
 
-`jaxa_baseline`は両手法とも JAXA 制御器（`jaxa_control_node`）で比べる前提です。速度を変えるときは`jaxa_lookahead_m`だけを`ros2 param set`します（0.15 m/s 相当は 0.27、0.20 m/s 相当は 0.36）。計画に失敗するとgoalを`planning_failed`で終えます。設計は`docs/jaxa_baseline_gazebo_port_plan.md`。
+`jaxa_baseline`は両手法とも JAXA 制御器（`jaxa_control_node`）で比べる前提です。速度を変えるときは`jaxa_lookahead_m`だけを`ros2 param set`します（0.15 m/s 相当は 0.27、0.20 m/s 相当は 0.36）。計画に失敗するとgoalを`planning_failed`で終えます。
 
 `avoidance`には、起動時に`guidance.obstacle_source: depth`または`boxes`を設定する必要があります。`depth`では新鮮な深度フレームをまだ受け取っていない場合、goalをabortします。回避なしで移動するよう自動的に切り替わることはありません。
 
@@ -197,10 +197,13 @@ ros2 param set /guidance_node guidance.motion_profile avoidance
 | `guidance.minco_obstacle_avoidance` | `replan_minco`で障害物の地図（JEMの壁＋仮想の箱）を避ける（`minco_replan_face_travel`も必要）。避けきれないときは停止プロファイルで非常停止し、静止から再計画する | `false` |
 | `guidance.minco_local_piece_length_m` | 障害物を避けるときのlocalの1区間の長さ[m]（EGO-Planner v2の`polyTraj_piece_length`） | `1.5` |
 | `guidance.minco_obstacle_clearance_soft` | 障害物を避けるときの緩い余裕[m]（ぶつかった障害物から離す距離） | `0.2` |
+| `guidance.minco_obstacle_clearance` | 障害物に対する硬い余裕[m]（守る下限）。`_soft`より小さくする | `0.1` |
+| `guidance.minco_async_replan` | `replan_minco`のlocal再計画をsetpointのループとは別に解く | `true` |
+| `guidance.global_planner` | `replan_minco`のglobal経路。`straight`は直線、`astar`は出発前にA*で作った共通の経路（`avoidance`・`jaxa_baseline`） | `straight` |
 
 ### JAXA手法（`jaxa_rrt`）
 
-`jaxa_baseline` profileが`jaxa_rrt_bounds`以外をまとめて設定する。局所経路はOMPL `RRTstar`→`partialShortcutPath`→`smoothBSpline`（OMPLの既定値）で作り、最終経路を半ボクセル刻みで確認して衝突ならやり直す。論文に値がないものは`docs/jaxa_baseline_ompl_reproduction.md`。
+`jaxa_baseline` profileが`jaxa_rrt_bounds`以外をまとめて設定する。局所経路はOMPL `RRTstar`→`partialShortcutPath`→`smoothBSpline`（OMPLの既定値）で作り、最終経路を半ボクセル刻みで確認して衝突ならやり直す。論文に値がないものはOMPLの既定値を使う。
 
 | パラメータ名 | 役割 | デフォルト値 |
 |---|---|---|
@@ -209,7 +212,7 @@ ros2 param set /guidance_node guidance.motion_profile avoidance
 | `guidance.jaxa_max_attempts` | 平滑化後の経路が衝突したとき（またはRRT*が経路を見つけられないとき）に解き直す回数の上限 | `50` |
 | `guidance.jaxa_collision_check_period` | 残りの経路の衝突確認の周期[s] | `0.05` |
 | `guidance.jaxa_goal_facing_hold_m` | ゴールからこの距離[m]以内では姿勢を固定する | `0.3` |
-| `guidance.jaxa_attitude_mode` | 飛行中の姿勢の向け方。`goal` = ゴールを向く（論文の「撮影対象がないときはゴール」）、`path` = 追っている経路の先を向く（replan_minco と同じ。論文にはない） | `goal` |
+| `guidance.jaxa_attitude_mode` | 飛行中の姿勢の向け方。`goal` = ゴールを向く（論文の「撮影対象がないときはゴール」）、`path` = 追っている経路の先を向く（replan_minco と同じ。論文にはない） | `path` |
 | `guidance.jaxa_path_facing_ahead_m` | `path` のとき、経路をこの距離[m]先まで見た点を向く | `0.5` |
 | `guidance.jaxa_path_facing_max_rate_deg` | `path` のときの姿勢の回転上限[°/s]（仮の値、未調整） | `20.0` |
 | `guidance.jaxa_rrt_bounds` | RRT*のサンプリング範囲 `[xmin, ymin, zmin, xmax, ymax, zmax]`（JEM） | `[9.6, -11.9, 3.6, 12.3, -2.4, 6.0]` |
@@ -258,6 +261,7 @@ ros2 param set /guidance_node guidance.motion_profile avoidance
 | `guidance.relative_move_max_distance` | 相対移動goalの移動量の上限[m]。打ち間違いよけで、衝突は防がない | `10.0` |
 | `guidance.obstacle_grid_inflation` | 障害物の格子の膨張[m]（機体半径0.1m＋余裕0.1m）。マス単位で効く（解像度0.1mなら0.15は0.2と同じ） | `0.2` |
 | `guidance.obstacle_source` | 障害物入力。`depth`は静的OctoMapへ最新深度占有を重ね、`boxes`は`/guidance/virtual_obstacles`だけを重ねる。 | `depth` |
+| `guidance.depth.*` | `obstacle_source: depth`の深度入力（`topic`・`timeout`・`skip_pixel`・`min_range`・`max_range`・`p_hit`・`p_miss`・`p_min`・`p_max`・`p_occ`・`marker_period`）。値は`gnc_params.yaml`の`guidance.depth` | `gnc_params.yaml`参照 |
 
 ### Control側と共有（起動時のみ、`gnc_params.yaml`の各セクションと同じ値を使う）
 
