@@ -449,8 +449,8 @@ Visualization Manager:
       Axis: Z
       Channel Name: z
       Class: rviz_default_plugins/PointCloud2
-      Color: 255; 255; 255
-      Color Transformer: Intensity
+      Color: 255; 105; 180
+      Color Transformer: FlatColor
       Decay Time: 0
       Enabled: true
       Invert Rainbow: false
@@ -458,7 +458,7 @@ Visualization Manager:
       Max Intensity: 2.5
       Min Color: 255; 0; 0
       Min Intensity: 0
-      Name: "VCam main: points (red near / blue far, 0-2.5m)"
+      Name: "VCam main: points (pink)"
       Position Transformer: XYZ
       Selectable: false
       Size (Pixels): 2
@@ -497,8 +497,8 @@ Visualization Manager:
       Axis: Z
       Channel Name: z
       Class: rviz_default_plugins/PointCloud2
-      Color: 255; 255; 255
-      Color Transformer: Intensity
+      Color: 255; 105; 180
+      Color Transformer: FlatColor
       Decay Time: 0
       Enabled: true
       Invert Rainbow: false
@@ -506,7 +506,7 @@ Visualization Manager:
       Max Intensity: 2.5
       Min Color: 255; 0; 0
       Min Intensity: 0
-      Name: "VCam stereo: points (red near / blue far, 0-2.5m)"
+      Name: "VCam stereo: points (pink)"
       Position Transformer: XYZ
       Selectable: false
       Size (Pixels): 2
