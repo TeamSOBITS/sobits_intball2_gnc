@@ -10,8 +10,7 @@ The feedback term reuses
 :func:`~sobits_intball2_gnc.control.utils.pose_control_law.position_error_to_force`
 (same P+D math `PoseCorrector` uses for checkpoint holding) so the two modes
 share a single, already-validated implementation of "position/velocity error
--> body-frame force". See ``openspec/changes/add-trajectory-following`` and
-``docs/phase3.md`` for the full interface contract this implements
+-> body-frame force". See ``docs/phase3.md`` for the full interface contract this implements
 (mutual exclusivity with ``PoseCorrector``'s checkpoint hold is owned by the
 caller, e.g. :class:`HoverController` -- this class only computes a force
 given a setpoint and the current state, with no notion of "is this setpoint

@@ -17,7 +17,7 @@ compatibility):
   testable).
 - :class:`~sobits_intball2_gnc.control.utils.trajectory_controller.TrajectoryController`
   -- pure feedforward+feedback translation controller for a moving Guidance
-  setpoint (Phase 3a, ``openspec/changes/add-trajectory-following``).
+  setpoint (Phase 3a).
 - :class:`HoverController` -- DI orchestration logic: reads the injected
   ``ImuSubscriber`` and (optional) ``TfClient`` (common/ros), combines the IMU law with the
   pose correction, allocates via the injected :class:`ThrustAllocator`, and
@@ -27,7 +27,7 @@ compatibility):
   message arrived within ``trajectory_controller.timeout``), translation is
   driven entirely by :class:`TrajectoryController` instead of
   :class:`PoseCorrector`'s checkpoint hold -- the two never contribute force
-  in the same tick (see ``docs/phase3.md`` / the openspec change for the full
+  in the same tick (see ``docs/phase3.md`` for the full
   contract). Attitude (torque) follows the same split (Phase 3b): while
   trajectory following is active and a ``q_des`` has been received,
   :class:`TrajectoryController` also supplies the torque; otherwise (or while

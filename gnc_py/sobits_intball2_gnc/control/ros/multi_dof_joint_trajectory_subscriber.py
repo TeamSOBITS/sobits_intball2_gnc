@@ -5,7 +5,7 @@ ROS I/O wrapper (does not subclass Node): receives a single-point moving
 target (``trajectory_msgs/MultiDOFJointTrajectory``, ``points[0]`` only,
 expressed in the TF reference frame) from the Guidance node, and exposes the
 latest ``p_des``/``v_des``/``a_des``/``q_des`` for the trajectory controller
-(Phase 3a, see ``openspec/changes/archive/2026-08-18-add-trajectory-following``).
+(Phase 3a).
 
 The array's ``frame_id`` is validated against the expected reference frame,
 same policy as ``PoseArraySubscriber``: a message in the wrong frame is

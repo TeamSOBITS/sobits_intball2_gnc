@@ -167,8 +167,7 @@ class ControlNode(Node):
                     "until they appear"
                 )
 
-        # Trajectory setpoint interface (Phase 3a, openspec/changes/
-        # add-trajectory-following): only meaningful alongside TF, same as
+        # Trajectory setpoint interface (Phase 3a): only meaningful alongside TF, same as
         # the pose corrector.
         self._trajectory_sub = None
         if self._tf is not None:

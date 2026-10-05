@@ -14,7 +14,6 @@ a source of confusion (see ``docs/archive/achieved/2026-08-20_future_design_note
 
 Control's real, control-facing interface for a Guidance trajectory is
 ``/gnc/trajectory_setpoint`` (``trajectory_msgs/MultiDOFJointTrajectory``, see
-``openspec/specs/trajectory-following/spec.md`` and
 ``docs/archive/achieved/2026-08-19_phase3a_interface_contract.md``), continuously
 republished at the control rate with the setpoint sampled at the current time.
 That type has no built-in RViz display, so this class publishes the same

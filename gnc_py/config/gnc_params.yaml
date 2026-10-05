@@ -308,7 +308,7 @@
       torque_direction_preserving: false
       checkpoint_topic: /gnc/checkpoints   # PoseArray (reference frame) path interface
 
-    # Phase 3a/3b (docs/main_plan.md, openspec/changes/add-trajectory-following):
+    # Phase 3a/3b (docs/main_plan.md):
     # follows a moving p_des/v_des/a_des setpoint on /gnc/trajectory_setpoint.
     # Mutually exclusive with tf_correction's checkpoint hold -- takes over
     # translation force while setpoints are live, falls back to checkpoint

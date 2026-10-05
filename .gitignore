@@ -67,7 +67,6 @@ AMENT_IGNORE
 # End of https://www.toptal.com/developers/gitignore/api/linux,ros2,cmake
 
 .vscode/
-openspec/
 /tmp
 /.claude
 /.github

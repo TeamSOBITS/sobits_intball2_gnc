@@ -442,7 +442,7 @@ def test_missing_pose_leaves_imu_term_untouched():
 
 
 # --- HoverController: trajectory following / checkpoint-hold exclusivity ---
-# (Phase 3a, openspec/changes/add-trajectory-following)
+# (Phase 3a)
 
 
 class _FakeTrajectorySub:
