@@ -123,9 +123,9 @@ GUIDANCE_PARAM_DEFAULTS = {
     "guidance.jaxa_max_attempts": 50,
     "guidance.jaxa_collision_check_period": 0.05,
     "guidance.jaxa_goal_facing_hold_m": 0.3,
-    # "goal": face the goal (the paper's no-target default); "path": face the point
+    # "goal": face the goal (the paper's no-target attitude); "path" (default): face the point
     # jaxa_path_facing_ahead_m along the path, at most jaxa_path_facing_max_rate_deg/s.
-    "guidance.jaxa_attitude_mode": "goal",
+    "guidance.jaxa_attitude_mode": "path",
     "guidance.jaxa_path_facing_ahead_m": 0.5,
     "guidance.jaxa_path_facing_max_rate_deg": 20.0,
     "guidance.jaxa_rrt_bounds": [9.6, -11.9, 3.6, 12.3, -2.4, 6.0],  # RRT* sampling box (JEM)
@@ -223,8 +223,8 @@ MOTION_PROFILES = {
         "minco_obstacle_clearance": 0.1,
         "global_planner": "astar",
     },
-    # face_travel only drives pre_align here (chord to the goal = the tracker's
-    # goal-facing attitude); in flight the jaxa_rrt tracker sets the attitude.
+    # face_travel only drives pre_align here (the goal chord, then the A* route's
+    # first leg); in flight the jaxa_rrt tracker sets the attitude.
     "jaxa_baseline": {
         "attitude_reference_mode": "face_travel",
         "trajectory_tracking_mode": "jaxa_rrt",
@@ -239,7 +239,7 @@ MOTION_PROFILES = {
         "jaxa_max_attempts": 50,
         "jaxa_collision_check_period": 0.05,
         "jaxa_goal_facing_hold_m": 0.3,
-        "jaxa_attitude_mode": "goal",
+        "jaxa_attitude_mode": "path",
         "jaxa_path_facing_ahead_m": 0.5,
         "jaxa_path_facing_max_rate_deg": 20.0,
     },

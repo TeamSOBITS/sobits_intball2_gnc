@@ -168,7 +168,7 @@
       jaxa_max_attempts: 50                  # attempts until the smoothed path passes the half-voxel check
       jaxa_collision_check_period: 0.05      # [s]
       jaxa_goal_facing_hold_m: 0.3           # [m] hold attitude this close to the goal
-      jaxa_attitude_mode: goal               # goal = face the goal (paper, no shooting target) / path = face the path ahead (as replan_minco does)
+      jaxa_attitude_mode: path               # path = face the path ahead (as replan_minco does, default) / goal = face the goal (paper, no shooting target)
       jaxa_path_facing_ahead_m: 0.5          # [m] path mode: look this far along the path
       jaxa_path_facing_max_rate_deg: 20.0    # [deg/s] path mode: turn rate limit (provisional, untuned)
       jaxa_rrt_bounds: [9.6, -11.9, 3.6, 12.3, -2.4, 6.0]  # RRT* sampling box [xmin, ymin, zmin, xmax, ymax, zmax] (JEM)

@@ -29,10 +29,10 @@ Drives :mod:`~sobits_intball2_gnc.guidance.local_planner.jaxa_rrt_local_planner`
   GIL and reads a snapshot so depth integration can continue.
 - Attitude: the paper's shot orientation planner points the camera at a target
   independently of the path, keeping the image level; with no shooting target
-  the goal is the target (``attitude_mode="goal"``, the default). The camera axis
+  the goal is the target (``attitude_mode="goal"``). The camera axis
   is pointed with ``compute_q_des``, which keeps the current roll (as pre_align
   and face travel do), so a level start stays level whichever way up the vehicle
-  is. ``attitude_mode="path"`` (ours; not in the paper) points it at the point
+  is. ``attitude_mode="path"`` (ours, the default; not in the paper) points it at the point
   ``path_facing_ahead_m`` along the current path instead, as replan_minco's face
   travel does, turning at most ``path_facing_max_rate_deg`` per second. Within
   ``goal_facing_hold_m`` of the goal the last attitude is held in both modes,
@@ -125,7 +125,7 @@ class JaxaTrackingPointTracker:
     def __init__(self, p0, p_target, pose_fn, tf_fresh_fn, q0, obstacle_grid, bounds,
                  lookahead_m, config, collision_check_period, goal_facing_hold_m,
                  forward_axis=(1.0, 0.0, 0.0), async_replan=True, seed=0, reference_route=None,
-                 attitude_mode="goal", path_facing_ahead_m=0.5, path_facing_max_rate_deg=20.0):
+                 attitude_mode="path", path_facing_ahead_m=0.5, path_facing_max_rate_deg=20.0):
         if attitude_mode not in ATTITUDE_MODES:
             raise ValueError("attitude_mode must be one of %s, got %r" % (ATTITUDE_MODES, attitude_mode))
         if path_facing_ahead_m <= 0.0 or path_facing_max_rate_deg <= 0.0:

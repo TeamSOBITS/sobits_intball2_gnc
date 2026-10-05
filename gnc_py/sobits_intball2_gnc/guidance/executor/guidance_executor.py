@@ -322,7 +322,7 @@ class GuidanceExecutor:
                 jaxa_lookahead_m=0.11,
                 jaxa_ompl_solve_time_s=0.1, jaxa_max_attempts=50,
                 jaxa_collision_check_period=0.05, jaxa_goal_facing_hold_m=0.3,
-                jaxa_attitude_mode="goal", jaxa_path_facing_ahead_m=0.5,
+                jaxa_attitude_mode="path", jaxa_path_facing_ahead_m=0.5,
                 jaxa_path_facing_max_rate_deg=20.0,
                 jaxa_rrt_bounds=(9.6, -11.9, 3.6, 12.3, -2.4, 6.0)):
         """Run one move-to-target goal; returns a ``STATUS_*`` constant.
