@@ -443,7 +443,7 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: false
       Autocompute Value Bounds:
-        Max Value: 3
+        Max Value: 2.5
         Min Value: 0
         Value: false
       Axis: Z
@@ -455,14 +455,14 @@ Visualization Manager:
       Enabled: true
       Invert Rainbow: false
       Max Color: 0; 120; 255
-      Max Intensity: 3
+      Max Intensity: 2.5
       Min Color: 255; 0; 0
       Min Intensity: 0
-      Name: "VCam main: points (red near / blue far, 0-3m)"
+      Name: "VCam main: points (red near / blue far, 0-2.5m)"
       Position Transformer: XYZ
       Selectable: false
       Size (Pixels): 2
-      Size (m): 0.02
+      Size (m): 0.04
       Style: Flat Squares
       Topic:
         Depth: 1
@@ -473,19 +473,6 @@ Visualization Manager:
         Value: /virtual_camera/main/points
       Use Fixed Frame: false
       Use rainbow: false
-      Value: true
-    - Class: rviz_default_plugins/Marker
-      Enabled: true
-      Name: "VCam main: frustum"
-      Namespaces:
-        virtual_camera: true
-      Topic:
-        Depth: 1
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /virtual_camera/main/frustum
       Value: true
     - Class: rviz_default_plugins/Image
       Enabled: false
@@ -504,7 +491,7 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: false
       Autocompute Value Bounds:
-        Max Value: 3
+        Max Value: 2.5
         Min Value: 0
         Value: false
       Axis: Z
@@ -516,14 +503,14 @@ Visualization Manager:
       Enabled: true
       Invert Rainbow: false
       Max Color: 0; 120; 255
-      Max Intensity: 3
+      Max Intensity: 2.5
       Min Color: 255; 0; 0
       Min Intensity: 0
-      Name: "VCam stereo: points (red near / blue far, 0-3m)"
+      Name: "VCam stereo: points (red near / blue far, 0-2.5m)"
       Position Transformer: XYZ
       Selectable: false
       Size (Pixels): 2
-      Size (m): 0.02
+      Size (m): 0.04
       Style: Flat Squares
       Topic:
         Depth: 1
@@ -534,19 +521,6 @@ Visualization Manager:
         Value: /virtual_camera/stereo/points
       Use Fixed Frame: false
       Use rainbow: false
-      Value: true
-    - Class: rviz_default_plugins/Marker
-      Enabled: true
-      Name: "VCam stereo: frustum"
-      Namespaces:
-        virtual_camera: true
-      Topic:
-        Depth: 1
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /virtual_camera/stereo/frustum
       Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true

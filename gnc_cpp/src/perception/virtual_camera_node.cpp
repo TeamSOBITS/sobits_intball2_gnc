@@ -107,6 +107,7 @@ public:
         frustum_depth_ = declare_parameter<double>("virtual_camera.frustum_depth", 1.0);
         threads_ = declare_parameter<int>("virtual_camera.threads", 4);
         publish_points_ = declare_parameter<bool>("virtual_camera.publish_points", false);
+        points_stride_ = std::max<int>(1, declare_parameter<int>("virtual_camera.points_stride", 4));
         reference_frame_ = declare_parameter<std::string>("virtual_camera.reference_frame", "iss_body");
         std::string map_file = declare_parameter<std::string>("virtual_camera.map_file", "jem_octomap.bt");
         const double mesh_resolution = declare_parameter<double>("virtual_camera.mesh_resolution", 0.02);
@@ -331,7 +332,9 @@ private:
         info.p = {pinhole.fx, 0, pinhole.cx, 0, 0, pinhole.fy, pinhole.cy, 0, 0, 0, 1, 0};
         c.info_pub->publish(info);
 
-        if (publish_points_) c.points_pub->publish(pointCloud(pinhole, depth, header));
+        // Only for viewing: skip building the cloud while nothing subscribes to it.
+        if (publish_points_ && c.points_pub->get_subscription_count() > 0)
+            c.points_pub->publish(pointCloud(pinhole, depth, header));
         c.frustum_pub->publish(frustum(pinhole, header));
     }
 
@@ -339,8 +342,8 @@ private:
                                              const std_msgs::msg::Header &header) const
     {
         std::vector<float> xyz;
-        for (int v = 0; v < pinhole.height; ++v)
-            for (int u = 0; u < pinhole.width; ++u) {
+        for (int v = 0; v < pinhole.height; v += points_stride_)
+            for (int u = 0; u < pinhole.width; u += points_stride_) {
                 const float z = depth[static_cast<std::size_t>(v) * pinhole.width + u];
                 if (!std::isfinite(z)) continue;
                 xyz.insert(xyz.end(), {static_cast<float>((u - pinhole.cx) / pinhole.fx * z),
@@ -411,6 +414,7 @@ private:
     double min_range_ = 0.0, max_range_ = 10.0, frustum_depth_ = 1.0;
     int threads_ = 4;
     bool publish_points_ = false;
+    int points_stride_ = 4;
     rclcpp::Subscription<gazebo_msgs::msg::ModelStates>::SharedPtr model_states_sub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr obstacles_pub_;
     rclcpp::TimerBase::SharedPtr timer_;

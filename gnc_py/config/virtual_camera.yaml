@@ -15,9 +15,10 @@
       rate_hz: 10.0                # sim time
       min_range: 0.25              # [m] closer -> -inf (REP 117); measured stereo limit (docs/archive/achieved/2026-09-28_stereo_camera_measurement.md)
       max_range: 3.0               # [m] nothing hit within -> +inf; stereo |error| p90 ~0.3 m up to 3 m
-      frustum_depth: 1.0           # [m] RViz frustum marker length only (capped at max_range)
+      frustum_depth: 3.0           # [m] RViz frustum marker length only (capped at max_range)
       threads: 4
-      publish_points: false        # /virtual_camera/points for RViz checks
+      publish_points: true         # /virtual_camera/<camera>/points, for viewing in RViz only; built only while something subscribes
+      points_stride: 4             # every n-th pixel in u and v (200x200 -> 50x50 points, ~30 KB/frame); viewing only, so sparse is fine
       map_file: jem_octomap.bt     # relative = share/sobits_intball2_gnc/maps/; "" = no static map
       mesh_resolution: 0.02        # [m]
 
