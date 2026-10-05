@@ -1,7 +1,8 @@
 """Unit tests for JaxaTrackingPointTracker (JAXA IAC-22 baseline)."""
 import numpy as np
+import pytest
 
-from sobits_intball2_gnc.control.utils.quat_math import quat_rotate
+from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle, quat_rotate
 from sobits_intball2_gnc.guidance.local_planner.jaxa_rrt_local_planner import JaxaPlannerConfig
 from sobits_intball2_gnc.guidance.trajectory_tracking import jaxa_tracking_point_tracker as jt
 from test_jaxa_rrt_local_planner import BOUNDS, make_grid
@@ -211,3 +212,78 @@ def test_blocked_route_rejoins_it_and_keeps_the_rest_of_the_route():
     # the route's corner survives after the rejoin: the path does not jump to the goal
     assert np.min(np.linalg.norm(path - np.array([2.0, 0.8, 0.0]), axis=1)) < 1e-9
     assert np.min(np.linalg.norm(path - np.array([2.0, 0.0, 0.0]), axis=1)) < 0.6
+
+
+# --- attitude: face the goal (default) or the path ahead ------------------------
+
+def make_attitude(pose, mode, route=L_ROUTE, goal=(3.5, 0.8, 0.0), **kwargs):
+    return jt.JaxaTrackingPointTracker(
+        pose.p, goal, pose, lambda _s: True, (0., 0., 0., 1.), make_grid(), BOUNDS, lookahead_m=0.3,
+        config=JaxaPlannerConfig(planner="rrt", rrt_iterations=300, max_attempts=5),
+        collision_check_period=0.05, goal_facing_hold_m=0.3, async_replan=False,
+        reference_route=route, attitude_mode=mode, **kwargs)
+
+
+def camera_axis(q):
+    return quat_rotate(q, [1., 0., 0.])
+
+
+def test_goal_mode_faces_the_goal_and_path_mode_faces_the_path_ahead():
+    goal_dir = np.array([3.0, 0.8, 0.0]) / np.linalg.norm([3.0, 0.8, 0.0])
+    pose = Pose([0.5, 0.0, 0.0])
+    q_goal = make_attitude(pose, "goal").sample(0.0)[3]
+    q_path = make_attitude(pose, "path").sample(0.0)[3]
+    np.testing.assert_allclose(camera_axis(q_goal), goal_dir, atol=1e-9)
+    np.testing.assert_allclose(camera_axis(q_path), [1., 0., 0.], atol=1e-9)  # first leg
+
+
+def test_path_mode_turn_rate_is_limited():
+    pose = Pose([0.5, 0.0, 0.0])
+    tracker = make_attitude(pose, "path", path_facing_max_rate_deg=20.0)
+    q_prev = tracker.sample(0.0)[3]
+    pose.p = np.array([2.0, 0.1, 0.0])  # the path ahead now runs along +y
+    t, turned = 0.0, 0.0
+    for _ in range(20):
+        t += 0.05
+        pose.stamp = t
+        q = tracker.sample(t)[3]
+        step = geodesic_angle(q_prev, q)
+        assert step <= np.radians(20.0) * 0.05 + 1e-9
+        turned += step
+        q_prev = q
+    assert turned > np.radians(20.0)  # it does turn, just not instantly
+
+
+def test_path_mode_holds_the_attitude_near_the_goal():
+    pose = Pose([0.5, 0.0, 0.0])
+    tracker = make_attitude(pose, "path")
+    q_start = tracker.sample(0.0)[3]
+    pose.p = np.array([3.4, 0.8, 0.0])  # inside goal_facing_hold_m
+    q_end = tracker.sample(0.1)[3]
+    np.testing.assert_allclose(q_end, q_start)
+
+
+def test_unknown_attitude_mode_is_rejected():
+    with pytest.raises(ValueError):
+        make_attitude(Pose([0.5, 0.0, 0.0]), "sideways")
+    with pytest.raises(ValueError):
+        make_attitude(Pose([0.5, 0.0, 0.0]), "path", path_facing_max_rate_deg=0.0)
+
+
+def test_tracker_builder_forwards_the_attitude_options():
+    from sobits_intball2_gnc.guidance.executor.tracker_builder import TrackerBuilder, TrajectoryBuildError
+
+    pose = Pose([0.5, 0.0, 0.0])
+    tf = type("TF", (), {"get_pose": staticmethod(pose)})()
+    builder = TrackerBuilder(tf, lambda _s: True, Log(), 0.5, 0.05, 1.0, None, 3.2, None,
+                             obstacle_map=ObstacleMap(make_grid()))
+    options = dict(builder_options(), attitude_mode="path", path_facing_ahead_m=0.7,
+                   path_facing_max_rate_deg=30.0)
+    tracker, _ = builder.build(pose.p, pose.q, GOAL, [], "jaxa_rrt", np.array([1., 0., 0.]), True,
+                               jaxa_options=options)
+    assert tracker._attitude_mode == "path"
+    assert tracker._facing_ahead == 0.7
+    np.testing.assert_allclose(tracker._facing_max_rate, np.radians(30.0))
+    with pytest.raises(TrajectoryBuildError):
+        builder.build(pose.p, pose.q, GOAL, [], "jaxa_rrt", np.array([1., 0., 0.]), True,
+                      jaxa_options=dict(builder_options(), attitude_mode="sideways"))

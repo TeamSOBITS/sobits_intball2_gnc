@@ -29,11 +29,15 @@ Drives :mod:`~sobits_intball2_gnc.guidance.local_planner.jaxa_rrt_local_planner`
   GIL and reads a snapshot so depth integration can continue.
 - Attitude: the paper's shot orientation planner points the camera at a target
   independently of the path, keeping the image level; with no shooting target
-  the goal is the target. The camera axis is pointed with ``compute_q_des``,
-  which keeps the current roll (as pre_align and face travel do), so a level
-  start stays level whichever way up the vehicle is. Within
-  ``goal_facing_hold_m`` of the goal the last attitude is held, since the
-  direction flips when the vehicle passes the goal (ours; not in the paper).
+  the goal is the target (``attitude_mode="goal"``, the default). The camera axis
+  is pointed with ``compute_q_des``, which keeps the current roll (as pre_align
+  and face travel do), so a level start stays level whichever way up the vehicle
+  is. ``attitude_mode="path"`` (ours; not in the paper) points it at the point
+  ``path_facing_ahead_m`` along the current path instead, as replan_minco's face
+  travel does, turning at most ``path_facing_max_rate_deg`` per second. Within
+  ``goal_facing_hold_m`` of the goal the last attitude is held in both modes,
+  since the direction flips when the vehicle passes the goal (ours; not in the
+  paper).
 - ``total_duration`` is ``inf`` until the tracking point has reached the goal,
   then that time, so the executor's position-convergence check starts there.
 - A failed plan sets ``failed`` (reason); the executor ends the goal.
@@ -52,6 +56,7 @@ from sobits_intball2_gnc.guidance.local_planner.jaxa_rrt_local_planner import (
     tracking_point,
 )
 from sobits_intball2_gnc.guidance.search.reference_route import densify
+from sobits_intball2_gnc.control.utils.quat_math import geodesic_angle, slerp
 from sobits_intball2_gnc.guidance.utils.attitude_reference import compute_q_des
 
 _ZERO3 = np.zeros(3)
@@ -63,6 +68,31 @@ REFERENCE_SPACING_M = 0.25
 _REJOIN_MARGIN_M = 1.0
 # Each replan draws fresh RRT* seeds (attempts use seed .. seed + max_attempts - 1).
 _SEED_STRIDE = 100
+
+
+ATTITUDE_MODES = ("goal", "path")
+
+
+def point_ahead(path, p, ahead):
+    """Point ``ahead`` metres along ``path`` past the point of it nearest to ``p``."""
+    best, k_best, t_best = np.inf, 0, 0.0
+    for k, (a, b) in enumerate(zip(path[:-1], path[1:])):
+        d = b - a
+        sq = float(np.dot(d, d))
+        t = 0.0 if sq < 1e-12 else float(np.clip(np.dot(p - a, d) / sq, 0.0, 1.0))
+        dist = float(np.linalg.norm(a + t * d - p))
+        if dist < best:
+            best, k_best, t_best = dist, k, t
+    q = path[k_best] + t_best * (path[k_best + 1] - path[k_best])
+    left = float(ahead)
+    for k in range(k_best, len(path) - 1):
+        seg = path[k + 1] - q
+        n = float(np.linalg.norm(seg))
+        if n >= left:
+            return q + seg * left / n
+        left -= n
+        q = path[k + 1]
+    return np.asarray(path[-1], dtype=float)
 
 
 class JaxaTrackingPointTracker:
@@ -84,13 +114,25 @@ class JaxaTrackingPointTracker:
             path in place of the start-goal line; its ends are replaced by
             ``p0`` and ``p_target``, as the MINCO tracker does.
         seed: first RRT* seed.
+        attitude_mode: ``"goal"`` faces the goal, ``"path"`` faces the path ahead
+            (see the module docstring).
+        path_facing_ahead_m, path_facing_max_rate_deg: ``"path"`` only; how far
+            along the path to look and the turn rate limit [deg/s].
 
     Raises :class:`JaxaPlanError` if the initial plan fails.
     """
 
     def __init__(self, p0, p_target, pose_fn, tf_fresh_fn, q0, obstacle_grid, bounds,
                  lookahead_m, config, collision_check_period, goal_facing_hold_m,
-                 forward_axis=(1.0, 0.0, 0.0), async_replan=True, seed=0, reference_route=None):
+                 forward_axis=(1.0, 0.0, 0.0), async_replan=True, seed=0, reference_route=None,
+                 attitude_mode="goal", path_facing_ahead_m=0.5, path_facing_max_rate_deg=20.0):
+        if attitude_mode not in ATTITUDE_MODES:
+            raise ValueError("attitude_mode must be one of %s, got %r" % (ATTITUDE_MODES, attitude_mode))
+        if path_facing_ahead_m <= 0.0 or path_facing_max_rate_deg <= 0.0:
+            raise ValueError("path_facing_ahead_m and path_facing_max_rate_deg must be positive")
+        self._attitude_mode = attitude_mode
+        self._facing_ahead = float(path_facing_ahead_m)
+        self._facing_max_rate = np.radians(float(path_facing_max_rate_deg))
         self._goal = np.asarray(p_target, dtype=float)
         self._pose_fn = pose_fn
         self._tf_fresh_fn = tf_fresh_fn
@@ -136,6 +178,8 @@ class JaxaTrackingPointTracker:
         else:
             path, info = self._solve(p0)
         self._path = path
+        if self._attitude_mode == "path":
+            self._q = self._facing_path(np.asarray(p0, dtype=float), self._q, rate_limited=False)
         self.plans.append(info)
         self.last_replan_solve_seconds = info["plan_s"]
 
@@ -157,6 +201,26 @@ class JaxaTrackingPointTracker:
 
     def _facing_goal(self, p, q_prev):
         return np.asarray(compute_q_des(self._goal - p, q_prev, 0.0, self._forward_axis), dtype=float)
+
+    def _facing_path(self, p, q_prev, rate_limited, dt=0.0):
+        direction = point_ahead(self._path, p, self._facing_ahead) - p
+        if np.linalg.norm(direction) < 1e-6:
+            return np.asarray(q_prev, dtype=float)
+        q_new = np.asarray(compute_q_des(direction, q_prev, 0.0, self._forward_axis), dtype=float)
+        if not rate_limited:
+            return q_new
+        step = self._facing_max_rate * dt
+        angle = geodesic_angle(q_prev, q_new)
+        if angle <= step or angle < 1e-9:
+            return q_new
+        return np.asarray(slerp(q_prev, q_new, step / angle), dtype=float)
+
+    def _next_attitude(self, p, dt):
+        if np.linalg.norm(self._goal - p) <= self._hold_m:
+            return self._q
+        if self._attitude_mode == "goal":
+            return self._facing_goal(p, self._q)
+        return self._facing_path(p, self._q, rate_limited=True, dt=dt)
 
     def set_obstacle_grid(self, grid):
         self._grid = grid
@@ -274,8 +338,7 @@ class JaxaTrackingPointTracker:
                     self._p_hold = p
                     return self._p_hold.copy(), _ZERO3.copy(), _ZERO3.copy(), self._q.copy()
                 target, i = tracking_point(self._path, p, self._lookahead)
-        if np.linalg.norm(self._goal - p) > self._hold_m:
-            self._q = self._facing_goal(p, self._q)
+        self._q = self._next_attitude(p, dt)
         if self._goal_reached_t is None and np.linalg.norm(target - self._goal) < 1e-9:
             self._goal_reached_t = t
         self._p_hold = target

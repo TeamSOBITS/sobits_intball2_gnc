@@ -123,6 +123,11 @@ GUIDANCE_PARAM_DEFAULTS = {
     "guidance.jaxa_max_attempts": 50,
     "guidance.jaxa_collision_check_period": 0.05,
     "guidance.jaxa_goal_facing_hold_m": 0.3,
+    # "goal": face the goal (the paper's no-target default); "path": face the point
+    # jaxa_path_facing_ahead_m along the path, at most jaxa_path_facing_max_rate_deg/s.
+    "guidance.jaxa_attitude_mode": "goal",
+    "guidance.jaxa_path_facing_ahead_m": 0.5,
+    "guidance.jaxa_path_facing_max_rate_deg": 20.0,
     "guidance.jaxa_rrt_bounds": [9.6, -11.9, 3.6, 12.3, -2.4, 6.0],  # RRT* sampling box (JEM)
     # replan_minco obstacle avoidance (docs/2026-09-24_obstacle_avoidance_
     # production_integration_plan.md). The map/grid ones are read once at startup;
@@ -234,6 +239,9 @@ MOTION_PROFILES = {
         "jaxa_max_attempts": 50,
         "jaxa_collision_check_period": 0.05,
         "jaxa_goal_facing_hold_m": 0.3,
+        "jaxa_attitude_mode": "goal",
+        "jaxa_path_facing_ahead_m": 0.5,
+        "jaxa_path_facing_max_rate_deg": 20.0,
     },
 }
 MOTION_PROFILE_FIELDS = frozenset(
@@ -268,6 +276,9 @@ _GOAL_EXECUTE_PARAMS = {
     "jaxa_max_attempts": ("jaxa_max_attempts", int),
     "jaxa_collision_check_period": ("jaxa_collision_check_period", float),
     "jaxa_goal_facing_hold_m": ("jaxa_goal_facing_hold_m", float),
+    "jaxa_attitude_mode": ("jaxa_attitude_mode", str),
+    "jaxa_path_facing_ahead_m": ("jaxa_path_facing_ahead_m", float),
+    "jaxa_path_facing_max_rate_deg": ("jaxa_path_facing_max_rate_deg", float),
     "jaxa_rrt_bounds": ("jaxa_rrt_bounds", lambda v: [float(x) for x in v]),
 }
 

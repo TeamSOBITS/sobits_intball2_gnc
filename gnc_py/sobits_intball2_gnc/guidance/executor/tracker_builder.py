@@ -206,8 +206,9 @@ class TrackerBuilder:
     def _build_jaxa(self, p0, q0, p_target, via_waypoints, forward_axis, options,
                     reference_route=None):
         """``options``: ``lookahead_m``, ``bounds`` ([xmin, ymin, zmin, xmax, ymax, zmax]),
-        ``collision_check_period``, ``goal_facing_hold_m`` and the
-        :class:`JaxaPlannerConfig` fields."""
+        ``collision_check_period``, ``goal_facing_hold_m``, the optional
+        ``attitude_mode``, ``path_facing_ahead_m``, ``path_facing_max_rate_deg``
+        and the :class:`JaxaPlannerConfig` fields."""
         if self._obstacle_map is None:
             raise TrajectoryBuildError("jaxa_rrt needs an obstacle map")
         if via_waypoints:
@@ -216,6 +217,9 @@ class TrackerBuilder:
         bounds = [float(x) for x in options.pop("bounds")]
         tracker_kwargs = {key: options.pop(key) for key in
                           ("lookahead_m", "collision_check_period", "goal_facing_hold_m")}
+        tracker_kwargs.update({key: options.pop(key) for key in
+                               ("attitude_mode", "path_facing_ahead_m", "path_facing_max_rate_deg")
+                               if key in options})
         try:
             tracker = JaxaTrackingPointTracker(
                 p0, p_target, pose_fn=self._tf.get_pose, tf_fresh_fn=self._tf_fresh_fn,
@@ -223,6 +227,8 @@ class TrackerBuilder:
                 bounds=(bounds[:3], bounds[3:]), config=JaxaPlannerConfig(**options),
                 forward_axis=forward_axis, async_replan=True, reference_route=reference_route,
                 **tracker_kwargs)
+        except ValueError as exc:
+            raise TrajectoryBuildError("jaxa_rrt: %s" % exc) from exc
         except JaxaPlanError as exc:
             raise TrajectoryBuildError("jaxa_rrt initial plan failed (%s)" % exc) from exc
         self._obstacle_tracker = tracker

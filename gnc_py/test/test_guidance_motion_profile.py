@@ -100,3 +100,16 @@ def test_the_hard_clearance_can_be_raised_per_goal():
         _node("avoidance", minco_obstacle_clearance=0.15),
         overrides=("minco_obstacle_clearance",))
     assert kwargs["minco_obstacle_clearance"] == 0.15
+
+
+def test_jaxa_baseline_faces_the_goal_unless_the_attitude_mode_is_overridden():
+    _profile, _mode, kwargs = goal_motion_profile(_node("jaxa_baseline"))
+    assert kwargs["jaxa_attitude_mode"] == "goal"
+    assert kwargs["jaxa_path_facing_ahead_m"] == 0.5
+    assert kwargs["jaxa_path_facing_max_rate_deg"] == 20.0
+
+    node = _node("jaxa_baseline", jaxa_attitude_mode="path", jaxa_path_facing_max_rate_deg=40.0)
+    _profile, _mode, kwargs = goal_motion_profile(
+        node, {"jaxa_attitude_mode", "jaxa_path_facing_max_rate_deg"})
+    assert kwargs["jaxa_attitude_mode"] == "path"
+    assert kwargs["jaxa_path_facing_max_rate_deg"] == 40.0

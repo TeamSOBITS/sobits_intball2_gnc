@@ -209,6 +209,9 @@ ros2 param set /guidance_node guidance.motion_profile avoidance
 | `guidance.jaxa_max_attempts` | 平滑化後の経路が衝突したとき（またはRRT*が経路を見つけられないとき）に解き直す回数の上限 | `50` |
 | `guidance.jaxa_collision_check_period` | 残りの経路の衝突確認の周期[s] | `0.05` |
 | `guidance.jaxa_goal_facing_hold_m` | ゴールからこの距離[m]以内では姿勢を固定する | `0.3` |
+| `guidance.jaxa_attitude_mode` | 飛行中の姿勢の向け方。`goal` = ゴールを向く（論文の「撮影対象がないときはゴール」）、`path` = 追っている経路の先を向く（replan_minco と同じ。論文にはない） | `goal` |
+| `guidance.jaxa_path_facing_ahead_m` | `path` のとき、経路をこの距離[m]先まで見た点を向く | `0.5` |
+| `guidance.jaxa_path_facing_max_rate_deg` | `path` のときの姿勢の回転上限[°/s]（仮の値、未調整） | `20.0` |
 | `guidance.jaxa_rrt_bounds` | RRT*のサンプリング範囲 `[xmin, ymin, zmin, xmax, ymax, zmax]`（JEM） | `[9.6, -11.9, 3.6, 12.3, -2.4, 6.0]` |
 
 ### 姿勢合わせ・到着判定
