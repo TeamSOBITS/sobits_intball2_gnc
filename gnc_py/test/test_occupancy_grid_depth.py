@@ -168,6 +168,31 @@ def test_occupied_cells_lie_on_rendered_box_surface():
     assert np.all(np.abs(cells[:, 1:] - center[1:]) <= half[1:] + RES)
 
 
+def test_grazing_face_is_occupied():
+    """A face seen nearly edge-on: rays to its far part cross the cells of its near part, so
+    those cells get more misses than hits each frame (docs/archive/jaxa_baseline_gazebo_port_plan.md,
+    2026-10-05). A hit must still win, or the face never enters the grid."""
+    renderer = sobits_intball2_gnc_cpp.DepthRenderer()
+    face_y = -0.25
+    center, half = np.array([1.75, face_y - 0.3, 0.0]), np.array([0.75, 0.3, 0.25])
+    box = (list(center), list(half), IDENTITY)
+    origin = [0.0, 0.0, 0.0]
+    w = h = 100
+    f, c = 60.0, 49.5
+    depth = renderer.render(origin, LOOK_X, f, f, c, c, w, h, boxes=[box], max_range=3.0)
+    depth[np.isnan(depth)] = np.inf
+    grid = sobits_intball2_gnc_cpp.OccupancyGrid(RES, 0.0)
+    grid.enable_depth_layer([-0.5, -1.5, -1.5], [3.0, 1.5, 1.5])
+    for _ in range(8):
+        grid.integrate_depth(depth, f, f, c, c, LOOK_X, origin)
+    cells = grid.depth_occupied_cells()
+    side = cells[(np.abs(cells[:, 1] - face_y) <= RES) & (cells[:, 0] >= 1.0) & (cells[:, 0] <= 2.5)]
+    # The face spans 15 cells in x; far ones get no ray at this resolution, so require most of
+    # the span up to its far part (the majority vote kept 4 cells near its front edge).
+    columns = np.unique(np.round(side[:, 0], 3))
+    assert len(columns) >= 8 and columns.max() >= 2.0
+
+
 def test_without_depth_layer_matches_static_only():
     grid = sobits_intball2_gnc_cpp.OccupancyGrid(0.1, 0.2)
     grid.add_box([0.0, 0.0, 0.0], [0.15, 0.05, 0.05])

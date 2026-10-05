@@ -288,7 +288,9 @@ DepthIntegrationStats OccupancyGrid::integrateDepth(const float *depth, int widt
     for (const std::size_t i : touched_)
     {
         const bool wasOccupied = logOdds_[i] >= logOcc_;
-        const float delta = hitVotes_[i] >= missVotes_[i] ? logHit_ : logMiss_;
+        // Any hit wins: rays to the far part of a face seen nearly edge-on cross the cells of its
+        // near part, so a majority vote cleared such faces (docs/archive/jaxa_baseline_gazebo_port_plan.md).
+        const float delta = hitVotes_[i] > 0 ? logHit_ : logMiss_;
         logOdds_[i] = std::clamp(logOdds_[i] + delta, logMin_, logMax_);
         const bool occupied = logOdds_[i] >= logOcc_;
         if (occupied != wasOccupied)
