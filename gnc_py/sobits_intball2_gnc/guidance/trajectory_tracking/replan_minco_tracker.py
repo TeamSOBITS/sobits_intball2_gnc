@@ -226,6 +226,7 @@ class ReplanMincoTracker:
         self.last_replan_lag_seconds = None
         self.last_replan_source = None
         self.last_replan_collides = None
+        self.last_replan_jump_m = None
         self.last_replan_wrench_use = None
         # (F, g) half-spaces and the isotropic mass / inertia, only to report how much of the envelope
         # an adopted local plan uses; the planner enforces its own copy.
@@ -556,8 +557,13 @@ class ReplanMincoTracker:
             self.last_fallback_reason = "minco_infeasible_local"
             self.last_local_fallback = True
             return
+        # How far the reference jumps when the new local replaces the old one: grows with the solve
+        # lag, since the new local is sampled ``lag`` seconds in while the old one has played on.
+        p_before = np.asarray(self._local_trajectory.sample(self._local_elapsed)[0], dtype=float)
         self._local_trajectory, self._local_touches_goal = result
         self._local_elapsed = lag
+        self.last_replan_jump_m = float(np.linalg.norm(
+            np.asarray(self._local_trajectory.sample(lag)[0], dtype=float) - p_before))
         self.last_replan_occurred = True
         self.last_replan_solve_seconds = self._local_trajectory.solve_wall_seconds
         self.last_replan_lag_seconds = lag

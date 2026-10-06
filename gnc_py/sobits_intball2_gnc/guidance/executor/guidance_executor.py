@@ -802,12 +802,13 @@ class GuidanceExecutor:
             if getattr(tracker, "last_replan_occurred", False):
                 self._log.info(
                     "[GuidanceExecutor] replanning: re-planned trajectory at "
-                    "t=%.2fs (solve=%.3fs, lag=%.3fs, source=%s, collides=%s, wrench_use=%.2f)"
+                    "t=%.2fs (solve=%.3fs, lag=%.3fs, source=%s, collides=%s, jump=%.3fm, wrench_use=%.2f)"
                     % (sample_t, getattr(tracker, "last_replan_solve_seconds", None)
                        or float("nan"),
                        getattr(tracker, "last_replan_lag_seconds", None) or 0.0,
                        getattr(tracker, "last_replan_source", None),
                        getattr(tracker, "last_replan_collides", None),
+                       getattr(tracker, "last_replan_jump_m", None) or 0.0,
                        getattr(tracker, "last_replan_wrench_use", None) or float("nan"))
                 )
                 if self._speed_path_pub is not None and getattr(tracker, "trajectory", None) is not None:

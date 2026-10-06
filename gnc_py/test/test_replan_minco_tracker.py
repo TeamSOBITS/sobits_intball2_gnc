@@ -336,6 +336,21 @@ def test_async_replan_keeps_old_local_while_solving_then_swaps_continuously():
     p_old, v_old, _a_old, _q_old = old_local.sample(t)
     assert np.allclose(p, p_old, atol=1e-3)
     assert np.allclose(v, v_old, atol=1e-3)
+    assert tracker.last_replan_jump_m == pytest.approx(0.0, abs=1e-3)
+
+
+def test_adopting_a_late_local_reports_the_reference_jump():
+    class _OffsetLocal:
+        solve_wall_seconds = 5.0
+
+        def sample(self, t):
+            return np.array([0.4, 0.0, 0.0]), np.zeros(3), np.zeros(3), np.array([0.0, 0.0, 0.0, 1.0])
+
+    tracker = _make_tracker(_IdealTrackingTf(), async_replan=True)
+    p_old = np.asarray(tracker.local_trajectory.sample(0.0)[0])
+    tracker._adopt_local((_OffsetLocal(), False), 7.0, "async")
+    assert tracker.last_replan_lag_seconds == 7.0
+    assert tracker.last_replan_jump_m == pytest.approx(np.linalg.norm(np.array([0.4, 0.0, 0.0]) - p_old))
 
 
 def test_adopting_a_local_reports_the_share_of_the_wrench_envelope_it_uses():
