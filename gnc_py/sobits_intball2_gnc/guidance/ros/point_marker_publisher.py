@@ -31,3 +31,11 @@ class PointMarkerPublisher:
         m.pose.position.x, m.pose.position.y, m.pose.position.z = (float(x) for x in p)
         m.pose.orientation.w = 1.0
         self._pub.publish(m)
+
+    def clear(self) -> None:
+        m = Marker()
+        m.header.frame_id = self._frame
+        m.header.stamp = self._node.get_clock().now().to_msg()
+        m.ns = "point"
+        m.action = Marker.DELETE
+        self._pub.publish(m)

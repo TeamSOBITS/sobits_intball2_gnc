@@ -494,7 +494,24 @@ class GuidanceNode(Node):
 
     def _execute_fn(self, p_target, q_target, feedback_cb, is_cancel_requested,
                     relative=False):
-        """``CtlCommandActionServer``'s ``execute_fn`` (module docstring).
+        """``CtlCommandActionServer``'s ``execute_fn``: run the goal, then clear
+        its RViz path markers (the latched topics would otherwise keep the last
+        path on screen until the next goal)."""
+        try:
+            return self._execute_goal(
+                p_target, q_target, feedback_cb, is_cancel_requested, relative)
+        finally:
+            self._clear_goal_visualization()
+
+    def _clear_goal_visualization(self) -> None:
+        for pub in (self._speed_path_pub, self._local_speed_path_pub,
+                    self._astar_path_pub, self._jaxa_path_pub,
+                    self._jaxa_tracking_point_pub):
+            pub.clear()
+
+    def _execute_goal(self, p_target, q_target, feedback_cb, is_cancel_requested,
+                      relative=False):
+        """The body of ``_execute_fn`` (module docstring).
 
         All mode/option params are read from ``guidance.*`` here, at goal
         receipt, so each goal latches the values in effect at that moment

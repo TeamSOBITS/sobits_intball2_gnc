@@ -122,6 +122,16 @@ class SpeedPathPublisher:
             "[SpeedPathPublisher] published %d-point speed path" % len(marker.points)
         )
 
+    def clear(self) -> None:
+        """Delete the latched marker so RViz drops it."""
+        marker = Marker()
+        marker.header.frame_id = self._reference_frame
+        marker.header.stamp = self._node.get_clock().now().to_msg()
+        marker.ns = "speed_path"
+        marker.id = 0
+        marker.action = Marker.DELETE
+        self._pub.publish(marker)
+
 
 def main(args=None) -> None:
     """Standalone manual test: publish a short straight-line speed path once.

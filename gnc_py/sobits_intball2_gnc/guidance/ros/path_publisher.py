@@ -97,6 +97,13 @@ class PathPublisher:
             "[PathPublisher] published %d-point path" % len(msg.poses)
         )
 
+    def clear(self) -> None:
+        """Replace the latched path with an empty one so RViz drops it."""
+        msg = Path()
+        msg.header.frame_id = self._reference_frame
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        self._pub.publish(msg)
+
 
 def main(args=None) -> None:
     """Standalone manual test: publish a short straight-line path once.
