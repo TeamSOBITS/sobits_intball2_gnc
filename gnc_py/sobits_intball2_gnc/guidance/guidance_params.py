@@ -162,6 +162,9 @@ GUIDANCE_PARAM_DEFAULTS = {
     # plan made the reference jump; 1e-3 keeps them under ~0.5 s but can let the plan pass a few cm
     # closer.
     "guidance.minco_obstacle_lbfgs_delta": 1e-3,
+    # Log the share of the planning envelope each adopted local needs (wrench_use), computed in the
+    # background solve thread (synchronous solves log nan). False skips it.
+    "guidance.minco_report_wrench_use": True,
     # Obstacles from boxes (/guidance/virtual_obstacles) or the depth camera
     # (docs/archive/2026-09-28_virtual_camera_depth_mapping_plan.md). Read once at startup.
     "guidance.obstacle_source": "boxes",
@@ -290,6 +293,7 @@ _GOAL_EXECUTE_PARAMS = {
     "minco_obstacle_clearance_soft": ("minco_obstacle_clearance_soft", float),
     "minco_obstacle_clearance": ("minco_obstacle_clearance", float),
     "minco_obstacle_lbfgs_delta": ("minco_obstacle_lbfgs_delta", float),
+    "minco_report_wrench_use": ("minco_report_wrench_use", bool),
     "jaxa_lookahead_m": ("jaxa_lookahead_m", float),
     "jaxa_ompl_solve_time_s": ("jaxa_ompl_solve_time_s", float),
     "jaxa_max_attempts": ("jaxa_max_attempts", int),

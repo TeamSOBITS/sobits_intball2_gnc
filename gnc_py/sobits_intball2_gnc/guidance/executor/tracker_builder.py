@@ -80,6 +80,7 @@ class TrackerBuilder:
               minco_async_replan=False, minco_obstacle_avoidance=False,
               minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2,
               minco_obstacle_clearance=None, minco_obstacle_lbfgs_delta=None, minco_scalar_limits=None,
+              minco_report_wrench_use=True,
               jaxa_options=None, reference_route=None):
         """Returns ``(tracker, traj)``: ``traj`` is the trajectory to preview (the
         tracked one, the global one for ``replan_minco``, ``None`` for ``jaxa_rrt``).
@@ -145,6 +146,7 @@ class TrackerBuilder:
                     reference_route=reference_route,
                     wrench_envelope=self._wrench_envelope, mass=self._mass, inertia=self._inertia,
                     scalar_limits=minco_scalar_limits,
+                    report_wrench_use=minco_report_wrench_use,
                     **obstacle_kwargs,
                 )
                 if getattr(replan_tracker, "initial_local_collides", False):

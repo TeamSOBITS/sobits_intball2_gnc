@@ -344,15 +344,20 @@ def test_adopting_a_local_reports_the_share_of_the_wrench_envelope_it_uses():
     allocator = ThrustAllocator()
     envelope = wrench_envelope_halfspaces(allocator.A, allocator.fj_max)
     tracker = _make_tracker(_IdealTrackingTf(), wrench_envelope=envelope, mass=3.216, inertia=0.0136)
-    tracker._adopt_local((tracker.local_trajectory, False), 0.0, "periodic")
+    tracker._solve_local_in_background(tracker._reference_start_state())
+    tracker._adopt_local(tracker._pending_result, 0.0, "async")
     use = tracker.last_replan_wrench_use
     assert use is not None and 0.0 < use < 1.05   # the planner (margin 1.0) works up to the boundary
     # Half the envelope scale means twice the share.
     half = (envelope[0], envelope[1] * 0.5)
     tracker._wrench_envelope = half
     assert tracker._planned_wrench_use(tracker.local_trajectory, 0.0) == pytest.approx(2.0 * use)
+    # Synchronous adoptions do not compute it (it would hold the setpoint loop).
+    tracker._adopt_local(tracker._try_build_local(tracker._reference_start_state()), 0.0, "periodic")
+    assert tracker.last_replan_wrench_use is None
     unconfigured = _make_tracker(_IdealTrackingTf())
-    unconfigured._adopt_local((unconfigured.local_trajectory, False), 0.0, "periodic")
+    unconfigured._solve_local_in_background(unconfigured._reference_start_state())
+    unconfigured._adopt_local(unconfigured._pending_result, 0.0, "async")
     assert unconfigured.last_replan_wrench_use is None
 
 
@@ -876,3 +881,24 @@ def test_the_obstacle_lbfgs_delta_reaches_only_the_obstacle_solves(monkeypatch):
     with_grid = [c for c in calls if c.get("grid") is not None]
     assert with_grid and all(c["lbfgs_delta"] == 1e-3 for c in with_grid)
     assert all("lbfgs_delta" not in c for c in calls if c.get("grid") is None)
+
+
+def test_the_wrench_use_is_computed_off_the_setpoint_loop(monkeypatch):
+    tracker = _make_tracker(_IdealTrackingTf())
+    tracker._solve_local_in_background(tracker._reference_start_state())
+    result = tracker._pending_result
+    assert result is not None and result[0].planned_wrench_use is None  # no envelope configured here
+    result[0].planned_wrench_use = 0.42
+    monkeypatch.setattr(tracker, "_planned_wrench_use",
+                        lambda *a, **k: pytest.fail("wrench use computed in the setpoint loop"))
+    tracker._adopt_local(result, 0.0, "async")
+    assert tracker.last_replan_wrench_use == 0.42
+
+
+def test_the_wrench_use_report_can_be_switched_off(monkeypatch):
+    tracker = _make_tracker(_IdealTrackingTf(), report_wrench_use=False)
+    monkeypatch.setattr(tracker, "_planned_wrench_use",
+                        lambda *a, **k: pytest.fail("wrench use computed while switched off"))
+    tracker._solve_local_in_background(tracker._reference_start_state())
+    tracker._adopt_local(tracker._pending_result, 0.0, "async")
+    assert tracker.last_replan_occurred and tracker.last_replan_wrench_use is None

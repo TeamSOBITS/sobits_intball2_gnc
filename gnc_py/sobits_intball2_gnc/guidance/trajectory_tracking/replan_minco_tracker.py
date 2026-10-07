@@ -174,7 +174,7 @@ class ReplanMincoTracker:
                  collision_check_period=DEFAULT_COLLISION_CHECK_PERIOD_S,
                  sensor_fresh_fn=None, reference_route=None,
                  obstacle_clearance=None, wrench_envelope=None, mass=None, inertia=None,
-                 scalar_limits=None, obstacle_lbfgs_delta=None):
+                 scalar_limits=None, obstacle_lbfgs_delta=None, report_wrench_use=True):
         if (target_speed is None) != (max_accel is None):
             raise ValueError(
                 "target_speed and max_accel must be given together (both "
@@ -232,6 +232,7 @@ class ReplanMincoTracker:
         self._wrench_envelope = wrench_envelope
         self._mass = mass
         self._inertia = inertia
+        self._report_wrench_use = bool(report_wrench_use)
 
         self._planner = MincoLocalPlanner(
             p0, v0, p_target, self._q0, target_speed, max_accel, route_waypoints,
@@ -537,7 +538,12 @@ class ReplanMincoTracker:
 
     def _solve_local_in_background(self, start_state):
         try:
-            self._pending_result = self._try_build_local(start_state)
+            result = self._try_build_local(start_state)
+            if result is not None and self._report_wrench_use:
+                # Here, not in _adopt_local: computed in the setpoint loop it held the setpoints for
+                # ~0.05-0.1 s per adoption, and the vehicle fell behind and saturated the fans.
+                result[0].planned_wrench_use = self._planned_wrench_use(result[0], 0.0)
+            self._pending_result = result
         except Exception as exc:  # re-raised on the sampling thread in _adopt_local
             self._pending_result = exc
 
@@ -556,7 +562,8 @@ class ReplanMincoTracker:
         self.last_replan_solve_seconds = self._local_trajectory.solve_wall_seconds
         self.last_replan_lag_seconds = lag
         self.last_replan_source = source
-        self.last_replan_wrench_use = self._planned_wrench_use(self._local_trajectory, lag)
+        # Only background solves carry it (whole local, not from ``lag``); None for the synchronous ones.
+        self.last_replan_wrench_use = getattr(self._local_trajectory, "planned_wrench_use", None)
         self.last_replan_collides = (self._planner.obstacle_grid is not None
                                      and self._local_collides(*result))
 

@@ -164,6 +164,7 @@
       minco_local_piece_length_m: 1.5        # [m] local piece length when avoiding (EGO v2 polyTraj_piece_length)
       minco_obstacle_clearance_soft: 0.2     # [m] soft clearance from collided obstacles
       minco_obstacle_clearance: 0.1          # [m] hard clearance, the enforced floor; must stay below _soft
+      minco_report_wrench_use: true          # log wrench_use per adopted local (computed in the background solve thread); false skips it
       minco_obstacle_lbfgs_delta: 1.0e-3     # L-BFGS stop of the avoiding local solve; smaller = slower solves (replan lag), larger = may pass closer
       # jaxa_rrt (JAXA IAC-22 baseline, docs/jaxa_baseline_gazebo_port_plan.md); the
       # jaxa_baseline profile sets these except jaxa_rrt_bounds

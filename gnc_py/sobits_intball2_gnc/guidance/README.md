@@ -202,6 +202,7 @@ ros2 param set /guidance_node guidance.motion_profile avoidance
 | `guidance.minco_obstacle_clearance_soft` | 障害物を避けるときの緩い余裕[m]（ぶつかった障害物から離す距離） | `0.2` |
 | `guidance.minco_obstacle_clearance` | 障害物に対する硬い余裕[m]（守る下限）。`_soft`より小さくする | `0.1` |
 | `guidance.minco_obstacle_lbfgs_delta` | 障害物を避ける局所の計算（rebound）の、L-BFGS の打ち切り（3 反復の相対的なコストの減少）。小さいほど解に時間がかかり、遅れて採用された計画で基準が跳ぶ。大きいほど速いが、障害物に少し近づき得る。大域と障害物なしの計算は 1e-8 のまま。ゴールごとに有効 | `1e-3` |
+| `guidance.minco_report_wrench_use` | 採用した局所の計画が、計画用のエンベロープ（`wrench_envelope_safety_margin`倍）の何割を使うかをログに出す（`wrench_use`）。非同期の解のスレッドで計算する（同期の解では `nan`）。`false` で計算を止める。ゴールごとに有効 | `true` |
 | `guidance.minco_async_replan` | `replan_minco`のlocal再計画をsetpointのループとは別に解く | `true` |
 | `guidance.global_planner` | `replan_minco`のglobal経路。`straight`は直線、`astar`は出発前にA*で作った共通の経路（`avoidance`・`jaxa_baseline`） | `straight` |
 
