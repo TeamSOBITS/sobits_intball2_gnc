@@ -92,7 +92,8 @@ class MincoLocalPlanner:
                  planning_horizon_m, via_half_width, wrench_safety_margin,
                  attitude_resample_spacing_m, face_travel, forward_axis, local_max_vel,
                  local_piece_length_m, obstacle_grid, obstacle_clearance_soft, corridor_planes=None,
-                 reference_route=None, obstacle_clearance=None, scalar_limits=None):
+                 reference_route=None, obstacle_clearance=None, scalar_limits=None,
+                 obstacle_lbfgs_delta=None):
         self.p_target = np.asarray(p_target, dtype=float)
         self._q0 = np.asarray(q0, dtype=float)
         self._target_speed = None if target_speed is None else float(target_speed)
@@ -111,6 +112,7 @@ class MincoLocalPlanner:
         self.obstacle_grid = obstacle_grid
         self._obstacle_clearance_soft = float(obstacle_clearance_soft)
         self._obstacle_clearance = None if obstacle_clearance is None else float(obstacle_clearance)
+        self._obstacle_lbfgs_delta = None if obstacle_lbfgs_delta is None else float(obstacle_lbfgs_delta)
         if self._obstacle_clearance is not None:
             if not self._obstacle_clearance > 0.0:
                 raise ValueError("obstacle_clearance must be positive")
@@ -385,7 +387,8 @@ class MincoLocalPlanner:
                 body_frame_wrench=True, obstacle_grid=obstacle_grid,
                 obstacle_touch_goal=touch_goal,
                 obstacle_clearance_soft=self._obstacle_clearance_soft,
-                obstacle_clearance=self._obstacle_clearance)
+                obstacle_clearance=self._obstacle_clearance,
+                obstacle_lbfgs_delta=self._obstacle_lbfgs_delta)
 
         obstacle_grid = self.obstacle_grid
         if obstacle_grid is not None and hasattr(obstacle_grid, "snapshot"):

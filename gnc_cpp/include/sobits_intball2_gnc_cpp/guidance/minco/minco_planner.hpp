@@ -57,6 +57,8 @@ struct PlanResult
 // max_accel_norm / max_angular_accel_norm [m/s^2, rad/s^2]: both > 0 replace the fan wrench envelope by EGO-style
 // norm limits on the acceleration and the angular acceleration (wrench_safety_margin then has no effect);
 // <= 0 keeps the envelope. Same for planMincoHeuristicTime.
+// lbfgs_delta: L-BFGS stop on relative cost decrease over 3 iterations. Looser values end the rebound
+// solves sooner (shorter replan lag) at the cost of a less settled obstacle term (the plan can pass closer).
 // obstacle_clearance(_soft): 障害物コストの硬い・柔らかい安全距離[m]。
 // grid: 渡すとRA-L 2021のAlg. 2に基づき、初期軌道の衝突確認→組→最適化
 // （途中のrebound最大20回、細かい確認で衝突したらやり直し最大3回）を行う。衝突が残ればerror_code=2。
@@ -80,7 +82,8 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       const mapping::OccupancyGrid *grid = nullptr,
                       const std::optional<std::vector<double>> &corridor_planes = std::nullopt,
                       double max_accel_norm = -1.0,
-                      double max_angular_accel_norm = -1.0);
+                      double max_angular_accel_norm = -1.0,
+                      double lbfgs_delta = 1e-8);
 
 // planMincoとの違い: セグメント時間Tを自由変数にせず、内部で
 // (1) ヒューリスティックな初期T（経路全体の弧長比配分、v0-aware台形/三角形

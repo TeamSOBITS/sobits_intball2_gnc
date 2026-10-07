@@ -489,6 +489,7 @@ def run_minco(scen, trace=None):
         route_waypoints=None, via_half_width=0., face_travel=True,
         forward_axis=FWD, local_max_vel=OPTS["minco_max_vel"], local_piece_length_m=base.LOCAL_PIECE_LENGTH,
         obstacle_grid=grid, obstacle_clearance_soft=base.LOCAL_CLEARANCE_SOFT,
+        obstacle_lbfgs_delta=base.LOCAL_LBFGS_DELTA,
         local_replan_period=base.LOCAL_REPLAN_PERIOD, planning_horizon_m=base.LOCAL_HORIZON,
         async_replan=sim_matched())
     box[0] = tracker

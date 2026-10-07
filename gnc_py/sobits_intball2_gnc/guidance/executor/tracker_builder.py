@@ -79,7 +79,7 @@ class TrackerBuilder:
               minco_replan_face_travel=False, minco_local_max_vel=None,
               minco_async_replan=False, minco_obstacle_avoidance=False,
               minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2,
-              minco_obstacle_clearance=None, minco_scalar_limits=None,
+              minco_obstacle_clearance=None, minco_obstacle_lbfgs_delta=None, minco_scalar_limits=None,
               jaxa_options=None, reference_route=None):
         """Returns ``(tracker, traj)``: ``traj`` is the trajectory to preview (the
         tracked one, the global one for ``replan_minco``, ``None`` for ``jaxa_rrt``).
@@ -114,7 +114,7 @@ class TrackerBuilder:
         if mode == "replan_minco" and minco_obstacle_avoidance:
             obstacle_kwargs = self._obstacle_tracker_kwargs(
                 minco_local_piece_length_m, minco_obstacle_clearance_soft,
-                minco_obstacle_clearance)
+                minco_obstacle_clearance, minco_obstacle_lbfgs_delta)
         if reference_route is not None:
             if mode != "replan_minco":
                 raise TrajectoryBuildError("reference_route requires replan_minco")
@@ -271,7 +271,7 @@ class TrackerBuilder:
         return traj
 
     def _obstacle_tracker_kwargs(self, local_piece_length_m, obstacle_clearance_soft,
-                                 obstacle_clearance=None):
+                                 obstacle_clearance=None, obstacle_lbfgs_delta=None):
         if self._obstacle_map is None:
             self._log.warn("[TrackerBuilder] minco_obstacle_avoidance needs an "
                            "obstacle map -- planning without obstacles")
@@ -281,6 +281,7 @@ class TrackerBuilder:
             "local_piece_length_m": local_piece_length_m,
             "obstacle_clearance_soft": obstacle_clearance_soft,
             "obstacle_clearance": obstacle_clearance,
+            "obstacle_lbfgs_delta": obstacle_lbfgs_delta,
         }
         if self._stop_profile_fn is not None:
             kwargs["stop_profile_fn"] = self._stop_profile_fn

@@ -157,6 +157,11 @@ GUIDANCE_PARAM_DEFAULTS = {
     # actually enforces (cubic penalty). Must stay below the soft one, which
     # penalties.cpp drops once the hard one reaches it.
     "guidance.minco_obstacle_clearance": 0.1,
+    # L-BFGS stop (relative cost decrease) of the obstacle-avoiding local solve only; the global and
+    # obstacle-free solves keep 1e-8. The 1e-8 rebound solves took up to ~5 s in narrow gaps and the late
+    # plan made the reference jump; 1e-3 keeps them under ~0.5 s but can let the plan pass a few cm
+    # closer.
+    "guidance.minco_obstacle_lbfgs_delta": 1e-3,
     # Obstacles from boxes (/guidance/virtual_obstacles) or the depth camera
     # (docs/archive/2026-09-28_virtual_camera_depth_mapping_plan.md). Read once at startup.
     "guidance.obstacle_source": "boxes",
@@ -230,6 +235,7 @@ MOTION_PROFILES = {
         "minco_local_piece_length_m": 1.5,
         "minco_obstacle_clearance_soft": 0.2,
         "minco_obstacle_clearance": 0.1,
+        "minco_obstacle_lbfgs_delta": 1e-3,
         "global_planner": "astar",
     },
     # face_travel only drives pre_align here (the goal chord, then the A* route's
@@ -283,6 +289,7 @@ _GOAL_EXECUTE_PARAMS = {
     "minco_local_piece_length_m": ("minco_local_piece_length_m", float),
     "minco_obstacle_clearance_soft": ("minco_obstacle_clearance_soft", float),
     "minco_obstacle_clearance": ("minco_obstacle_clearance", float),
+    "minco_obstacle_lbfgs_delta": ("minco_obstacle_lbfgs_delta", float),
     "jaxa_lookahead_m": ("jaxa_lookahead_m", float),
     "jaxa_ompl_solve_time_s": ("jaxa_ompl_solve_time_s", float),
     "jaxa_max_attempts": ("jaxa_max_attempts", int),

@@ -34,6 +34,7 @@ LOCAL_HORIZON = float(_GUIDANCE["minco_planning_horizon_m"])
 LOCAL_MAX_VEL = float(_GUIDANCE["minco_local_max_vel"])
 LOCAL_PIECE_LENGTH = float(_GUIDANCE["minco_local_piece_length_m"])
 LOCAL_CLEARANCE_SOFT = float(_GUIDANCE["minco_obstacle_clearance_soft"])
+LOCAL_LBFGS_DELTA = float(_GUIDANCE["minco_obstacle_lbfgs_delta"])
 CURVE_SAMPLE_PERIOD_S = 0.01
 DENSE_SPACINGS_M = (0.50, 0.25, 0.10)
 

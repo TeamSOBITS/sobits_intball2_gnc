@@ -126,3 +126,19 @@ def test_envelope_off_parameters_reach_execute():
     assert GUIDANCE_PARAM_DEFAULTS["guidance.minco_envelope"] is True   # the envelope stays on by default
     assert accepted["minco_accel_limit"].default == GUIDANCE_PARAM_DEFAULTS["guidance.minco_accel_limit"]
     assert accepted["minco_ang_accel_limit"].default == GUIDANCE_PARAM_DEFAULTS["guidance.minco_ang_accel_limit"]
+
+
+def test_obstacle_lbfgs_delta_reaches_execute_and_the_avoidance_profile_sets_it():
+    import inspect
+    from sobits_intball2_gnc.guidance.executor.guidance_executor import GuidanceExecutor
+    from sobits_intball2_gnc.guidance.guidance_params import _GOAL_EXECUTE_PARAMS
+    accepted = inspect.signature(GuidanceExecutor.execute).parameters
+    assert "minco_obstacle_lbfgs_delta" in _GOAL_EXECUTE_PARAMS
+    default = GUIDANCE_PARAM_DEFAULTS["guidance.minco_obstacle_lbfgs_delta"]
+    assert accepted["minco_obstacle_lbfgs_delta"].default == default
+    _profile, _mode, kwargs = goal_motion_profile(_node("avoidance"))
+    assert kwargs["minco_obstacle_lbfgs_delta"] == default
+    _profile, _mode, kwargs = goal_motion_profile(
+        _node("avoidance", minco_obstacle_lbfgs_delta=1e-4),
+        overrides=("minco_obstacle_lbfgs_delta",))
+    assert kwargs["minco_obstacle_lbfgs_delta"] == 1e-4

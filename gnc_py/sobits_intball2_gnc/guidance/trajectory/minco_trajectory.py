@@ -209,7 +209,7 @@ class MincoTrajectory:
                               warm_start_segment_times=None, body_frame_wrench=False,
                               obstacle_grid=None, obstacle_touch_goal=False,
                               obstacle_clearance_soft=0.5, obstacle_clearance=None,
-                              scalar_limits=None):
+                              scalar_limits=None, obstacle_lbfgs_delta=None):
         """Free-time ``plan_minco`` solve with caller-given ``q0``-relative
         ``rotvecs`` (``rotvecs[0]`` is the head attitude) and head rotvec
         rate/accel, for a segment that starts mid-rotation (the constructor
@@ -217,7 +217,9 @@ class MincoTrajectory:
         ``scalar_limits=(max_accel, max_angular_accel)`` [m/s^2, rad/s^2] replaces the fan wrench envelope
         by norm limits (EGO-style); ``None`` keeps the envelope.
         ``obstacle_grid`` (``sobits_intball2_gnc_cpp.OccupancyGrid``) runs the rebound loop
-        (Zhou et al., RA-L 2021) in the solve; a collision left over raises ``MincoInfeasibleError``."""
+        (Zhou et al., RA-L 2021) in the solve; a collision left over raises ``MincoInfeasibleError``.
+        ``obstacle_lbfgs_delta`` sets the L-BFGS stop of that solve (``None``: the solver's 1e-8);
+        ignored without ``obstacle_grid``."""
         position_waypoints = np.asarray(position_waypoints, dtype=float)
         rotvecs = np.asarray(rotvecs, dtype=float)
         if position_waypoints.ndim != 2 or position_waypoints.shape[1] != 3 \
@@ -240,7 +242,9 @@ class MincoTrajectory:
                 grid=obstacle_grid, obstacle_touch_goal=bool(obstacle_touch_goal),
                 obstacle_clearance_soft=float(obstacle_clearance_soft),
                 **({} if obstacle_clearance is None
-                   else dict(obstacle_clearance=float(obstacle_clearance))))),
+                   else dict(obstacle_clearance=float(obstacle_clearance))),
+                **({} if obstacle_lbfgs_delta is None
+                   else dict(lbfgs_delta=float(obstacle_lbfgs_delta))))),
         )
         self._set_solution(segment_times, coeffs, duration,
                            time.perf_counter() - solve_t0, len(position_waypoints))

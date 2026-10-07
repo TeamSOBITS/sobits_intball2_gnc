@@ -317,7 +317,7 @@ class GuidanceExecutor:
                 minco_replan_face_travel=False, minco_local_max_vel=None,
                 minco_async_replan=False, minco_obstacle_avoidance=False,
                 minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2,
-                minco_obstacle_clearance=None, minco_envelope=True,
+                minco_obstacle_clearance=None, minco_obstacle_lbfgs_delta=1e-3, minco_envelope=True,
                 minco_accel_limit=0.0563, minco_ang_accel_limit=0.602,
                 global_planner="straight",
                 jaxa_lookahead_m=0.11,
@@ -531,6 +531,7 @@ class GuidanceExecutor:
                 minco_local_piece_length_m=minco_local_piece_length_m,
                 minco_obstacle_clearance_soft=minco_obstacle_clearance_soft,
                 minco_obstacle_clearance=minco_obstacle_clearance,
+                minco_obstacle_lbfgs_delta=minco_obstacle_lbfgs_delta,
                 minco_scalar_limits=(None if minco_envelope else
                                      (minco_accel_limit, minco_ang_accel_limit)),
                 reference_route=reference_route,

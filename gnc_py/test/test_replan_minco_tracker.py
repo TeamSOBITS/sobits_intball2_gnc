@@ -855,3 +855,24 @@ def test_the_hard_clearance_defaults_to_the_binding_value():
         _IdealTrackingTf(), face_travel=True, local_max_vel=FACE_TRAVEL_MAX_VEL,
         local_piece_length_m=1.5, obstacle_grid=core.OccupancyGrid(0.1, 0.2))
     assert tracker._planner._obstacle_clearance is None
+
+
+def test_the_obstacle_lbfgs_delta_reaches_only_the_obstacle_solves(monkeypatch):
+    """The global and obstacle-free solves keep the solver's 1e-8."""
+    import sobits_intball2_gnc_cpp as core
+
+    calls = []
+    real = core.plan_minco
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(core, "plan_minco", recording)
+    _make_tracker(
+        _IdealTrackingTf(), face_travel=True, local_max_vel=FACE_TRAVEL_MAX_VEL,
+        local_piece_length_m=1.5, obstacle_grid=core.OccupancyGrid(0.1, 0.2),
+        obstacle_lbfgs_delta=1e-3)
+    with_grid = [c for c in calls if c.get("grid") is not None]
+    assert with_grid and all(c["lbfgs_delta"] == 1e-3 for c in with_grid)
+    assert all("lbfgs_delta" not in c for c in calls if c.get("grid") is None)

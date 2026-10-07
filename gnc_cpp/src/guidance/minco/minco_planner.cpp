@@ -113,7 +113,8 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       const mapping::OccupancyGrid *grid,
                       const std::optional<std::vector<double>> &corridor_planes,
                       double max_accel_norm,
-                      double max_angular_accel_norm)
+                      double max_angular_accel_norm,
+                      double lbfgs_delta)
 {
     PlanResult result;
 
@@ -291,7 +292,7 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
 
         lbfgs::lbfgs_parameter_t param;
         param.past = 3;
-        param.delta = 1e-8;
+        param.delta = lbfgs_delta;
         param.g_epsilon = 1e-10;
         param.max_iterations = 500;
 

@@ -174,7 +174,7 @@ class ReplanMincoTracker:
                  collision_check_period=DEFAULT_COLLISION_CHECK_PERIOD_S,
                  sensor_fresh_fn=None, reference_route=None,
                  obstacle_clearance=None, wrench_envelope=None, mass=None, inertia=None,
-                 scalar_limits=None):
+                 scalar_limits=None, obstacle_lbfgs_delta=None):
         if (target_speed is None) != (max_accel is None):
             raise ValueError(
                 "target_speed and max_accel must be given together (both "
@@ -238,7 +238,7 @@ class ReplanMincoTracker:
             planning_horizon_m, via_half_width, wrench_safety_margin,
             attitude_resample_spacing_m, face_travel, forward_axis, local_max_vel,
             local_piece_length_m, obstacle_grid, obstacle_clearance_soft, corridor_planes,
-            reference_route, obstacle_clearance, scalar_limits)
+            reference_route, obstacle_clearance, scalar_limits, obstacle_lbfgs_delta)
         self.last_goal_moved_out_of_obstacle = False
 
         self._local_elapsed = 0.0

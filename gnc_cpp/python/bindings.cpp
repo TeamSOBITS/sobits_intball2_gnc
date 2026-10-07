@@ -81,7 +81,8 @@ plan_minco(const std::vector<double>& waypoints_flat,
            const sobits_intball2_gnc::mapping::OccupancyGrid* grid,
            std::optional<std::vector<double>> corridor_planes,
            double max_accel_norm,
-           double max_angular_accel_norm) {
+           double max_angular_accel_norm,
+           double lbfgs_delta) {
   std::shared_lock<std::shared_mutex> gridLock;
   if (grid) gridLock = grid->readLock();
   const sobits_intball2_gnc::guidance::PlanResult result =
@@ -89,7 +90,7 @@ plan_minco(const std::vector<double>& waypoints_flat,
                                warm_start_qvia, warm_start_T, a0, v_tail, rot_a0, rot_v_tail,
                                max_vel, q0, obstacle_pairs, obstacle_touch_goal,
                                obstacle_clearance, obstacle_clearance_soft, grid, corridor_planes,
-                               max_accel_norm, max_angular_accel_norm);
+                               max_accel_norm, max_angular_accel_norm, lbfgs_delta);
   return std::make_tuple(result.success, result.error_code, result.segment_times,
                           result.coeffs_flat, result.duration);
 }
@@ -371,7 +372,9 @@ PYBIND11_MODULE(sobits_intball2_gnc_cpp, m) {
         py::arg("corridor_planes") = py::none(),
         py::arg("max_accel_norm") = -1.0,
         py::arg("max_angular_accel_norm") = -1.0,
-        "Plan a MINCO trajectory. max_accel_norm [m/s^2] / max_angular_accel_norm [rad/s^2]: both > 0 replace the fan "
+        py::arg("lbfgs_delta") = 1e-8,
+        "Plan a MINCO trajectory. lbfgs_delta: L-BFGS relative-decrease stop of the free-time solve "
+        "(looser = faster rebound solves, the plan may pass closer to obstacles). max_accel_norm [m/s^2] / max_angular_accel_norm [rad/s^2]: both > 0 replace the fan "
         "wrench envelope by norm limits on the acceleration / angular acceleration (EGO-style; "
         "wrench_safety_margin then has no effect), <= 0 keeps the envelope. via_half_width: position via-point free-variable "
         "box half-width [m] (0.0 pins via points exactly, TOPPRA-style; inf leaves them unboxed). "
