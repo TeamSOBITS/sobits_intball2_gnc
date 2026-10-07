@@ -317,7 +317,8 @@ class GuidanceExecutor:
                 minco_replan_face_travel=False, minco_local_max_vel=None,
                 minco_async_replan=False, minco_obstacle_avoidance=False,
                 minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2,
-                minco_obstacle_clearance=None,
+                minco_obstacle_clearance=None, minco_envelope=True,
+                minco_accel_limit=0.0563, minco_ang_accel_limit=0.602,
                 global_planner="straight",
                 jaxa_lookahead_m=0.11,
                 jaxa_ompl_solve_time_s=0.1, jaxa_max_attempts=50,
@@ -530,6 +531,8 @@ class GuidanceExecutor:
                 minco_local_piece_length_m=minco_local_piece_length_m,
                 minco_obstacle_clearance_soft=minco_obstacle_clearance_soft,
                 minco_obstacle_clearance=minco_obstacle_clearance,
+                minco_scalar_limits=(None if minco_envelope else
+                                     (minco_accel_limit, minco_ang_accel_limit)),
                 reference_route=reference_route,
                 jaxa_options=dict(
                     lookahead_m=jaxa_lookahead_m, ompl_solve_time_s=jaxa_ompl_solve_time_s,
@@ -790,12 +793,13 @@ class GuidanceExecutor:
             if getattr(tracker, "last_replan_occurred", False):
                 self._log.info(
                     "[GuidanceExecutor] replanning: re-planned trajectory at "
-                    "t=%.2fs (solve=%.3fs, lag=%.3fs, source=%s, collides=%s)"
+                    "t=%.2fs (solve=%.3fs, lag=%.3fs, source=%s, collides=%s, wrench_use=%.2f)"
                     % (sample_t, getattr(tracker, "last_replan_solve_seconds", None)
                        or float("nan"),
                        getattr(tracker, "last_replan_lag_seconds", None) or 0.0,
                        getattr(tracker, "last_replan_source", None),
-                       getattr(tracker, "last_replan_collides", None))
+                       getattr(tracker, "last_replan_collides", None),
+                       getattr(tracker, "last_replan_wrench_use", None) or float("nan"))
                 )
                 if self._speed_path_pub is not None and getattr(tracker, "trajectory", None) is not None:
                     self._publish_speed_path_preview(tracker.trajectory)

@@ -194,6 +194,9 @@ ros2 param set /guidance_node guidance.motion_profile avoidance
 | `guidance.minco_planning_horizon_m` | `replan_minco`のlocalの先読み距離[m]（global上で直線距離がこの値以上になる最初の点を目標にする） | `4.0` |
 | `guidance.minco_replan_face_travel` | `replan_minco`で進行方向を向く（`attitude_reference_mode=face_travel`も必要）。localを2回solveし、wrenchを機体座標で評価する。先読みは`4.0`程度にする | `true` |
 | `guidance.minco_local_max_vel` | `minco_replan_face_travel`のときのlocalの速度上限[m/s] | `0.15` |
+| `guidance.minco_envelope` | `replan_minco`の計画をファンのwrenchエンベロープ（`wrench_envelope_safety_margin`倍）の内側に収めるか。`false`でエンベロープを外し、下の2つの上限だけで計画する（EGO-Planner v2流。エンベロープの効果を測る用）。ゴールごとに有効 | `true` |
+| `guidance.minco_accel_limit` | エンベロープを外している間の、加速度のノルムの上限[m/s²]。エンベロープが有効なときは使わない | `0.0563`（最大の軸の力0.181 N ÷ 質量3.216 kg） |
+| `guidance.minco_ang_accel_limit` | 同、角加速度のノルムの上限[rad/s²] | `0.602`（最大の軸のトルク0.00819 N·m ÷ 慣性0.0136） |
 | `guidance.minco_obstacle_avoidance` | `replan_minco`で障害物の地図（JEMの壁＋仮想の箱）を避ける（`minco_replan_face_travel`も必要）。避けきれないときは停止プロファイルで非常停止し、静止から再計画する | `false` |
 | `guidance.minco_local_piece_length_m` | 障害物を避けるときのlocalの1区間の長さ[m]（EGO-Planner v2の`polyTraj_piece_length`） | `1.5` |
 | `guidance.minco_obstacle_clearance_soft` | 障害物を避けるときの緩い余裕[m]（ぶつかった障害物から離す距離） | `0.2` |

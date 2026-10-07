@@ -114,6 +114,15 @@ GUIDANCE_PARAM_DEFAULTS = {
     "guidance.minco_replan_face_travel": True,
     "guidance.minco_local_max_vel": 0.15,
     "guidance.minco_async_replan": True,
+    # "replan_minco" only. True (default): the planner keeps the plan inside the fan wrench envelope
+    # (scaled by wrench_envelope_safety_margin). False: the envelope is off and the plan is only limited by
+    # |acceleration| <= minco_accel_limit and |angular acceleration| <=
+    # minco_ang_accel_limit (EGO-Planner v2 style, for measuring what the envelope buys);
+    # the two limits are ignored while the envelope is on. Defaults: the envelope's largest per-axis
+    # force / torque (0.181 N, 0.00819 N*m) over mass 3.216 kg / inertia 0.0136 kg*m^2. Latched per goal.
+    "guidance.minco_envelope": True,
+    "guidance.minco_accel_limit": 0.0563,
+    "guidance.minco_ang_accel_limit": 0.602,
     # "jaxa_rrt" only (JAXA IAC-22 baseline, docs/jaxa_baseline_gazebo_port_plan.md 5 節,
     # planner: docs/jaxa_baseline_ompl_reproduction.md);
     # the jaxa_baseline profile sets all but jaxa_rrt_bounds. lookahead d = v * kd/kp
@@ -266,6 +275,9 @@ _GOAL_EXECUTE_PARAMS = {
     "minco_replan_face_travel": ("minco_replan_face_travel", bool),
     "minco_local_max_vel": ("minco_local_max_vel", float),
     "minco_async_replan": ("minco_async_replan", bool),
+    "minco_envelope": ("minco_envelope", bool),
+    "minco_accel_limit": ("minco_accel_limit", float),
+    "minco_ang_accel_limit": ("minco_ang_accel_limit", float),
     "minco_obstacle_avoidance": ("minco_obstacle_avoidance", bool),
     "global_planner": ("global_planner", str),
     "minco_local_piece_length_m": ("minco_local_piece_length_m", float),

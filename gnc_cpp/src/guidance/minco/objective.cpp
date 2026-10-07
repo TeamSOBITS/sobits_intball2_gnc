@@ -30,6 +30,28 @@ const double W_ENERGY = 1e-3;
 const double W_TIME = 1.0;
 const double SMOOTH_FACTOR = 1e-2;
 
+// Scalar (EGO-style) limit penalty at one sample, in wrench units like the envelope rows: adds
+// the penalty to ``pena``, the torque-space gradient to gradWrench.tail and the acceleration
+// gradient (reference frame, norms are frame independent) to ``gradAcc``.
+double scalarLimitPenalty(const ScalarLimits &lim, double weight, const Vector3d &acc, const Vector3d &omegaDot,
+                          Matrix<double, 6, 1> &gradWrench, Vector3d &gradAcc)
+{
+    double pena = 0.0, f, df;
+    const double accNorm = acc.norm();
+    if (smoothHinge(MASS * (accNorm - lim.maxAccel), SMOOTH_FACTOR, f, df))
+    {
+        gradAcc += (weight * df * MASS / accNorm) * acc;
+        pena += weight * f;
+    }
+    const double odNorm = omegaDot.norm();
+    if (smoothHinge(INERTIA * (odNorm - lim.maxAngularAccel), SMOOTH_FACTOR, f, df))
+    {
+        gradWrench.tail<3>() += (weight * df / odNorm) * omegaDot;
+        pena += weight * f;
+    }
+    return pena;
+}
+
 }  // namespace
 
 double evaluate(void *instance, const VectorXd &x, VectorXd &g)
@@ -116,6 +138,13 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
                     pena += ctx->penaltyWeight * f;
                 }
             }
+            Vector3d gradAccScalar = Vector3d::Zero();
+            if (ctx->scalarLimits.enabled())
+            {
+                pena += scalarLimitPenalty(ctx->scalarLimits, ctx->penaltyWeight, accPos, omegaDot, gradWrench, gradAccScalar);
+            }
+            else
+            {
             for (int k = 0; k < viol.size(); k++)
             {
                 double f, df;
@@ -125,9 +154,11 @@ double evaluate(void *instance, const VectorXd &x, VectorXd &g)
                     pena += ctx->penaltyWeight * f;
                 }
             }
+            }
 
             Vector3d gradAccPos, gradRForce;
             requiredForceGrad(ctx->forceFrame, r, accPos, gradWrench.head<3>(), gradAccPos, gradRForce);
+            gradAccPos += gradAccScalar;
             const Vector3d gradWrenchRot = gradWrench.tail<3>();
             Matrix3d dOmegaDot_dR, dOmegaDot_dRDot, dOmegaDot_dRDdot;
             common::omegaDotJacobians(r, rDot, rDdot, dOmegaDot_dR, dOmegaDot_dRDot, dOmegaDot_dRDdot);
@@ -259,6 +290,13 @@ double evaluateFixedT(void *instance, const VectorXd &x, VectorXd &g)
             const VectorXd viol = env.F * wrench - ctx->wrenchSafetyMargin * env.G;
             Matrix<double, 6, 1> gradWrench = Matrix<double, 6, 1>::Zero();
             double pena = 0.0;
+            Vector3d gradAccScalar = Vector3d::Zero();
+            if (ctx->scalarLimits.enabled())
+            {
+                pena += scalarLimitPenalty(ctx->scalarLimits, ctx->penaltyWeight, accPos, omegaDot, gradWrench, gradAccScalar);
+            }
+            else
+            {
             for (int k = 0; k < viol.size(); k++)
             {
                 double f, df;
@@ -268,9 +306,11 @@ double evaluateFixedT(void *instance, const VectorXd &x, VectorXd &g)
                     pena += ctx->penaltyWeight * f;
                 }
             }
+            }
 
             Vector3d gradAccPos, gradRForce;
             requiredForceGrad(ctx->forceFrame, r, accPos, gradWrench.head<3>(), gradAccPos, gradRForce);
+            gradAccPos += gradAccScalar;
             const Vector3d gradWrenchRot = gradWrench.tail<3>();
             Matrix3d dOmegaDot_dR, dOmegaDot_dRDot, dOmegaDot_dRDdot;
             common::omegaDotJacobians(r, rDot, rDdot, dOmegaDot_dR, dOmegaDot_dRDot, dOmegaDot_dRDdot);
@@ -306,7 +346,7 @@ double evaluateFixedT(void *instance, const VectorXd &x, VectorXd &g)
 }
 
 double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, const VectorXd &T, int K,
-                     double wrenchSafetyMargin, const ForceFrame &ff)
+                     double wrenchSafetyMargin, const ForceFrame &ff, const ScalarLimits &lim)
 {
     const WrenchEnvelope &env = wrenchEnvelope();
     const MatrixX3d &coeffsPos = posMinco.getCoeffs();
@@ -331,6 +371,12 @@ double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, co
             Matrix<double, 6, 1> wrench;
             wrench.head<3>() = requiredForce(ff, r, accPos);
             wrench.tail<3>() = INERTIA * common::omegaDotOf(r, rDot, rDdot);
+            if (lim.enabled())
+            {
+                worst = std::max(worst, std::max(MASS * (accPos.norm() - lim.maxAccel),
+                                                 INERTIA * (common::omegaDotOf(r, rDot, rDdot).norm() - lim.maxAngularAccel)));
+                continue;
+            }
             const VectorXd viol = env.F * wrench - wrenchSafetyMargin * env.G;
             worst = std::max(worst, viol.maxCoeff());
         }
@@ -345,7 +391,7 @@ double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, co
 // maxRatioPerSegmentと同じ役割だが、omegaDotはSO(3)ヤコビアン補正込みの
 // common::omegaDotOf()を使う点が異なる）。
 VectorXd maxRatioPerSegment(const VectorXd &T, const MatrixX3d &coeffsPos, const MatrixX3d &coeffsRot,
-                             int K, double wrenchSafetyMargin, const ForceFrame &ff)
+                             int K, double wrenchSafetyMargin, const ForceFrame &ff, const ScalarLimits &lim)
 {
     const WrenchEnvelope &env = wrenchEnvelope();
     VectorXd maxRatio = VectorXd::Zero(K);
@@ -369,6 +415,12 @@ VectorXd maxRatioPerSegment(const VectorXd &T, const MatrixX3d &coeffsPos, const
             Matrix<double, 6, 1> wrench;
             wrench.head<3>() = requiredForce(ff, r, accPos);
             wrench.tail<3>() = INERTIA * common::omegaDotOf(r, rDot, rDdot);
+            if (lim.enabled())
+            {
+                maxRatio(i) = std::max({maxRatio(i), accPos.norm() / lim.maxAccel,
+                                        wrench.tail<3>().norm() / (INERTIA * lim.maxAngularAccel)});
+                continue;
+            }
             const VectorXd lhs = env.F * wrench;
             for (int k = 0; k < lhs.size(); k++)
             {

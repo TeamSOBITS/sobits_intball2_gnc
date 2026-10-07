@@ -54,6 +54,9 @@ struct PlanResult
 // obstacle_pairs: reboundの組（Zhou et al., RA-L 2021の{p,v}）を[制約点id, 基準点xyz, 向きxyz]×n（フラット）で渡す。
 // 制約点は各区間をCONSTRAINT_POINTS_PER_PIECE等分した点（区間の境目は共有、計K*CONSTRAINT_POINTS_PER_PIECE+1点）。
 // localの最初の2/3の点だけにかける（obstacle_touch_goalなら全点）。nulloptなら無効（従来挙動）。
+// max_accel_norm / max_angular_accel_norm [m/s^2, rad/s^2]: both > 0 replace the fan wrench envelope by EGO-style
+// norm limits on the acceleration and the angular acceleration (wrench_safety_margin then has no effect);
+// <= 0 keeps the envelope. Same for planMincoHeuristicTime.
 // obstacle_clearance(_soft): 障害物コストの硬い・柔らかい安全距離[m]。
 // grid: 渡すとRA-L 2021のAlg. 2に基づき、初期軌道の衝突確認→組→最適化
 // （途中のrebound最大20回、細かい確認で衝突したらやり直し最大3回）を行う。衝突が残ればerror_code=2。
@@ -75,7 +78,9 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       double obstacle_clearance = 0.1,
                       double obstacle_clearance_soft = 0.5,
                       const mapping::OccupancyGrid *grid = nullptr,
-                      const std::optional<std::vector<double>> &corridor_planes = std::nullopt);
+                      const std::optional<std::vector<double>> &corridor_planes = std::nullopt,
+                      double max_accel_norm = -1.0,
+                      double max_angular_accel_norm = -1.0);
 
 // planMincoとの違い: セグメント時間Tを自由変数にせず、内部で
 // (1) ヒューリスティックな初期T（経路全体の弧長比配分、v0-aware台形/三角形
@@ -94,6 +99,8 @@ PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
                                    double max_accel,
                                    double via_half_width = 0.3,
                                    double wrench_safety_margin = 1.0,
-                                   const std::optional<std::vector<double>> &q0 = std::nullopt);
+                                   const std::optional<std::vector<double>> &q0 = std::nullopt,
+                                   double max_accel_norm = -1.0,
+                                   double max_angular_accel_norm = -1.0);
 
 }  // namespace sobits_intball2_gnc::guidance

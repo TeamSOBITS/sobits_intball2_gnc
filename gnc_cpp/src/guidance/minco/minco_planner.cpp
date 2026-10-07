@@ -111,7 +111,9 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
                       double obstacle_clearance,
                       double obstacle_clearance_soft,
                       const mapping::OccupancyGrid *grid,
-                      const std::optional<std::vector<double>> &corridor_planes)
+                      const std::optional<std::vector<double>> &corridor_planes,
+                      double max_accel_norm,
+                      double max_angular_accel_norm)
 {
     PlanResult result;
 
@@ -213,6 +215,7 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         ctx.rotVia = rotVia;
         ctx.viaHalfWidth = via_half_width;
         ctx.wrenchSafetyMargin = wrench_safety_margin;
+        ctx.scalarLimits = ScalarLimits{max_accel_norm, max_angular_accel_norm};
         ctx.penaltyWeight = weightSchedule[0];
         ctx.maxVel = max_vel;
         ctx.segmentTensionWeight = std::isinf(via_half_width) ? W_SEGMENT_TENSION : 0.0;
@@ -395,7 +398,7 @@ PlanResult planMinco(const std::vector<double> &waypoints_flat,
         posMinco.setParameters(qVia, T);
         rotMinco.setParameters(rotVia, T);
 
-        const double maxViol = maxViolation(posMinco, rotMinco, T, K, wrench_safety_margin, ctx.forceFrame);
+        const double maxViol = maxViolation(posMinco, rotMinco, T, K, wrench_safety_margin, ctx.forceFrame, ctx.scalarLimits);
         const bool corridorIsFree = corridorFree(posMinco.getCoeffs(), T, ctx.corridorPlanes);
         if (common::reboundTraceEnabled() && grid != nullptr)
             std::fprintf(stderr, "[trace] solve: maxViol=%.3g duration=%.2f\n", maxViol, T.sum());
@@ -452,7 +455,9 @@ PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
                                    double max_accel,
                                    double via_half_width,
                                    double wrench_safety_margin,
-                                   const std::optional<std::vector<double>> &q0)
+                                   const std::optional<std::vector<double>> &q0,
+                                   double max_accel_norm,
+                                   double max_angular_accel_norm)
 {
     PlanResult result;
 
@@ -546,6 +551,7 @@ PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
         ctx.rotVia = rotVia;
         ctx.viaHalfWidth = via_half_width;
         ctx.wrenchSafetyMargin = wrench_safety_margin;
+        ctx.scalarLimits = ScalarLimits{max_accel_norm, max_angular_accel_norm};
         ctx.forceFrame = forceFrameFrom(q0);
 
         VectorXd x = VectorXd::Zero(3 * numVia);
@@ -581,7 +587,7 @@ PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
 
             const VectorXd maxRatio =
                 maxRatioPerSegment(T, posMinco.getCoeffs(), rotMinco.getCoeffs(), K, wrench_safety_margin,
-                                   ctx.forceFrame);
+                                   ctx.forceFrame, ctx.scalarLimits);
             const bool feasible = maxRatio.maxCoeff() <= 1.0 + VIOLATION_TOLERANCE;
             if (feasible)
             {
@@ -595,7 +601,7 @@ PlanResult planMincoHeuristicTime(const std::vector<double> &waypoints_flat,
             T *= r;
         }
 
-        const double maxViol = maxViolation(posMinco, rotMinco, T, K, wrench_safety_margin, ctx.forceFrame);
+        const double maxViol = maxViolation(posMinco, rotMinco, T, K, wrench_safety_margin, ctx.forceFrame, ctx.scalarLimits);
 
         result.segment_times.resize(K);
         for (int i = 0; i < K; i++)

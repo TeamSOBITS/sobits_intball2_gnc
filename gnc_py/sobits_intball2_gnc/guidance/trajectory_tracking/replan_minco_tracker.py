@@ -75,7 +75,8 @@ import threading
 
 import numpy as np
 
-from sobits_intball2_gnc.control.utils.quat_math import quat_conj, quat_log, quat_mul
+from sobits_intball2_gnc.control.utils.quat_math import quat_conj, quat_log, quat_mul, quat_rotate
+from sobits_intball2_gnc.guidance.constraints.actuation_envelope import wrench_usage
 from sobits_intball2_gnc.guidance.local_planner.minco_local_planner import MincoLocalPlanner
 from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import MincoInfeasibleError
 
@@ -83,6 +84,8 @@ DEFAULT_LOCAL_REPLAN_PERIOD_S = 1.0
 DEFAULT_PLANNING_HORIZON_M = 2.0
 # EGO-Planner v2 safety_timer_ period.
 DEFAULT_COLLISION_CHECK_PERIOD_S = 0.05
+# Sampling step [s] for the planned wrench-usage report of an adopted local.
+WRENCH_USE_STEP_S = 0.1
 # Expected async solve wait: margin x the longest of the recent waits, fallback before any.
 REPLAN_WAIT_FALLBACK_S = 1.0
 REPLAN_WAIT_MARGIN = 1.2
@@ -170,7 +173,8 @@ class ReplanMincoTracker:
                  emergency_time_s=None,
                  collision_check_period=DEFAULT_COLLISION_CHECK_PERIOD_S,
                  sensor_fresh_fn=None, reference_route=None,
-                 obstacle_clearance=None):
+                 obstacle_clearance=None, wrench_envelope=None, mass=None, inertia=None,
+                 scalar_limits=None):
         if (target_speed is None) != (max_accel is None):
             raise ValueError(
                 "target_speed and max_accel must be given together (both "
@@ -222,13 +226,19 @@ class ReplanMincoTracker:
         self.last_replan_lag_seconds = None
         self.last_replan_source = None
         self.last_replan_collides = None
+        self.last_replan_wrench_use = None
+        # (F, g) half-spaces and the isotropic mass / inertia, only to report how much of the envelope
+        # an adopted local plan uses; the planner enforces its own copy.
+        self._wrench_envelope = wrench_envelope
+        self._mass = mass
+        self._inertia = inertia
 
         self._planner = MincoLocalPlanner(
             p0, v0, p_target, self._q0, target_speed, max_accel, route_waypoints,
             planning_horizon_m, via_half_width, wrench_safety_margin,
             attitude_resample_spacing_m, face_travel, forward_axis, local_max_vel,
             local_piece_length_m, obstacle_grid, obstacle_clearance_soft, corridor_planes,
-            reference_route, obstacle_clearance)
+            reference_route, obstacle_clearance, scalar_limits)
         self.last_goal_moved_out_of_obstacle = False
 
         self._local_elapsed = 0.0
@@ -546,8 +556,28 @@ class ReplanMincoTracker:
         self.last_replan_solve_seconds = self._local_trajectory.solve_wall_seconds
         self.last_replan_lag_seconds = lag
         self.last_replan_source = source
+        self.last_replan_wrench_use = self._planned_wrench_use(self._local_trajectory, lag)
         self.last_replan_collides = (self._planner.obstacle_grid is not None
                                      and self._local_collides(*result))
+
+    def _planned_wrench_use(self, trajectory, start_s, step_s=WRENCH_USE_STEP_S):
+        """Peak share of the wrench envelope the plan needs from ``start_s`` to its end; None when unconfigured.
+
+        Force is mass x the acceleration in the body frame (the planner's definition), torque is
+        inertia x the body angular acceleration (isotropic inertia: no gyroscopic term).
+        """
+        if self._wrench_envelope is None or self._mass is None or self._inertia is None:
+            return None
+        end = float(trajectory.global_total_duration)
+        times = np.arange(min(start_s, end), end + step_s, step_s)
+        wrenches = []
+        for t in times:
+            _, _, a, q = trajectory.sample(t)
+            force = self._mass * quat_rotate(quat_conj(np.asarray(q, dtype=float)), np.asarray(a, dtype=float))
+            torque = self._inertia * np.asarray(trajectory.sample_body_angular(t)[1], dtype=float)
+            wrenches.append(np.concatenate([force, torque]))
+        F, g = self._wrench_envelope
+        return float(np.max(wrench_usage(F, g, np.asarray(wrenches))))
 
     @property
     def total_duration(self):

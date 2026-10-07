@@ -23,6 +23,17 @@ struct WrenchEnvelope
 // Loaded once from the installed CSV on first use; throws if the file is missing.
 const WrenchEnvelope &wrenchEnvelope();
 
+// EGO-style limits instead of the fan envelope: |acceleration| <= maxAccel and |angular acceleration| <=
+// maxAngularAccel, both norms (direction independent). Enabled when both are > 0; otherwise the fan
+// envelope is used. Violations are expressed in wrench units (MASS*dacc, INERTIA*dalpha) so that the
+// penalty scale and VIOLATION_TOLERANCE are the same as for the envelope.
+struct ScalarLimits
+{
+    double maxAccel = -1.0;
+    double maxAngularAccel = -1.0;
+    bool enabled() const { return maxAccel > 0.0 && maxAngularAccel > 0.0; }
+};
+
 // F_ENV is a body-frame envelope, so the fan force for reference-frame acceleration acc
 // at attitude R0*Exp(r) is MASS*Exp(r)^T*R0^T*acc. body=false keeps the legacy
 // reference-frame check for callers that do not pass q0.

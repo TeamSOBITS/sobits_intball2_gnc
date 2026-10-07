@@ -79,14 +79,17 @@ plan_minco(const std::vector<double>& waypoints_flat,
            double obstacle_clearance,
            double obstacle_clearance_soft,
            const sobits_intball2_gnc::mapping::OccupancyGrid* grid,
-           std::optional<std::vector<double>> corridor_planes) {
+           std::optional<std::vector<double>> corridor_planes,
+           double max_accel_norm,
+           double max_angular_accel_norm) {
   std::shared_lock<std::shared_mutex> gridLock;
   if (grid) gridLock = grid->readLock();
   const sobits_intball2_gnc::guidance::PlanResult result =
       sobits_intball2_gnc::guidance::planMinco(waypoints_flat, v0, w0, via_half_width, wrench_safety_margin,
                                warm_start_qvia, warm_start_T, a0, v_tail, rot_a0, rot_v_tail,
                                max_vel, q0, obstacle_pairs, obstacle_touch_goal,
-                               obstacle_clearance, obstacle_clearance_soft, grid, corridor_planes);
+                               obstacle_clearance, obstacle_clearance_soft, grid, corridor_planes,
+                               max_accel_norm, max_angular_accel_norm);
   return std::make_tuple(result.success, result.error_code, result.segment_times,
                           result.coeffs_flat, result.duration);
 }
@@ -152,9 +155,12 @@ plan_minco_heuristic_time(const std::vector<double>& waypoints_flat,
                            double max_accel,
                            double via_half_width,
                            double wrench_safety_margin,
-                           std::optional<std::vector<double>> q0) {
+                           std::optional<std::vector<double>> q0,
+                           double max_accel_norm,
+                           double max_angular_accel_norm) {
   const sobits_intball2_gnc::guidance::PlanResult result = sobits_intball2_gnc::guidance::planMincoHeuristicTime(
-      waypoints_flat, v0, w0, target_speed, max_accel, via_half_width, wrench_safety_margin, q0);
+      waypoints_flat, v0, w0, target_speed, max_accel, via_half_width, wrench_safety_margin, q0,
+      max_accel_norm, max_angular_accel_norm);
   return std::make_tuple(result.success, result.error_code, result.segment_times,
                           result.coeffs_flat, result.duration);
 }
@@ -363,7 +369,11 @@ PYBIND11_MODULE(sobits_intball2_gnc_cpp, m) {
         py::arg("obstacle_clearance_soft") = 0.5,
         py::arg("grid") = nullptr,
         py::arg("corridor_planes") = py::none(),
-        "Plan a MINCO trajectory. via_half_width: position via-point free-variable "
+        py::arg("max_accel_norm") = -1.0,
+        py::arg("max_angular_accel_norm") = -1.0,
+        "Plan a MINCO trajectory. max_accel_norm [m/s^2] / max_angular_accel_norm [rad/s^2]: both > 0 replace the fan "
+        "wrench envelope by norm limits on the acceleration / angular acceleration (EGO-style; "
+        "wrench_safety_margin then has no effect), <= 0 keeps the envelope. via_half_width: position via-point free-variable "
         "box half-width [m] (0.0 pins via points exactly, TOPPRA-style; inf leaves them unboxed). "
         "wrench_safety_margin: shrinks the loaded wrench envelope by this factor "
         "in (0, 1] before penalty evaluation (1.0 = disabled, matches prior "
@@ -394,6 +404,8 @@ PYBIND11_MODULE(sobits_intball2_gnc_cpp, m) {
         py::arg("via_half_width") = 0.3,
         py::arg("wrench_safety_margin") = 1.0,
         py::arg("q0") = py::none(),
+        py::arg("max_accel_norm") = -1.0,
+        py::arg("max_angular_accel_norm") = -1.0,
         "Plan a MINCO trajectory with segment times fixed via a heuristic "
         "(arc-length-proportional, v0-aware trapezoidal/triangular profile) "
         "instead of solved as free variables, with an analytic time-stretch "

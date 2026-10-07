@@ -98,3 +98,15 @@ def wrench_envelope_halfspaces(wrench_matrix, fj_max, safety_margin=1.0):
     g = -hull.equations[:, -1]
     F, g = _dedup_halfspaces(F, g)
     return F, g * float(safety_margin)
+
+
+def wrench_usage(F, g, wrench):
+    """Share of the envelope ``{w : F @ w <= g}`` a wrench uses: ``max_i (F_i . w) / g_i``.
+
+    The gauge of the polytope: <= 1 is inside, 0.5 is a wrench at half the way to the boundary
+    along its own direction. ``wrench`` is (6,) or (N, 6); returns a float or an (N,) array.
+    Needs g > 0 (the origin strictly inside), which holds for the fan envelope.
+    """
+    ratios = np.atleast_2d(np.asarray(wrench, dtype=float)) @ np.asarray(F, dtype=float).T / np.asarray(g, dtype=float)
+    usage = ratios.max(axis=1)
+    return float(usage[0]) if np.ndim(wrench) == 1 else usage

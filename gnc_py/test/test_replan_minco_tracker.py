@@ -338,6 +338,35 @@ def test_async_replan_keeps_old_local_while_solving_then_swaps_continuously():
     assert np.allclose(v, v_old, atol=1e-3)
 
 
+def test_adopting_a_local_reports_the_share_of_the_wrench_envelope_it_uses():
+    from sobits_intball2_gnc.control.utils.thrust_allocator import ThrustAllocator
+    from sobits_intball2_gnc.guidance.constraints.actuation_envelope import wrench_envelope_halfspaces
+    allocator = ThrustAllocator()
+    envelope = wrench_envelope_halfspaces(allocator.A, allocator.fj_max)
+    tracker = _make_tracker(_IdealTrackingTf(), wrench_envelope=envelope, mass=3.216, inertia=0.0136)
+    tracker._adopt_local((tracker.local_trajectory, False), 0.0, "periodic")
+    use = tracker.last_replan_wrench_use
+    assert use is not None and 0.0 < use < 1.05   # the planner (margin 1.0) works up to the boundary
+    # Half the envelope scale means twice the share.
+    half = (envelope[0], envelope[1] * 0.5)
+    tracker._wrench_envelope = half
+    assert tracker._planned_wrench_use(tracker.local_trajectory, 0.0) == pytest.approx(2.0 * use)
+    unconfigured = _make_tracker(_IdealTrackingTf())
+    unconfigured._adopt_local((unconfigured.local_trajectory, False), 0.0, "periodic")
+    assert unconfigured.last_replan_wrench_use is None
+
+
+def test_scalar_limits_replace_the_wrench_envelope_in_the_local_solve():
+    limit_accel, limit_ang = 0.04, 0.4
+    tracker = _make_tracker(_IdealTrackingTf(), scalar_limits=(limit_accel, limit_ang))
+    local = tracker.local_trajectory
+    times = np.arange(0.0, local.global_total_duration, 0.1)
+    accel = max(np.linalg.norm(local.sample(t)[2]) for t in times)
+    ang_accel = max(np.linalg.norm(local.sample_body_angular(t)[1]) for t in times)
+    assert 0.0 < accel <= limit_accel * 1.05
+    assert ang_accel <= limit_ang * 1.05
+
+
 def test_async_replan_face_travel_reaches_target():
     tf = _IdealTrackingTf()
     tracker = _make_tracker(

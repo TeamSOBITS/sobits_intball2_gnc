@@ -92,7 +92,7 @@ class MincoLocalPlanner:
                  planning_horizon_m, via_half_width, wrench_safety_margin,
                  attitude_resample_spacing_m, face_travel, forward_axis, local_max_vel,
                  local_piece_length_m, obstacle_grid, obstacle_clearance_soft, corridor_planes=None,
-                 reference_route=None, obstacle_clearance=None):
+                 reference_route=None, obstacle_clearance=None, scalar_limits=None):
         self.p_target = np.asarray(p_target, dtype=float)
         self._q0 = np.asarray(q0, dtype=float)
         self._target_speed = None if target_speed is None else float(target_speed)
@@ -100,6 +100,8 @@ class MincoLocalPlanner:
         self._planning_horizon_m = float(planning_horizon_m)
         self._via_half_width = float(via_half_width)
         self._wrench_safety_margin = float(wrench_safety_margin)
+        # (max_accel, max_angular_accel): norm limits instead of the fan wrench envelope; None keeps it.
+        self._scalar_limits = scalar_limits
         self._attitude_resample_spacing_m = attitude_resample_spacing_m
         self._face_travel = bool(face_travel)
         self._forward_axis = np.asarray(forward_axis, dtype=float)
@@ -164,7 +166,7 @@ class MincoLocalPlanner:
             forward_axis=self._forward_axis, body_frame_wrench=self._face_travel,
             via_half_width=self._via_half_width,
             attitude_resample_spacing_m=self._attitude_resample_spacing_m,
-            wrench_safety_margin=self._wrench_safety_margin,
+            wrench_safety_margin=self._wrench_safety_margin, scalar_limits=self._scalar_limits,
             target_speed=self._target_speed, max_accel=self._max_accel,
             corridor_planes=self._corridor_planes,
         )
@@ -265,7 +267,7 @@ class MincoLocalPlanner:
         local = MincoTrajectory(
             [p0, target_pos], self._q0, v0=v0, w0=np.zeros(3),
             face_travel=False, via_half_width=self._via_half_width,
-            wrench_safety_margin=self._wrench_safety_margin,
+            wrench_safety_margin=self._wrench_safety_margin, scalar_limits=self._scalar_limits,
             target_speed=None, max_accel=None, a0=a0, v_tail=v_tail,
         )
         return local, touch_goal
@@ -377,7 +379,7 @@ class MincoLocalPlanner:
             return MincoTrajectory.from_rotvec_waypoints(
                 points, rotvecs, self._q0, v0, rv_rate0, a0, rv_accel0, v_tail=v_tail,
                 via_half_width=via_half_width,
-                wrench_safety_margin=self._wrench_safety_margin,
+                wrench_safety_margin=self._wrench_safety_margin, scalar_limits=self._scalar_limits,
                 max_vel=self.local_max_vel,
                 warm_start_segment_times=warm_start_segment_times,
                 body_frame_wrench=True, obstacle_grid=obstacle_grid,

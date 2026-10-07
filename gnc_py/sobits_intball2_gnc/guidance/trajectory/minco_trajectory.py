@@ -122,7 +122,7 @@ class MincoTrajectory:
                  wrench_safety_margin=1.0, target_speed=None, max_accel=None,
                  a0=None, v_tail=None, body_frame_wrench=False,
                  obstacle_pairs=None, obstacle_touch_goal=False, corridor_planes=None,
-                 obstacle_grid=None, obstacle_clearance_soft=0.5):
+                 obstacle_grid=None, obstacle_clearance_soft=0.5, scalar_limits=None):
         if (target_speed is None) != (max_accel is None):
             raise ValueError(
                 "target_speed and max_accel must be given together (both "
@@ -175,7 +175,7 @@ class MincoTrajectory:
         segment_times, coeffs, duration = self._solve(
             position_waypoints, rotvecs, v0, w0, via_half_width,
             wrench_safety_margin, target_speed, max_accel, a0, v_tail, wrench_q0
-            , **constraint_kwargs
+            , scalar_limits=scalar_limits, **constraint_kwargs
         )
 
         if face_travel:
@@ -196,7 +196,7 @@ class MincoTrajectory:
             segment_times, coeffs, duration = self._solve(
                 position_waypoints, rotvecs, v0, w0, via_half_width,
                 wrench_safety_margin, target_speed, max_accel, a0, v_tail, wrench_q0
-                , **constraint_kwargs
+                , scalar_limits=scalar_limits, **constraint_kwargs
             )
 
         self._set_solution(segment_times, coeffs, duration,
@@ -208,11 +208,14 @@ class MincoTrajectory:
                               wrench_safety_margin=1.0, max_vel=None,
                               warm_start_segment_times=None, body_frame_wrench=False,
                               obstacle_grid=None, obstacle_touch_goal=False,
-                              obstacle_clearance_soft=0.5, obstacle_clearance=None):
+                              obstacle_clearance_soft=0.5, obstacle_clearance=None,
+                              scalar_limits=None):
         """Free-time ``plan_minco`` solve with caller-given ``q0``-relative
         ``rotvecs`` (``rotvecs[0]`` is the head attitude) and head rotvec
         rate/accel, for a segment that starts mid-rotation (the constructor
         always starts at ``q0`` at rest). ``max_vel=None`` disables the speed cap.
+        ``scalar_limits=(max_accel, max_angular_accel)`` [m/s^2, rad/s^2] replaces the fan wrench envelope
+        by norm limits (EGO-style); ``None`` keeps the envelope.
         ``obstacle_grid`` (``sobits_intball2_gnc_cpp.OccupancyGrid``) runs the rebound loop
         (Zhou et al., RA-L 2021) in the solve; a collision left over raises ``MincoInfeasibleError``."""
         position_waypoints = np.asarray(position_waypoints, dtype=float)
@@ -229,7 +232,7 @@ class MincoTrajectory:
             np.asarray(rotvec_rate0, dtype=float), float(via_half_width),
             wrench_safety_margin, None, None, [float(c) for c in a0],
             None if v_tail is None else [float(c) for c in v_tail], wrench_q0,
-            rot_a0=[float(c) for c in rotvec_accel0],
+            rot_a0=[float(c) for c in rotvec_accel0], scalar_limits=scalar_limits,
             max_vel=-1.0 if max_vel is None else float(max_vel),
             warm_start_T=None if warm_start_segment_times is None
             else [float(t) for t in warm_start_segment_times],
@@ -255,7 +258,7 @@ class MincoTrajectory:
     @classmethod
     def _solve(cls, position_waypoints, rotvecs, v0, w0, via_half_width,
                wrench_safety_margin, target_speed, max_accel, a0=None, v_tail=None,
-               wrench_q0=None, **plan_minco_kwargs):
+               wrench_q0=None, scalar_limits=None, **plan_minco_kwargs):
         """Build ``waypoints_flat`` from ``position_waypoints``/``rotvecs`` and run
         one :func:`_call_minco` solve. Returns ``(segment_times, coeffs, duration)``,
         ``coeffs`` already reshaped to ``(n_segments, _N_DIMS, _N_COEFFS)``.
@@ -267,7 +270,7 @@ class MincoTrajectory:
         success, error_code, segment_times, coeffs_flat, duration = cls._call_minco(
             waypoints_flat, v0.tolist(), w0.tolist(), via_half_width,
             wrench_safety_margin, target_speed, max_accel, a0, v_tail, wrench_q0,
-            **plan_minco_kwargs
+            scalar_limits=scalar_limits, **plan_minco_kwargs
         )
         if not success:
             raise MincoInfeasibleError(
@@ -285,7 +288,7 @@ class MincoTrajectory:
     @staticmethod
     def _call_minco(waypoints_flat, v0, w0, via_half_width, wrench_safety_margin,
                      target_speed, max_accel, a0=None, v_tail=None, wrench_q0=None,
-                     **plan_minco_kwargs):
+                     scalar_limits=None, **plan_minco_kwargs):
         """``sobits_intball2_gnc_cpp``への単一の呼び出し口（モジュール docstring参照）。
         いずれ（別の"Phase 2"、``docs/archive/achieved/
         2026-08-30_minco_attitude_torque_status_and_next_steps.md``）この
@@ -295,16 +298,19 @@ class MincoTrajectory:
         切り替えるためのもの（``docs/
         2026-09-01_replanning_minco_v4_production_port_plan.md`` Phase 1）。"""
         import sobits_intball2_gnc_cpp  # 遅延import: 拡張未ビルド環境でもこのモジュール自体はimportできるように
+        # None: the fan envelope. (max_accel, max_angular_accel): norm limits instead of it.
+        norm_limits = {} if scalar_limits is None else dict(
+            max_accel_norm=float(scalar_limits[0]), max_angular_accel_norm=float(scalar_limits[1]))
         if target_speed is None:
             return sobits_intball2_gnc_cpp.plan_minco(
                 waypoints_flat, v0, w0, via_half_width, wrench_safety_margin,
-                a0=a0, v_tail=v_tail, q0=wrench_q0, **plan_minco_kwargs,
+                a0=a0, v_tail=v_tail, q0=wrench_q0, **norm_limits, **plan_minco_kwargs,
             )
         if plan_minco_kwargs:
             raise ValueError("corridor/grid constraints require the free-time plan_minco path")
         return sobits_intball2_gnc_cpp.plan_minco_heuristic_time(
             waypoints_flat, v0, w0, target_speed, max_accel,
-            via_half_width, wrench_safety_margin, q0=wrench_q0
+            via_half_width, wrench_safety_margin, q0=wrench_q0, **norm_limits
         )
 
     @staticmethod

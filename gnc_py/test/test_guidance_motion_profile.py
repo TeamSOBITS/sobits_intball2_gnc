@@ -113,3 +113,16 @@ def test_jaxa_baseline_faces_the_path_unless_the_attitude_mode_is_overridden():
         node, {"jaxa_attitude_mode", "jaxa_path_facing_max_rate_deg"})
     assert kwargs["jaxa_attitude_mode"] == "goal"
     assert kwargs["jaxa_path_facing_max_rate_deg"] == 40.0
+
+
+def test_envelope_off_parameters_reach_execute():
+    import inspect
+    from sobits_intball2_gnc.guidance.executor.guidance_executor import GuidanceExecutor
+    from sobits_intball2_gnc.guidance.guidance_params import _GOAL_EXECUTE_PARAMS
+    accepted = inspect.signature(GuidanceExecutor.execute).parameters
+    for name in ("minco_envelope", "minco_accel_limit", "minco_ang_accel_limit"):
+        assert name in _GOAL_EXECUTE_PARAMS and name in accepted
+        assert "guidance." + name in GUIDANCE_PARAM_DEFAULTS
+    assert GUIDANCE_PARAM_DEFAULTS["guidance.minco_envelope"] is True   # the envelope stays on by default
+    assert accepted["minco_accel_limit"].default == GUIDANCE_PARAM_DEFAULTS["guidance.minco_accel_limit"]
+    assert accepted["minco_ang_accel_limit"].default == GUIDANCE_PARAM_DEFAULTS["guidance.minco_ang_accel_limit"]

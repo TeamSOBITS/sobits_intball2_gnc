@@ -41,6 +41,7 @@ struct EvalContext
     bool reboundRequested = false;
     bool reboundError = false;
     ForceFrame forceFrame;
+    ScalarLimits scalarLimits;   // enabled(): replaces the fan envelope
 };
 
 // L-BFGS objective over [via params (3*numVia); tau (K)], free segment times.
@@ -51,11 +52,12 @@ double evaluateFixedT(void *instance, const Eigen::VectorXd &x, Eigen::VectorXd 
 
 // Worst wrench envelope violation over the trajectory at VIOLATION_CHECK_RES, the final feasibility check.
 double maxViolation(minco::MINCO_S3NU &posMinco, minco::MINCO_S3NU &rotMinco, const Eigen::VectorXd &T, int K,
-                    double wrenchSafetyMargin, const ForceFrame &ff);
+                    double wrenchSafetyMargin, const ForceFrame &ff,
+                    const ScalarLimits &limits = ScalarLimits());
 
 Eigen::VectorXd maxRatioPerSegment(const Eigen::VectorXd &T, const Eigen::MatrixX3d &coeffsPos,
                                    const Eigen::MatrixX3d &coeffsRot, int K, double wrenchSafetyMargin,
-                                   const ForceFrame &ff);
+                                   const ForceFrame &ff, const ScalarLimits &limits = ScalarLimits());
 
 // lbfgs progress callback: roughlyCheckConstraintPoints, cancelling the run to restart it
 // with the added pairs.

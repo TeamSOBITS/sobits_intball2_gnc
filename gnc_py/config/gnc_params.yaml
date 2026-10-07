@@ -155,6 +155,9 @@
       minco_replan_face_travel: true  # replan_minco faces travel (needs attitude_reference_mode face_travel); use horizon ~4m
       minco_local_max_vel: 0.15       # [m/s] replan_minco local speed cap, face travel only
       minco_async_replan: true        # replan_minco solves local off the setpoint loop (EGO v2 planner/traj_server split)
+      minco_envelope: true     # replan_minco keeps the plan inside the fan wrench envelope; false = envelope off, only the two limits below
+      minco_accel_limit: 0.0563          # [m/s^2] |acceleration| limit while the envelope is off (largest per-axis force 0.181 N / 3.216 kg)
+      minco_ang_accel_limit: 0.602   # [rad/s^2] |angular acceleration| limit while the envelope is off (0.00819 N*m / 0.0136)
       # replan_minco obstacle avoidance (docs/archive/achieved/2026-09-24_obstacle_avoidance_production_integration_plan.md)
       minco_obstacle_avoidance: false        # avoid the obstacle map (needs face travel); latched per goal
       global_planner: straight               # straight | astar; astar plans one shared A*6 route before departure (avoidance profile)

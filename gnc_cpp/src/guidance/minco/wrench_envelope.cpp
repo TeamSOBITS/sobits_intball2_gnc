@@ -2,6 +2,7 @@
 
 #include "sobits_intball2_gnc_cpp/config.hpp"
 
+#include <cstdlib>
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -44,7 +45,12 @@ WrenchEnvelope loadWrenchEnvelope(const std::string &path)
 
 const WrenchEnvelope &wrenchEnvelope()
 {
-    static const WrenchEnvelope env = loadWrenchEnvelope(kWrenchEnvelopePath);
+    // MINCO_WRENCH_ENVELOPE_CSV: diagnostic override for offline comparisons (e.g. a box of per-axis
+    // limits instead of the fan envelope). Same file format; unset = the installed envelope. Read once.
+    static const WrenchEnvelope env = [] {
+        const char *override_path = std::getenv("MINCO_WRENCH_ENVELOPE_CSV");
+        return loadWrenchEnvelope(override_path != nullptr ? override_path : kWrenchEnvelopePath);
+    }();
     return env;
 }
 
