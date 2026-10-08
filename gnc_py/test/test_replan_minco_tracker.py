@@ -208,6 +208,30 @@ def test_local_replan_failure_keeps_previous_local_and_retries():
     assert np.allclose(p, P_TARGET, atol=1e-3)
 
 
+def test_every_local_replan_failure_is_recorded():
+    # A failure after the first must not be hidden behind it (the executor logs each event).
+    tf = _IdealTrackingTf()
+    tracker = _make_tracker(tf, local_replan_period=1.0)
+    real_build_local = tracker._build_local
+    calls = {"n": 0}
+
+    def fail_first_three(*args):
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            raise MincoInfeasibleError("injected")
+        return real_build_local(*args)
+
+    tracker._build_local = fail_first_three
+    assert tracker.fallback_events == []
+    t = 0.0
+    while t <= tracker.total_duration and t < T_CAP:
+        t += DT
+        tf.stamp = t
+        p, _v, _a, _q = tracker.sample(t)
+        tf.advance(t, p)
+    assert tracker.fallback_events == ["minco_infeasible_local"] * 3
+
+
 def test_steady_state_offset_still_terminates():
     tf = _IdealTrackingTf(offset=(0.0, 0.02, 0.0))
     tracker = _make_tracker(tf)
@@ -500,6 +524,7 @@ def test_async_collision_stops_once_the_replan_fails():
     t = _tick(tracker, tf, t)
     assert tracker.emergency_stops == 1
     assert tracker.last_fallback_reason == "emergency_stop"
+    assert tracker.fallback_events == ["minco_infeasible_local", "emergency_stop"]
     assert not tracker.replanning_stopped
 
 

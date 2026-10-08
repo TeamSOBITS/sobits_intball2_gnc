@@ -785,12 +785,11 @@ class GuidanceExecutor:
         # AttitudeAligner.align_to's in_tolerance_since (a single
         # in-tolerance sample isn't enough evidence of settling).
         in_pos_tolerance_since = None
-        # Whether this tracker's fallback latch has already been logged
-        # ("[C] Controller内部値の可観測性強化" task):
-        # last_fallback_reason stays populated after the tick it trips on
-        # (module docstring), so without this guard the same event would
-        # otherwise appear to still be "happening" every remaining tick.
+        # last_fallback_reason stays populated after the tick it trips on, so a tracker without
+        # fallback_events is logged once; one with it gets each event logged (the experiments
+        # count them, and a once-per-goal log hid every fallback after the first).
         fallback_logged = False
+        fallbacks_logged = 0
         while True:
             if is_cancel_requested():
                 return STATUS_CANCELED
@@ -817,21 +816,27 @@ class GuidanceExecutor:
                 self._publish_jaxa_path(tracker)
             if self._jaxa_tracking_point_pub is not None and hasattr(tracker, "path"):
                 self._jaxa_tracking_point_pub.publish(p)
-            if not fallback_logged and getattr(
-                tracker, "last_fallback_reason", None
-            ) is not None:
+            fallback_events = getattr(tracker, "fallback_events", None)
+            if fallback_events is not None:
+                new_reasons = fallback_events[fallbacks_logged:]
+                fallbacks_logged = len(fallback_events)
+            elif not fallback_logged and getattr(tracker, "last_fallback_reason", None) is not None:
                 fallback_logged = True
+                new_reasons = [tracker.last_fallback_reason]
+            else:
+                new_reasons = []
+            for reason in new_reasons:
                 if getattr(tracker, "replanning_stopped", True):
                     self._log.info(
                         "[GuidanceExecutor] replanning: stopped re-planning for "
                         "the rest of this goal (reason=%s) at t=%.2fs"
-                        % (tracker.last_fallback_reason, sample_t)
+                        % (reason, sample_t)
                     )
                 else:
                     self._log.info(
                         "[GuidanceExecutor] replanning: fallback (reason=%s) at "
                         "t=%.2fs, re-planning continues"
-                        % (tracker.last_fallback_reason, sample_t)
+                        % (reason, sample_t)
                     )
 
             # jaxa_rrt: no timed trajectory; a failed plan ends the goal.

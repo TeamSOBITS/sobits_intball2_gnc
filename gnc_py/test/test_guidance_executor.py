@@ -1581,3 +1581,45 @@ def test_run_trajectory_publishes_the_jaxa_tracking_point_and_path():
     assert status == STATUS_SUCCESS
     assert len(path_pub.published[0]) == 2
     np.testing.assert_allclose(point_pub.published[0], goal)
+
+
+class _InfoLogger(FakeLogger):
+    def __init__(self):
+        super().__init__()
+        self.infos = []
+
+    def info(self, msg):
+        self.infos.append(msg)
+
+
+class _FallbackTracker(_UntimedTracker):
+    """Trips two fallbacks on different ticks, like repeated failed local replans."""
+
+    replanning_stopped = False
+
+    def __init__(self, goal_position):
+        super().__init__(goal_position)
+        self.fallback_events = []
+        self.last_fallback_reason = None
+
+    def sample(self, t):
+        if self._calls in (0, 1):
+            self.fallback_events.append("minco_infeasible_local")
+            self.last_fallback_reason = "minco_infeasible_local"
+        return super().sample(t)
+
+
+def test_run_trajectory_logs_every_fallback_event_not_only_the_first():
+    goal = [0.55, 0.0, 0.0]
+    log = _InfoLogger()
+    executor = _make_executor(
+        FakeTf(goal, [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
+        FakeCheckpointPublisher(), *_make_clock(dt_per_spin=0.05), log,
+        target_speed=1.0, align_pos_tolerance_m=0.05, align_pos_settle_time=0.2,
+        align_pos_timeout=5.0,
+    )
+    status = executor._run_trajectory(_FallbackTracker(goal), goal, feedback_cb=lambda *a: None,
+                                      is_cancel_requested=lambda: False)
+    assert status == STATUS_SUCCESS
+    fallbacks = [m for m in log.infos if "replanning: fallback (reason=minco_infeasible_local)" in m]
+    assert len(fallbacks) == 2

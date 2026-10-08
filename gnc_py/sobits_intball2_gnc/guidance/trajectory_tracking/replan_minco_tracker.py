@@ -220,6 +220,8 @@ class ReplanMincoTracker:
         self._last_p_now = p0.copy()
 
         self.last_fallback_reason = None
+        # Every fallback in order, not only the last: the executor logs each one (the experiments count them).
+        self.fallback_events = []
         self.last_replan_occurred = False
         self.last_local_fallback = False
         self.last_replan_solve_seconds = None
@@ -262,8 +264,7 @@ class ReplanMincoTracker:
                                        and self._local_collides(self._local_trajectory,
                                                                 self._local_touches_goal))
         if self.initial_local_collides and stop_profile_fn is not None:
-            self._start_emergency_stop(self._stop_profile_at_reference())
-            self.last_fallback_reason = "initial_local_collides"
+            self._start_emergency_stop(self._stop_profile_at_reference(), "initial_local_collides")
 
     @property
     def replanning_stopped(self):
@@ -278,7 +279,7 @@ class ReplanMincoTracker:
         pose = self._pose_fn()
         if pose is None or not self._tf_fresh_fn(pose[2]):
             self._fallen_back = True
-            self.last_fallback_reason = "tf_stale"
+            self._note_fallback("tf_stale")
             self.last_body_angular = (np.zeros(3), np.zeros(3))
             return self._last_output
 
@@ -298,8 +299,7 @@ class ReplanMincoTracker:
         sensor_stale = (self._sensor_fresh_fn is not None and self._stop_profile_fn is not None
                         and not self._sensor_fresh_fn())
         if sensor_stale and self._stop_profile is None:
-            self._start_emergency_stop(self._stop_profile_at_reference())
-            self.last_fallback_reason = "sensor_stale"
+            self._start_emergency_stop(self._stop_profile_at_reference(), "sensor_stale")
         if self._stop_profile is not None:
             return self._sample_emergency_stop(dt, allow_resume=not sensor_stale)
         if self._planner.obstacle_grid is not None:
@@ -436,12 +436,16 @@ class ReplanMincoTracker:
         omega_ref, _alpha = self._local_trajectory.sample_body_angular(self._local_elapsed)
         return self._stop_profile_fn(p_ref, v_ref, q_ref, omega_ref)
 
-    def _start_emergency_stop(self, profile):
+    def _note_fallback(self, reason):
+        self.last_fallback_reason = reason
+        self.fallback_events.append(reason)
+
+    def _start_emergency_stop(self, profile, reason="emergency_stop"):
         self._stop_profile = profile
         self._stop_elapsed = 0.0
         self._brake_switch = None
         self.emergency_stops += 1
-        self.last_fallback_reason = "emergency_stop"
+        self._note_fallback(reason)
 
     def _emergency_stop_if_collision_close(self):
         if self._stop_profile_fn is None:
@@ -554,7 +558,7 @@ class ReplanMincoTracker:
         if result is None:
             # _local_elapsed deliberately not reset: keeps the reference
             # continuous on the old local trajectory until a retry succeeds.
-            self.last_fallback_reason = "minco_infeasible_local"
+            self._note_fallback("minco_infeasible_local")
             self.last_local_fallback = True
             return
         # How far the reference jumps when the new local replaces the old one: grows with the solve
