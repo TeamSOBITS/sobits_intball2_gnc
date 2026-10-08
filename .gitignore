@@ -93,3 +93,6 @@ CLAUDE.md
 # CSVは全て除外対象
 *.csv
 !/gnc_cpp/config/wrench_envelope.csv
+
+# READMEの冒頭に載せる障害物回避のGIF
+!/docs/minco_obstacle_avoidance.gif

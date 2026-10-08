@@ -39,6 +39,10 @@
 Int-Ball2 シミュレータでロボットを自律移動させるためのパッケージです．
 ROS2 Humble に対応しています．
 
+<p align="center">
+  <img src="docs/minco_obstacle_avoidance.gif" alt="MINCOによる宇宙飛行士の回避（2倍速）" width="640">
+</p>
+
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
 
