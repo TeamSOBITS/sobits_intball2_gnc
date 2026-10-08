@@ -142,3 +142,10 @@ def test_obstacle_lbfgs_delta_reaches_execute_and_the_avoidance_profile_sets_it(
         _node("avoidance", minco_obstacle_lbfgs_delta=1e-4),
         overrides=("minco_obstacle_lbfgs_delta",))
     assert kwargs["minco_obstacle_lbfgs_delta"] == 1e-4
+
+
+def test_avoidance_profile_brings_the_envelope_back_on_unless_overridden():
+    _p, _m, kwargs = goal_motion_profile(_node("avoidance", minco_envelope=False))
+    assert kwargs["minco_envelope"] is True
+    _p, _m, kwargs = goal_motion_profile(_node("avoidance", minco_envelope=False), overrides=("minco_envelope",))
+    assert kwargs["minco_envelope"] is False

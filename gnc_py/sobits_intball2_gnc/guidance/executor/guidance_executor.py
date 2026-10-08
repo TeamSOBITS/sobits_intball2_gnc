@@ -515,6 +515,12 @@ class GuidanceExecutor:
             except AlignmentAborted as exc:
                 return exc.status
 
+        if trajectory_tracking_mode == "replan_minco":
+            # What this goal actually uses (the experiments read it back as the proof of the condition).
+            self._log.info(
+                "[GuidanceExecutor] latched options: envelope=%s, local_max_vel=%s, accel_limit=%.4f, "
+                "ang_accel_limit=%.4f" % (bool(minco_envelope), minco_local_max_vel,
+                                          minco_accel_limit, minco_ang_accel_limit))
         try:
             tracker, traj = self._tracker_builder.build(
                 p0, q0, p_target, via_waypoints, trajectory_tracking_mode,

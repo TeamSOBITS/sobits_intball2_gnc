@@ -239,6 +239,9 @@ MOTION_PROFILES = {
         "minco_obstacle_clearance_soft": 0.2,
         "minco_obstacle_clearance": 0.1,
         "minco_obstacle_lbfgs_delta": 1e-3,
+        # In the profile so that setting the profile always brings the envelope back on
+        # (an earlier envelope-off override must not leak into the next goal).
+        "minco_envelope": True,
         "global_planner": "astar",
     },
     # face_travel only drives pre_align here (the goal chord, then the A* route's
