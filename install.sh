@@ -6,7 +6,9 @@ echo "Updating package list..."
 sudo apt-get install -y \
     zenity \
     pybind11-dev \
+    ros-humble-ompl \
     ros-humble-gazebo-msgs  # virtual_camera_node (/gazebo/model_states)
+# ros-humble-ompl: sobits_intball2_gnc_cpp の jaxa_rrt（RRT*、gnc_cpp/CMakeLists.txt の find_package(ompl)）
 
 # 力/トルク制約付き軌道の時間割当（TOPP-RA）用
 pip3 install toppra
