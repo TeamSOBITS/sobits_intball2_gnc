@@ -16,12 +16,28 @@ test/manual/README.md); this merges event-driven multi-topic recording
 (position/attitude vs setpoint) that neither of those scripts did.
 
 Works with any `guidance.trajectory_tracking_mode` value (``static_toppra``,
-``static_minco``, ``replan_minco``) -- pass
+``static_minco``, ``static_min_snap``, ``replan_minco``) -- pass
 `--set-mode` to set it first, or leave whatever is already configured.
+
+Also works against the JAXA move function (``/ctl/command_ros2``, goal frame
+``dock_body``): pass ``--action-name /ctl/command_ros2 --reference-frame dock_body``
+(run ``location_broadcaster`` so the location frames exist). The JAXA side publishes
+no reference trajectory, so the setpoint-based tracking error reads "no samples";
+the straight-line section below is what compares both stacks. All recorded poses
+and the CSVs are then expressed in ``--reference-frame``.
+
+Straight-line section (printed for every run): the line runs from the position at
+goal send to the target. Lateral deviation is the distance from that line (and
+from the line to the *measured* final position, which removes a constant offset
+between the controller's pose and the TF ``body``). Motion time runs from the
+first move beyond ``--move-threshold-mm`` to the last time the position was
+farther than ``--settle-tol-mm`` from its final value; "reached" is the final
+position error against the target within ``--reach-tol-mm``.
 
 Usage:
     python3 test/manual/move_to_full_analysis.py nav_entry
     python3 test/manual/move_to_full_analysis.py nav_entry --set-mode static_minco --out-dir /tmp/trace --tag run1
+    python3 test/manual/move_to_full_analysis.py jaxa_paper_goal --action-name /ctl/command_ros2 --reference-frame dock_body
 
 Tracking error is split by phase: ``trajectory`` samples are compared with the
 nearest-in-time `/gnc/trajectory_setpoint`; ``align`` samples (the latest
@@ -62,9 +78,16 @@ from visualization_msgs.msg import Marker
 
 from sobits_intball2_gnc.control.utils.quat_math import quat_conj, quat_mul
 from sobits_intball2_gnc.guidance.move_to import resolve_location
-from sobits_intball2_gnc.guidance.ros.ctl_command_action_client import CtlCommandActionClient
+from sobits_intball2_gnc.guidance.ros.ctl_command_action_client import (
+    ACTION_NAME,
+    CtlCommandActionClient,
+)
 
 REFERENCE_FRAME = "iss_body"
+STATIC_QOS = QoSProfile(
+    depth=100, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.RELIABLE,
+)
 TARGET_FRAME = "body"
 GUIDANCE_NODE = "guidance_node"
 DUTY_SATURATION_THRESHOLD = 0.99
@@ -99,25 +122,38 @@ def geodesic_angle_deg(q_a, q_b):
 
 
 class TfRawRecorder:
-    """Records every distinct ``iss_body <- body`` TF sample, event-driven.
+    """Records every distinct ``reference_frame <- body`` TF sample, event-driven.
 
     Owns its own ``tf2_ros.Buffer`` (not ``TfClient``'s -- sharing a buffer
     via a second subscription would race the read against the write for the
     same incoming message).
+
+    A reference frame other than ``iss_body`` (JAXA's ``dock_body``) is a
+    static transform, so ``/tf_static`` is read too -- but only that frame's
+    own transform: ``/tf_static`` also holds a frozen identity for ``iss_body``
+    and ``body`` that would shadow the real pose.
     """
 
-    def __init__(self, node):
+    def __init__(self, node, reference_frame=REFERENCE_FRAME):
         self._buffer = tf2_ros.Buffer()
+        self._reference_frame = reference_frame
         self._last_stamp = None
         self.rows = []  # (t_sim, px, py, pz, qx, qy, qz, qw)
         node.create_subscription(TFMessage, "/tf", self._on_tf, TF_QOS)
+        if reference_frame != REFERENCE_FRAME:
+            node.create_subscription(TFMessage, "/tf_static", self._on_tf_static, STATIC_QOS)
+
+    def _on_tf_static(self, msg):
+        for transform in msg.transforms:
+            if transform.child_frame_id == self._reference_frame:
+                self._buffer.set_transform_static(transform, "move_to_full_analysis")
 
     def _on_tf(self, msg):
         for transform in msg.transforms:
             self._buffer.set_transform(transform, "move_to_full_analysis")
         try:
             t = self._buffer.lookup_transform(
-                REFERENCE_FRAME, TARGET_FRAME, rclpy.time.Time(), timeout=_NO_WAIT
+                self._reference_frame, TARGET_FRAME, rclpy.time.Time(), timeout=_NO_WAIT
             )
         except (LookupException, ConnectivityException, ExtrapolationException):
             return
@@ -280,6 +316,54 @@ def tracking_errors(tf_rows, sp_rows, cp_rows):
     return rows
 
 
+def straight_line_metrics(tf_rows, t_send, target_pos, t_result=None,
+                          move_threshold_m=0.005, settle_tol_m=0.010, reach_tol_m=0.050):
+    """Return straight-line metrics from the TF samples, or None without samples.
+
+    ``tf_rows``: ``(t, px, py, pz, ...)`` in time order. The start is the last
+    sample at or before ``t_send`` (the first sample if none). Lateral deviation
+    is the perpendicular distance to the line start->``target_pos`` and to the
+    line start->measured final position. Motion time runs from the first sample
+    farther than ``move_threshold_m`` from the start to the last sample farther
+    than ``settle_tol_m`` from the final position (``None`` if it never moved).
+    """
+    if len(tf_rows) < 2:
+        return None
+    t = np.array([r[0] for r in tf_rows])
+    p = np.array([r[1:4] for r in tf_rows], dtype=float)
+    i0 = max(int(np.searchsorted(t, t_send, side="right")) - 1, 0)
+    t, p = t[i0:], p[i0:]
+    start, final = p[0], p[-1]
+    target = np.asarray(target_pos, dtype=float)
+
+    def lateral(end):
+        direction = end - start
+        length = float(np.linalg.norm(direction))
+        if length < 1e-9:
+            return None
+        direction = direction / length
+        rel = p - start
+        return np.linalg.norm(rel - np.outer(rel @ direction, direction), axis=1)
+
+    moved = np.where(np.linalg.norm(p - start, axis=1) > move_threshold_m)[0]
+    out = {
+        "line_length_m": float(np.linalg.norm(target - start)),
+        "travelled_m": float(np.linalg.norm(final - start)),
+        "lateral_target_m": lateral(target),
+        "lateral_final_m": lateral(final),
+        "final_error_m": float(np.linalg.norm(final - target)),
+        "reached": bool(np.linalg.norm(final - target) <= reach_tol_m),
+        "action_time_s": None if t_result is None else float(t_result - t_send),
+        "motion_time_s": None,
+    }
+    if moved.size:
+        t_move = float(t[moved[0]])
+        unsettled = np.where(np.linalg.norm(p - final, axis=1) > settle_tol_m)[0]
+        t_settle = float(t[unsettled[-1]]) if unsettled.size else t_move
+        out["motion_time_s"] = max(t_settle - t_move, 0.0)
+    return out
+
+
 def summarize(label, values, unit, fmt="%.3f"):
     if not values:
         print("  %s: no samples" % label)
@@ -299,6 +383,18 @@ def main():
                      help="set guidance.trajectory_tracking_mode before sending the goal "
                           "(any value the node accepts: static/static_minco/"
                           "replan_minco); default: leave as-is")
+    ap.add_argument("--action-name", default=ACTION_NAME,
+                     help="action server to send the goal to (default: %(default)s; "
+                          "JAXA move function: /ctl/command_ros2)")
+    ap.add_argument("--reference-frame", default=REFERENCE_FRAME,
+                     help="frame the goal and the recorded poses are expressed in "
+                          "(default: %(default)s; JAXA: dock_body)")
+    ap.add_argument("--move-threshold-mm", type=float, default=5.0,
+                     help="motion starts when the position leaves the start by this much")
+    ap.add_argument("--settle-tol-mm", type=float, default=10.0,
+                     help="motion ends at the last sample farther than this from the final position")
+    ap.add_argument("--reach-tol-mm", type=float, default=50.0,
+                     help="'reached' when the final position error to the target is within this")
     ap.add_argument("--out-dir", default="/tmp/move_to_full_analysis")
     ap.add_argument("--tag", default="run")
     ap.add_argument("--timeout-sec", type=float, default=90.0,
@@ -311,7 +407,7 @@ def main():
     node = Node("move_to_full_analysis")
     node.set_parameters([Parameter("use_sim_time", Parameter.Type.BOOL, True)])
 
-    tf_rec = TfRawRecorder(node)
+    tf_rec = TfRawRecorder(node, args.reference_frame)
     sp_rec = SetpointRawRecorder(node)
     cp_rec = CheckpointRecorder(node)
     wrench_rec = WrenchRecorder(node, "/ctl/wrench_correction")
@@ -319,7 +415,7 @@ def main():
     duty_rec = DutyRecorder(node)
     global_path_rec = PathRecorder(node, "/gnc/trajectory_path_speed")
     local_path_rec = PathRecorder(node, "/gnc/trajectory_path_speed_local")
-    move_client = CtlCommandActionClient(node)
+    move_client = CtlCommandActionClient(node, args.action_name, args.reference_frame)
 
     if args.set_mode is not None:
         if not set_tracking_mode(node, args.set_mode):
@@ -327,7 +423,7 @@ def main():
             rclpy.shutdown()
             return 1
 
-    resolved = resolve_location(node, args.location_name)
+    resolved = resolve_location(node, args.location_name, args.reference_frame)
     if resolved is None:
         print("could not resolve '%s' via TF" % args.location_name)
         node.destroy_node()
@@ -337,10 +433,13 @@ def main():
     print("resolved %s -> pos=%s quat=%s, sending goal..." % (args.location_name, target_pos, target_quat))
 
     result = None
+    t_result = None
+    t_send = node.get_clock().now().nanoseconds * 1e-9
     try:
         result = move_client.send_goal(
             target_pos, target_quat, result_timeout_sec=args.timeout_sec
         )
+        t_result = node.get_clock().now().nanoseconds * 1e-9
     except KeyboardInterrupt:
         print("interrupted -- analyzing whatever was recorded so far")
     except Exception as exc:  # noqa: BLE001 -- still want the analysis below
@@ -408,6 +507,31 @@ def main():
         torque_norms_ach = [float(np.linalg.norm(r[4:7])) for r in wrench_achieved_rec.rows]
         summarize("|force| achieved", force_norms_ach, "N")
         summarize("|torque| achieved", torque_norms_ach, "Nm")
+    print()
+
+    line = straight_line_metrics(
+        tf_rec.rows, t_send, target_pos, t_result,
+        move_threshold_m=args.move_threshold_mm / 1000.0,
+        settle_tol_m=args.settle_tol_mm / 1000.0,
+        reach_tol_m=args.reach_tol_mm / 1000.0,
+    )
+    print("straight-line metrics (poses in %s; line = start at goal send -> target):" % args.reference_frame)
+    if line is None:
+        print("  no TF samples")
+    else:
+        print("  line length=%.3fm, travelled=%.3fm" % (line["line_length_m"], line["travelled_m"]))
+        for key, label in (("lateral_target_m", "lateral deviation from start->target line"),
+                           ("lateral_final_m", "lateral deviation from start->final line")):
+            if line[key] is None:
+                print("  %s: n/a (no motion)" % label)
+            else:
+                print("  %s: max=%.1fmm mean=%.1fmm" % (
+                    label, 1000.0 * float(np.max(line[key])), 1000.0 * float(np.mean(line[key]))))
+        print("  motion time=%s, time to goal result=%s"
+              % ("n/a" if line["motion_time_s"] is None else "%.1fs" % line["motion_time_s"],
+                 "n/a" if line["action_time_s"] is None else "%.1fs" % line["action_time_s"]))
+        print("  reached (final error %.1fmm <= %.0fmm): %s"
+              % (1000.0 * line["final_error_m"], args.reach_tol_mm, "yes" if line["reached"] else "NO"))
     print()
 
     if tf_rec.rows:
