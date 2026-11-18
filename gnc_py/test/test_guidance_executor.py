@@ -1290,6 +1290,91 @@ def test_execute_static_minco_mode_fails_planning_when_infeasible(monkeypatch):
     assert any("static MINCO" in e for e in logger.errors)
 
 
+def test_execute_static_min_snap_passes_the_via_waypoint_with_a_fixed_attitude():
+    setpoint_pub = FakeSetpointPublisher()
+    logger = FakeLogger()
+    q0 = [0.0, 0.0, 0.3826834, 0.9238795]
+    tf = SetpointFollowingTf([0.0, 0.0, 0.0], q0, setpoint_pub)
+    clock_seconds_fn, spin_fn = _make_clock(dt_per_spin=0.05)
+    executor = _make_executor(
+        tf, setpoint_pub, FakeCheckpointPublisher(), clock_seconds_fn, spin_fn, logger,
+        target_speed=0.5, max_accel=0.031, align_pos_tolerance_m=0.05,
+        align_pos_settle_time=0.5, align_pos_timeout=10.0,
+    )
+    target, via = [1.0, 1.0, 0.0], [1.0, 0.0, 0.0]
+    status = executor.execute(
+        target, q0,
+        feedback_cb=lambda *a: None,
+        is_cancel_requested=lambda: clock_seconds_fn() > 600.0,
+        # face_travel is ignored by static_min_snap: the attitude stays at q0
+        face_travel=True, pre_align=False, align_at_arrival=False, via_waypoints=[via],
+        trajectory_tracking_mode="static_min_snap",
+    )
+    assert status == STATUS_SUCCESS
+    assert logger.warnings == []
+    positions = np.array([p for p, _v, _a, _q in setpoint_pub.calls])
+    assert np.min(np.linalg.norm(positions - via, axis=1)) < 0.01
+    assert np.allclose(positions[-1], target, atol=1e-3)
+    assert all(np.allclose(q, q0) for _p, _v, _a, q in setpoint_pub.calls)
+    speeds = [np.linalg.norm(v) for _p, v, _a, _q in setpoint_pub.calls]
+    accels = [np.linalg.norm(a) for _p, _v, a, _q in setpoint_pub.calls]
+    assert max(speeds) <= 0.5 * (1.0 + 1e-3)
+    assert max(accels) <= 0.031 * (1.0 + 1e-3)
+
+
+def test_execute_static_min_snap_fails_planning_without_max_accel():
+    logger = FakeLogger()
+    executor = _make_executor(
+        FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
+        FakeCheckpointPublisher(), *_make_clock(), logger, target_speed=1.0,
+    )
+    assert _execute_planning(executor, "static_min_snap") == STATUS_PLANNING_FAILED
+    assert any("static_min_snap needs max_accel" in e for e in logger.errors)
+
+
+def test_execute_static_min_snap_fails_planning_on_coincident_waypoints():
+    logger = FakeLogger()
+    executor = _make_executor(
+        FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
+        FakeCheckpointPublisher(), *_make_clock(), logger, target_speed=1.0,
+        max_accel=0.031,
+    )
+    status = executor.execute(
+        [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=False, via_waypoints=[[0.0, 0.0, 0.0]],
+        trajectory_tracking_mode="static_min_snap",
+    )
+    assert status == STATUS_PLANNING_FAILED
+    assert any("minimum snap trajectory infeasible" in e for e in logger.errors)
+
+
+def test_execute_static_min_snap_forwards_order_and_time_optimization(monkeypatch):
+    from sobits_intball2_gnc.guidance.executor import tracker_builder
+
+    seen = {}
+
+    def fake(*_a, **kwargs):
+        seen.update(kwargs)
+        raise tracker_builder.MinSnapInfeasibleError("stop here")
+
+    monkeypatch.setattr(tracker_builder, "MinSnapTrajectory", fake)
+    executor = _make_executor(
+        FakeTf([0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]), FakeSetpointPublisher(),
+        FakeCheckpointPublisher(), *_make_clock(), FakeLogger(), target_speed=0.4,
+        max_accel=0.02,
+    )
+    executor.execute(
+        [1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0],
+        feedback_cb=lambda *a: None, is_cancel_requested=lambda: False,
+        face_travel=False, align_at_arrival=False,
+        trajectory_tracking_mode="static_min_snap",
+        min_snap_order=3, min_snap_optimize_segment_times=False,
+    )
+    assert seen == {"max_vel": 0.4, "max_accel": 0.02, "order": 3,
+                    "optimize_segment_times": False}
+
+
 def test_execute_replan_minco_mode_fails_planning_when_toppra_fallback_is_unavailable():
     logger = FakeLogger()
     executor = _make_executor(

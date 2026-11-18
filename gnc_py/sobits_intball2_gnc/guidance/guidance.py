@@ -60,6 +60,7 @@ from sobits_intball2_gnc.guidance.ros.depth_image_subscriber import DepthImageSu
 from sobits_intball2_gnc.guidance.ros.path_publisher import PathPublisher
 from sobits_intball2_gnc.guidance.ros.point_marker_publisher import PointMarkerPublisher
 from sobits_intball2_gnc.guidance.ros.speed_path_publisher import SpeedPathPublisher
+from sobits_intball2_gnc.guidance.trajectory.min_snap_trajectory import MIN_SNAP_ORDERS
 from sobits_intball2_gnc.guidance.executor.tracker_builder import (
     TRAJECTORY_TRACKING_MODES,
 )
@@ -480,6 +481,13 @@ class GuidanceNode(Node):
                         successful=False,
                         reason="guidance.trajectory_tracking_mode must be "
                         "one of %s" % sorted(TRAJECTORY_TRACKING_MODES),
+                    )
+            elif p.name == "guidance.min_snap_order":
+                if p.value not in MIN_SNAP_ORDERS:
+                    return SetParametersResult(
+                        successful=False,
+                        reason="guidance.min_snap_order must be one of %s"
+                        % sorted(MIN_SNAP_ORDERS),
                     )
             # Any other declared parameter is Category B/C (latched or
             # static) -- accepted but intentionally not applied at runtime.

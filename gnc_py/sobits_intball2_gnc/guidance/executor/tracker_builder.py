@@ -17,6 +17,10 @@ from sobits_intball2_gnc.guidance.local_planner.jaxa_rrt_local_planner import (
     JaxaPlanError,
     JaxaPlannerConfig,
 )
+from sobits_intball2_gnc.guidance.trajectory.min_snap_trajectory import (
+    MinSnapInfeasibleError,
+    MinSnapTrajectory,
+)
 from sobits_intball2_gnc.guidance.trajectory.minco_trajectory import (
     MincoInfeasibleError,
     MincoTrajectory,
@@ -38,7 +42,7 @@ from sobits_intball2_gnc.guidance.trajectory_tracking.static_trajectory_tracker 
 )
 
 TRAJECTORY_TRACKING_MODES = frozenset(
-    {"static_toppra", "static_minco", "replan_minco", "jaxa_rrt"}
+    {"static_toppra", "static_minco", "static_min_snap", "replan_minco", "jaxa_rrt"}
 )
 
 
@@ -81,10 +85,13 @@ class TrackerBuilder:
               minco_local_piece_length_m=None, minco_obstacle_clearance_soft=0.2,
               minco_obstacle_clearance=None, minco_obstacle_lbfgs_delta=None, minco_scalar_limits=None,
               minco_report_wrench_use=True,
+              min_snap_order=4, min_snap_optimize_segment_times=True,
               jaxa_options=None, reference_route=None):
         """Returns ``(tracker, traj)``: ``traj`` is the trajectory to preview (the
         tracked one, the global one for ``replan_minco``, ``None`` for ``jaxa_rrt``).
         ``jaxa_options``: ``jaxa_rrt`` only, see :meth:`_build_jaxa`.
+        ``min_snap_order``/``min_snap_optimize_segment_times``: ``static_min_snap``
+        only, see :meth:`_build_min_snap`.
         ``forward_axis`` must already be resolved (never ``None``).
         Raises :class:`TrajectoryBuildError` if no trajectory can be built."""
         waypoints = [p0, *via_waypoints, p_target]
@@ -203,6 +210,10 @@ class TrackerBuilder:
                    minco_wrench_safety_margin)
             )
 
+        if mode == "static_min_snap":
+            traj = self._build_min_snap(waypoints, q0, min_snap_order,
+                                        min_snap_optimize_segment_times)
+
         if mode == "replan_minco":
             return replan_tracker, traj
         return StaticTrajectoryTracker(traj), traj
@@ -240,6 +251,32 @@ class TrackerBuilder:
             "[TrackerBuilder] jaxa_rrt initial plan took %.2fs (%d attempt(s), %d waypoints)"
             % (tracker.last_replan_solve_seconds, tracker.plans[0]["attempts"], len(tracker.path)))
         return tracker
+
+    def _build_min_snap(self, waypoints, q0, order, optimize_segment_times):
+        """Minimum snap (Mellinger & Kumar 2011) solved once, like ``static_minco``.
+
+        The attitude is held at ``q0`` for the whole trajectory: ``face_travel``
+        is not supported (the ``min_snap`` profile uses ``attitude_reference_mode:
+        fixed``, and ``align_at_arrival`` turns to the goal attitude). Limits are
+        ``|v| <= target_speed`` and ``|a| <= max_accel`` only -- no wrench envelope.
+        """
+        if self._max_accel is None:
+            raise TrajectoryBuildError("static_min_snap needs max_accel configured")
+        try:
+            traj = MinSnapTrajectory(
+                waypoints, q0, max_vel=self._target_speed, max_accel=self._max_accel,
+                order=int(order), optimize_segment_times=bool(optimize_segment_times))
+        except MinSnapInfeasibleError as exc:
+            raise TrajectoryBuildError(
+                "minimum snap trajectory infeasible (%s)" % exc) from exc
+        except ValueError as exc:
+            raise TrajectoryBuildError("static_min_snap: %s" % exc) from exc
+        self._log.info(
+            "[TrackerBuilder] minimum snap solve took %.2fs (%d waypoints, order=%d, "
+            "optimize_segment_times=%s, duration=%.2fs)"
+            % (traj.solve_wall_seconds, traj.num_waypoints, int(order),
+               bool(optimize_segment_times), traj.global_total_duration))
+        return traj
 
     def _build_toppra(self, waypoints, q0, forward_axis, face_travel):
         missing = [name for name, value in (

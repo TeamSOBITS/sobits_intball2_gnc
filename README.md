@@ -59,7 +59,7 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
 │   ├── sobits_intball2_gnc/
 │   │   ├── navigation/              # Navigation（N）: 詳細は navigation/README.md
 │   │   ├── control/                 # Control（C）: 詳細は control/README.md
-│   │   └── guidance/                # Guidance（G）: min_snap.pyのコアロジックのみ未実装、詳細は guidance/README.md
+│   │   └── guidance/                # Guidance（G）: 詳細は guidance/README.md
 │   ├── test/                        # 各ロジックの単体テスト（ROS 不要）
 │   ├── package.xml
 │   ├── setup.py
@@ -139,10 +139,11 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
   ```sh
   ros2 run sobits_intball2_gnc move_to_client nav_entry
   ```
-  - 通常は`guidance.motion_profile`を選びます。`fast`は姿勢固定・姿勢合わせなしのTOPP-RA移動、`avoidance`は進行方向を向きながら障害物を避ける`replan_minco`移動です。
+  - 通常は`guidance.motion_profile`を選びます。`fast`は姿勢固定・姿勢合わせなしのTOPP-RA移動、`avoidance`は進行方向を向きながら障害物を避ける`replan_minco`移動、`min_snap`は比較用のminimum snap軌道（姿勢固定、到着時に姿勢合わせ）です。
     ```sh
     ros2 param set /guidance_node guidance.motion_profile fast
     ros2 param set /guidance_node guidance.motion_profile avoidance
+    ros2 param set /guidance_node guidance.motion_profile min_snap
     ```
   - profileを選んだ後に個別の設定を変更すると、その値が次のgoalからprofileの値より優先されます。profileを再設定すると個別設定は解除されます。
   - `avoidance`は、起動時に深度または仮想障害物の入力を設定しておく必要があります。深度が新鮮でない場合はgoalをabortします。

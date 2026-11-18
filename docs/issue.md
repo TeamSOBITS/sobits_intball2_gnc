@@ -103,9 +103,8 @@ face travelなしでは`body_frame_wrench`を渡しておらず、単位姿勢�
 ### [G] replan_minco: 別のルート（大きく曲がる・3D）でのシム検証
 face travel・障害物回避のシムは`nav_entry`↔`inspection_entry_1`の1ルートだけで、ほかの形は動作未確認。詳細: `docs/archive/achieved/2026-09-23_replanning_minco_v3_remaining_tasks.md`（§5）
 
-### [G] min snap のコアロジック実装（`min_snap_trajectory_generator.py`、別担当者、優先度低）
-Phase 2で契約は確定済みだがコア実装が未着手。pure functionとして実装（ROS import禁止）。理論: Mellinger & Kumar (2011)。入出力契約: `docs/minimum_snap/min_snap_interface_contract.md`。参考実装: https://github.com/The-SS/quadrotor_trajectory 、参考解説: https://dev10110.github.io/tech-notes/control-theory/min_snap.html
-成果物: `test_min_snap.py`に数値解検証テスト追加、`test_trajectory_generator_contract.py`の対象に`MinSnapTrajectoryGenerator`追加、区間時間→軌道のパイプラインの統合テストを追加して確認。依存関係なし（他タスクと並行可）。`static_toppra`モードは既にTOPP-RA（`ToppraTrajectory`）で力/トルク制約を考慮した軌道生成に置き換わっているため、緊急度は下がっている。
+### [G] min snap（`static_min_snap`）のシム検証
+コア（`min_snap_trajectory_generator.py`）と`min_snap` profileは実装済み（単体テストのみ）。シムでgoalを送り、`fast`（TOPP-RA）と追従誤差・所要時間を比べる。wrench envelopeを考えないので、経由点ありのルートでファンが飽和しないかも確認する。
 
 ### [C] 姿勢FFの既定ON化判断（残りの検証）
 `trajectory_controller.attitude_feedforward`は既定`false`のまま。`static_toppra`の1ルートではON時に移動中の姿勢誤差が最大3.23°→0.51°だったが、新コードでのOFF再計測と`static_minco`・`replan_minco`での検証が未実施。これらを済ませてから既定をONにするか決める。詳細: `docs/archive/achieved/2026-09-23_attitude_feedforward_implementation_and_sim_verification.md`

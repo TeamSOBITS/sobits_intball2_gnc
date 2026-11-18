@@ -123,6 +123,12 @@ GUIDANCE_PARAM_DEFAULTS = {
     "guidance.minco_envelope": True,
     "guidance.minco_accel_limit": 0.0563,
     "guidance.minco_ang_accel_limit": 0.602,
+    # "static_min_snap" only (Mellinger & Kumar 2011, guidance/trajectory/
+    # min_snap_trajectory.py); the min_snap profile sets both. Defaults are the
+    # paper's: minimize snap (order 4; 3 = jerk, 2 = acceleration) and optimize the
+    # segment-time ratio (paper V-C (14)). Latched per goal.
+    "guidance.min_snap_order": 4,
+    "guidance.min_snap_optimize_segment_times": True,
     # "jaxa_rrt" only (JAXA IAC-22 baseline, docs/jaxa_baseline_gazebo_port_plan.md 5 節,
     # planner: docs/jaxa_baseline_ompl_reproduction.md);
     # the jaxa_baseline profile sets all but jaxa_rrt_bounds. lookahead d = v * kd/kp
@@ -244,6 +250,19 @@ MOTION_PROFILES = {
         "minco_envelope": True,
         "global_planner": "astar",
     },
+    # Same as fast but the minimum snap trajectory (Mellinger & Kumar 2011) and
+    # the arrival alignment. The attitude stays fixed in flight (static_min_snap
+    # does not face travel), so pre_align would do nothing.
+    "min_snap": {
+        "attitude_reference_mode": "fixed",
+        "trajectory_tracking_mode": "static_min_snap",
+        "pre_align": False,
+        "align_at_arrival": True,
+        "minco_obstacle_avoidance": False,
+        "global_planner": "straight",
+        "min_snap_optimize_segment_times": True,
+        "min_snap_order": 4,
+    },
     # face_travel only drives pre_align here (the goal chord, then the A* route's
     # first leg); in flight the jaxa_rrt tracker sets the attitude.
     "jaxa_baseline": {
@@ -292,6 +311,8 @@ _GOAL_EXECUTE_PARAMS = {
     "minco_ang_accel_limit": ("minco_ang_accel_limit", float),
     "minco_obstacle_avoidance": ("minco_obstacle_avoidance", bool),
     "global_planner": ("global_planner", str),
+    "min_snap_order": ("min_snap_order", int),
+    "min_snap_optimize_segment_times": ("min_snap_optimize_segment_times", bool),
     "minco_local_piece_length_m": ("minco_local_piece_length_m", float),
     "minco_obstacle_clearance_soft": ("minco_obstacle_clearance_soft", float),
     "minco_obstacle_clearance": ("minco_obstacle_clearance", float),

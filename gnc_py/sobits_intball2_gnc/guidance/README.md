@@ -1,6 +1,6 @@
 # Guidance
 
-waypoint列から、時間の関数としての滑らかな目標軌道（位置・速度・加速度・目標姿勢）を生成し、`/gnc/move_to`アクションとしてgoal駆動で機体を動かすモジュールです。軌道はファンで出せる力・トルクの範囲（wrench envelope）に収まるように作ります: TOPP-RA（`static_toppra`、既定）またはMINCO（`static_minco`・`replan_minco`）。軌道を作れないときはgoalをabortし、その場で止まります。
+waypoint列から、時間の関数としての滑らかな目標軌道（位置・速度・加速度・目標姿勢）を生成し、`/gnc/move_to`アクションとしてgoal駆動で機体を動かすモジュールです。軌道はファンで出せる力・トルクの範囲（wrench envelope）に収まるように作ります: TOPP-RA（`static_toppra`、既定）またはMINCO（`static_minco`・`replan_minco`）。比較用に、速度・加速度の上限だけを考えるminimum snap（`static_min_snap`）もあります。軌道を作れないときはgoalをabortし、その場で止まります。
 
 ## 目次
 
@@ -101,6 +101,7 @@ python3 gnc_py/test/manual/move_to_cancel_brake_test.py inspection_entry_2   # �
 |---|---|---|
 | `fast`（既定） | 障害物がない場所を速く移動 | `static_toppra`、姿勢固定、出発前・到着時の姿勢合わせなし、障害物回避なし |
 | `avoidance` | 深度または仮想障害物を避けて移動 | `replan_minco`、進行方向を向く、出発前・到着時の姿勢合わせあり、1秒ごとの非同期再計画、障害物回避あり、local速度上限`0.15 m/s` |
+| `min_snap` | 比較用のminimum snap軌道（Mellinger & Kumar 2011）で移動 | `static_min_snap`、姿勢固定、出発前の姿勢合わせなし、到着時の姿勢合わせあり、障害物回避なし |
 | `jaxa_baseline` | 比較用のJAXA手法（IAC-22）で障害物を避けて移動 | `jaxa_rrt`、出発前・到着時の姿勢合わせあり、経路が衝突したら非同期で再計画。値は下のJAXA手法のパラメータ表を参照 |
 
 ```sh
@@ -121,6 +122,7 @@ ros2 param set /guidance_node guidance.motion_profile avoidance
 2. **軌道の追従**: `/gnc/trajectory_setpoint`へ参照を出す。方式は`motion_profile`で決まる
    - `static_toppra`: 力・トルクの制約付きで一度だけ計画した軌道（TOPP-RA）
    - `static_minco`: MINCOで一度だけ計画した軌道
+   - `static_min_snap`: minimum snap（Mellinger & Kumar 2011）で一度だけ計画した軌道。区間時間を区間の長さに比例して決め、比を最適化し（`min_snap_optimize_segment_times`）、速度`target_speed`・加速度（`trajectory_controller.max_force`の最小値÷質量）のどちらかが上限ちょうどになるよう全体を伸び縮みさせる。wrench envelope（トルクを含む）は考えない。移動中の姿勢は出発時のまま（`face_travel`は無視）
    - `replan_minco`: ゴールまでのglobal軌道を一度だけ作り、そこから先読み距離先までのlocal軌道を1秒ごとに作り直す（EGO-Planner v2と同じ構成）。最初のglobal軌道を作れなければ`static_toppra`で作り直す
    - `jaxa_rrt`: JAXA手法ベースライン。RRT*→Bスプライン補間の経路を作り、論文の追従点（`v_des = a_des = 0`）を出す。残りの経路が衝突したら別スレッドで再計画し、終わるまで古い経路を追う。時間で決まる軌道がないので、追従点がゴールに達してから下の位置の収束を待つ
    - 軌道を作れないとき（TOPP-RA・MINCOが解けない、wrench envelope・質量・慣性・`max_angular_rate`が未設定）はgoalを`TERMINATE_ABORTED`で返し、下の4と同じ制動で止まる
@@ -173,8 +175,8 @@ ros2 param set /guidance_node guidance.motion_profile avoidance
 
 | パラメータ名 | 役割 | デフォルト値 |
 |---|---|---|
-| `guidance.motion_profile` | 通常の移動方式（`fast` / `avoidance` / `jaxa_baseline`）。下記の追従・姿勢・MINCO回避設定をgoalごとに上書きする | `fast` |
-| `guidance.trajectory_tracking_mode` | 軌道追従方式（`static_toppra` / `static_minco` / `replan_minco` / `jaxa_rrt`、[実行の流れ](#execution-flow)参照） | `static_toppra` |
+| `guidance.motion_profile` | 通常の移動方式（`fast` / `avoidance` / `min_snap` / `jaxa_baseline`）。下記の追従・姿勢・MINCO回避設定をgoalごとに上書きする | `fast` |
+| `guidance.trajectory_tracking_mode` | 軌道追従方式（`static_toppra` / `static_minco` / `static_min_snap` / `replan_minco` / `jaxa_rrt`、[実行の流れ](#execution-flow)参照） | `static_toppra` |
 | `guidance.via_waypoints` | 経由点のTFフレーム名の配列（順に経由）。`['']`で経由なし | `['']` |
 | `guidance.attitude_reference_mode` | 移動中の姿勢参照。profileが上書きする。`look_at`は未実装で`face_travel`にフォールバック（警告ログ） | `face_travel` |
 | `guidance.face_travel_camera` | `face_travel`で進行方向に向けるカメラ軸（`main`/`stereo`） | `main` |
@@ -205,6 +207,17 @@ ros2 param set /guidance_node guidance.motion_profile avoidance
 | `guidance.minco_report_wrench_use` | 採用した局所の計画が、計画用のエンベロープ（`wrench_envelope_safety_margin`倍）の何割を使うかをログに出す（`wrench_use`）。非同期の解のスレッドで計算する（同期の解では `nan`）。`false` で計算を止める。ゴールごとに有効 | `true` |
 | `guidance.minco_async_replan` | `replan_minco`のlocal再計画をsetpointのループとは別に解く | `true` |
 | `guidance.global_planner` | `replan_minco`のglobal経路。`straight`は直線、`astar`は出発前にA*で作った共通の経路（`avoidance`・`jaxa_baseline`） | `straight` |
+
+### minimum snap（`static_min_snap`）
+
+`min_snap` profileが両方とも既定値に設定します。profileを選んだ後に`ros2 param set`すると、その値が優先されます。
+
+| パラメータ名 | 役割 | デフォルト値 |
+|---|---|---|
+| `guidance.min_snap_order` | 2乗積分を最小にする微分の階数。`4` = snap（論文）、`3` = jerk、`2` = 加速度（`2`は端点で加速度が0にならず、止まり際の指令が段差になる）。`2`〜`4`以外は拒否 | `4` |
+| `guidance.min_snap_optimize_segment_times` | 合計時間を変えずに区間時間の比を最適化する（論文V-C (14)）。経由点がない（1区間）ときは効果なし | `true` |
+
+制限: wrench envelopeを考えないので`fast`（TOPP-RA）より安全側ではない。経由点（`guidance.via_waypoints`）がないと直線1区間になる。相対移動のgoalは`static_toppra`になる。
 
 ### JAXA手法（`jaxa_rrt`）
 

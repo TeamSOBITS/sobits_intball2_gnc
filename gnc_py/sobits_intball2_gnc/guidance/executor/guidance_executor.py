@@ -321,6 +321,7 @@ class GuidanceExecutor:
                 minco_envelope=True,
                 minco_accel_limit=0.0563, minco_ang_accel_limit=0.602,
                 global_planner="straight",
+                min_snap_order=4, min_snap_optimize_segment_times=True,
                 jaxa_lookahead_m=0.11,
                 jaxa_ompl_solve_time_s=0.1, jaxa_max_attempts=50,
                 jaxa_collision_check_period=0.05, jaxa_goal_facing_hold_m=0.3,
@@ -418,6 +419,14 @@ class GuidanceExecutor:
         ``"static_minco"`` is like ``"static_toppra"`` (single open-loop trajectory,
         no TF-driven re-planning) but backed by ``MincoTrajectory`` instead
         of TOPP-RA.
+
+        ``"static_min_snap"`` is also a single open-loop trajectory, backed by
+        ``MinSnapTrajectory`` (Mellinger & Kumar 2011): the position path
+        minimizes the integral of the squared ``min_snap_order``-th derivative
+        (4 = snap) under ``|v| <= target_speed`` and ``|a| <= max_accel`` only
+        (no wrench envelope), with the segment-time ratio optimized when
+        ``min_snap_optimize_segment_times``. Attitude is held at ``q0`` --
+        ``face_travel`` is ignored. Needs ``max_accel``.
 
         ``"replan_minco"`` (``docs/
         2026-09-20_ego_v2_style_replan_migration_plan.md``): an
@@ -540,6 +549,8 @@ class GuidanceExecutor:
                 minco_obstacle_clearance=minco_obstacle_clearance,
                 minco_obstacle_lbfgs_delta=minco_obstacle_lbfgs_delta,
                 minco_report_wrench_use=minco_report_wrench_use,
+                min_snap_order=min_snap_order,
+                min_snap_optimize_segment_times=min_snap_optimize_segment_times,
                 minco_scalar_limits=(None if minco_envelope else
                                      (minco_accel_limit, minco_ang_accel_limit)),
                 reference_route=reference_route,

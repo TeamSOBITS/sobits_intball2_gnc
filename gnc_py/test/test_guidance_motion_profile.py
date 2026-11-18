@@ -149,3 +149,41 @@ def test_avoidance_profile_brings_the_envelope_back_on_unless_overridden():
     assert kwargs["minco_envelope"] is True
     _p, _m, kwargs = goal_motion_profile(_node("avoidance", minco_envelope=False), overrides=("minco_envelope",))
     assert kwargs["minco_envelope"] is False
+
+
+def test_min_snap_profile_selects_the_paper_defaults_and_a_fixed_attitude():
+    profile, attitude_mode, kwargs = goal_motion_profile(_node(
+        "min_snap", trajectory_tracking_mode="replan_minco", pre_align=True,
+        align_at_arrival=False, minco_obstacle_avoidance=True, global_planner="astar",
+        min_snap_order=2, min_snap_optimize_segment_times=False,
+    ))
+    assert profile == "min_snap"
+    assert attitude_mode == "fixed"
+    assert kwargs["trajectory_tracking_mode"] == "static_min_snap"
+    assert kwargs["pre_align"] is False
+    assert kwargs["align_at_arrival"] is True
+    assert kwargs["minco_obstacle_avoidance"] is False
+    assert kwargs["global_planner"] == "straight"
+    assert kwargs["min_snap_order"] == 4
+    assert kwargs["min_snap_optimize_segment_times"] is True
+
+
+def test_min_snap_options_set_after_the_profile_override_it():
+    _profile, _mode, kwargs = goal_motion_profile(
+        _node("min_snap", min_snap_order=3, min_snap_optimize_segment_times=False),
+        overrides=("min_snap_order", "min_snap_optimize_segment_times"))
+    assert kwargs["min_snap_order"] == 3
+    assert kwargs["min_snap_optimize_segment_times"] is False
+
+
+def test_min_snap_parameters_reach_execute_with_matching_defaults():
+    import inspect
+    from sobits_intball2_gnc.guidance.executor.guidance_executor import GuidanceExecutor
+    from sobits_intball2_gnc.guidance.executor.tracker_builder import TRAJECTORY_TRACKING_MODES
+    from sobits_intball2_gnc.guidance.guidance_params import MOTION_PROFILES, _GOAL_EXECUTE_PARAMS
+    accepted = inspect.signature(GuidanceExecutor.execute).parameters
+    for name in ("min_snap_order", "min_snap_optimize_segment_times"):
+        assert name in _GOAL_EXECUTE_PARAMS
+        assert accepted[name].default == GUIDANCE_PARAM_DEFAULTS["guidance." + name]
+        assert MOTION_PROFILES["min_snap"][name] == GUIDANCE_PARAM_DEFAULTS["guidance." + name]
+    assert MOTION_PROFILES["min_snap"]["trajectory_tracking_mode"] in TRAJECTORY_TRACKING_MODES
