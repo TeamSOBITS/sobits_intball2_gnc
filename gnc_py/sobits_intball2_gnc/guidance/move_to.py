@@ -19,9 +19,14 @@ from sobits_intball2_gnc.guidance.ros.ctl_command_action_client import (
 def resolve_location(node: Node, location_name: str,
                      reference_frame: str = DEFAULT_REFERENCE_FRAME,
                      timeout_sec: float = 5.0):
-    """Return the named frame's ``(pos, quat)`` in ``reference_frame`` or None."""
+    """Return the named frame's ``(pos, quat)`` in ``reference_frame`` or None.
+
+    A reference frame other than the default (e.g. JAXA's ``dock_body``) is
+    published as a static transform, so ``/tf_static`` is read too then.
+    """
     tf_client = TfClient(node, reference_frame=reference_frame,
-                         target_frame=location_name)
+                         target_frame=location_name,
+                         include_tf_static=reference_frame != DEFAULT_REFERENCE_FRAME)
     if not tf_client.wait_for_frame(timeout_sec):
         return None
     pos, quat, _stamp = tf_client.get_pose()

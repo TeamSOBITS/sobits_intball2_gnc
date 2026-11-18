@@ -52,6 +52,16 @@ DEFAULT_QOS = QoSProfile(
 )
 
 
+# QoS of ``/tf_static`` (what ``tf2_ros.TransformListener`` uses): latched, so a
+# late subscriber still receives the static transforms.
+STATIC_QOS = QoSProfile(
+    depth=100,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    reliability=ReliabilityPolicy.RELIABLE,
+)
+
+
 class TfClient:
     """Look up the body pose from the TF tree.
 
@@ -61,6 +71,10 @@ class TfClient:
         target_frame: Child/body frame (default ``body``).
         qos_profile: QoS for the ``/tf`` subscription (default: best-effort,
             see ``DEFAULT_QOS``).
+        include_tf_static: Also subscribe to ``/tf_static`` (default False, see
+            the comment below on why the vehicle-pose users leave it off). Only
+            for resolving a frame that is published as a static transform, e.g.
+            ``dock_body`` -- never for the ``body`` pose.
     """
 
     def __init__(
@@ -69,6 +83,7 @@ class TfClient:
         reference_frame: str = DEFAULT_REFERENCE_FRAME,
         target_frame: str = DEFAULT_TARGET_FRAME,
         qos_profile: QoSProfile = DEFAULT_QOS,
+        include_tf_static: bool = False,
     ) -> None:
         self._node = node
         self.reference_frame = reference_frame
@@ -88,6 +103,11 @@ class TfClient:
         self._tf_sub = node.create_subscription(
             TFMessage, "/tf", self._on_tf, qos_profile
         )
+        self._tf_static_sub = None
+        if include_tf_static:
+            self._tf_static_sub = node.create_subscription(
+                TFMessage, "/tf_static", self._on_tf_static, STATIC_QOS
+            )
         self._ready = False
         node.get_logger().info(
             "[TfClient] looking up %s <- %s" % (reference_frame, target_frame)
@@ -96,6 +116,10 @@ class TfClient:
     def _on_tf(self, msg: TFMessage) -> None:
         for transform in msg.transforms:
             self._buffer.set_transform(transform, "tf_client")
+
+    def _on_tf_static(self, msg: TFMessage) -> None:
+        for transform in msg.transforms:
+            self._buffer.set_transform_static(transform, "tf_client_static")
 
     @property
     def ready(self) -> bool:
