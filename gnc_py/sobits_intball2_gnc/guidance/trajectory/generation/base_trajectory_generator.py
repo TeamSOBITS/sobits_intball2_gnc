@@ -5,10 +5,12 @@ A trajectory generator turns a waypoint list + per-segment durations into
 polynomial coefficients (``docs/minimum_snap/min_snap_interface_contract.md`` 2 節's
 ``coeffs`` layout). Package-ized
 per ``docs/arch/architecture_guidelines.md`` 2 節: a min-snap solver (Mellinger &
-Kumar 2011, core solve not implemented -- 2026-08-24 decision, see
-:mod:`sobits_intball2_gnc.guidance.trajectory.generation.min_snap_trajectory_generator`)
-and a Hermite-spline stand-in (this package's degraded-but-usable, actually
-wired-in placeholder) are two concrete, named candidates.
+Kumar 2011,
+:mod:`sobits_intball2_gnc.guidance.trajectory.generation.min_snap_trajectory_generator`,
+used by ``static_min_snap`` through
+:mod:`sobits_intball2_gnc.guidance.trajectory.min_snap_trajectory`) and a
+Hermite spline (the path shape ``ToppraTrajectory`` re-times) are the two
+implementations.
 
 Pure function-like (no shared internal state between calls), so this follows
 ``docs/arch/architecture_guidelines.md`` 4 節's guidance to prefer
