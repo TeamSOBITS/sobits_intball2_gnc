@@ -195,7 +195,8 @@ TeleopLimits TeleopNode::limits_for(int speed_level, int accel_level) const
     accel_values_[accel_level], wmax_per_vmax_, alpha_per_acc_, resume_);
 }
 
-// Apply a requested speed/acceleration level, only while the reference is at rest (or not running).
+// Apply a requested speed/acceleration level at once, also while moving: the reference follows the
+// new caps through its acceleration limits, and keeps the old error limits until it has slowed down.
 void TeleopNode::apply_levels(const KeyState & key)
 {
   const int speed = key.speed_level ? std::clamp(*key.speed_level, 0, static_cast<int>(speed_values_.size()) - 1) :
@@ -203,7 +204,6 @@ void TeleopNode::apply_levels(const KeyState & key)
   const int accel = key.accel_level ? std::clamp(*key.accel_level, 0, static_cast<int>(accel_values_.size()) - 1) :
     accel_level_;
   if (speed == speed_level_ && accel == accel_level_) {return;}
-  if (phase_ != Phase::Idle && !ref_->at_rest()) {return;}
   speed_level_ = speed;
   accel_level_ = accel;
   limits_ = limits_for(speed, accel);
@@ -217,15 +217,17 @@ void TeleopNode::publish_state(Status status)
   TeleopState s;
   s.status = status;
   for (int i = 0; i < 3; ++i) {
-    s.v_ratio[i] = ref_->vb[i] / limits_.vmax;
-    s.v_ratio[3 + i] = ref_->wb[i] / limits_.wmax;
+    // Just after the cap is lowered the speed is above it; the wire format allows [-1, 1] only
+    // (an out-of-range state is rejected and would disable the input), so clamp.
+    s.v_ratio[i] = std::clamp(ref_->vb[i] / limits_.vmax, -1.0, 1.0);
+    s.v_ratio[3 + i] = std::clamp(ref_->wb[i] / limits_.wmax, -1.0, 1.0);
     s.v_body[i] = ref_->vb[i];
     s.w_body[i] = ref_->wb[i];
   }
   s.pos_err = ref_->pos_err;
   s.att_err = ref_->att_err;
-  s.err_pos_limit = limits_.err_pos;
-  s.err_att_limit = limits_.err_att;
+  s.err_pos_limit = ref_->err_pos_limit();   // the held (larger) value while slowing down
+  s.err_att_limit = ref_->err_att_limit();
   s.shaped = ref_->scaled;
   s.speed_values = speed_values_;
   s.accel_values = accel_values_;

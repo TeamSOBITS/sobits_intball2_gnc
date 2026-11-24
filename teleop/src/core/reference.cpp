@@ -70,7 +70,14 @@ TeleopReference::TeleopReference(
 void TeleopReference::set_limits(const TeleopLimits & lim)
 {
   lim.validate();
+  // Keep the larger of the error limits in force now and the new ones; step() drops the hold as
+  // soon as the speed is within the new cap (at once when at rest).
+  const double pos = err_pos_limit(), att = err_att_limit();
   limits = lim;
+  hold_pos_ = pos > lim.err_pos;
+  hold_att_ = att > lim.err_att;
+  held_pos_ = pos;
+  held_att_ = att;
 }
 
 void TeleopReference::reset(const Vec3 & p, const Quat & q)
@@ -81,6 +88,7 @@ void TeleopReference::reset(const Vec3 & p, const Quat & q)
   wb.setZero();
   stalled = false;
   scaled = false;
+  hold_pos_ = hold_att_ = false;
   pos_err = 0.0;
   att_err = 0.0;
 }
@@ -90,10 +98,14 @@ Setpoint TeleopReference::step(double dt, const Vec6 & key_in, const Vec3 & p_me
   const TeleopLimits & lim = limits;
   pos_err = (r_ - p_meas).norm();
   att_err = geodesic_angle(q_, q_meas);
+  // Release the held error limits once the speeds are within the (lowered) caps.
+  if (hold_pos_ && vb.cwiseAbs().maxCoeff() <= lim.vmax * (1.0 + 1e-9)) {hold_pos_ = false;}
+  if (hold_att_ && wb.cwiseAbs().maxCoeff() <= lim.wmax * (1.0 + 1e-9)) {hold_att_ = false;}
+  const double err_pos_max = err_pos_limit(), err_att_max = err_att_limit();
   if (stalled) {
-    stalled = !(pos_err < lim.resume * lim.err_pos && att_err < lim.resume * lim.err_att);
+    stalled = !(pos_err < lim.resume * err_pos_max && att_err < lim.resume * err_att_max);
   } else {
-    stalled = pos_err > lim.err_pos || att_err > lim.err_att;
+    stalled = pos_err > err_pos_max || att_err > err_att_max;
   }
   const Vec6 key = stalled ? Vec6::Zero().eval() : key_in.cwiseMax(-1.0).cwiseMin(1.0).eval();
 

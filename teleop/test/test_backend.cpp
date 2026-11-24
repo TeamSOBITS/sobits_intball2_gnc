@@ -171,7 +171,7 @@ TEST_F(BackendTest, FanDutyStatusFollowsTheDutyTopic)
   EXPECT_EQ(h.node->link().get_state().fan_status, FanDutyStatus::Stale);
 }
 
-TEST_F(BackendTest, SpeedLevelRequestAppliesWhileAtRest)
+TEST_F(BackendTest, SpeedLevelRequestAppliesAtRest)
 {
   Harness h;
   h.run(20);
@@ -182,6 +182,36 @@ TEST_F(BackendTest, SpeedLevelRequestAppliesWhileAtRest)
   EXPECT_EQ(state.speed_level, 3);
   EXPECT_EQ(state.speed_values.size(), 5u);
   EXPECT_EQ(state.fan_positions.size(), 8u);
+}
+
+TEST_F(BackendTest, LevelsChangeWhileMovingWithoutLeavingTracking)
+{
+  Harness h;
+  h.follow = true;                            // the vehicle sits on the reference
+  h.run(20);
+  KeyState fast = forward();
+  fast.speed_level = 4;                       // 0.15 m/s
+  h.run(400, fast);
+  ASSERT_EQ(h.status(), Status::Tracking);
+  ASSERT_GT(h.node->link().get_state().v_body[0], 0.14);
+  KeyState slow = forward();
+  slow.speed_level = 0;                       // 0.03 m/s, requested while moving at 0.15 m/s
+  slow.accel_level = 0;
+  for (int i = 0; i < 600; ++i) {
+    h.step(slow);
+    const auto state = h.node->link().get_state();
+    ASSERT_EQ(h.status(), Status::Tracking) << "step " << i;
+    EXPECT_EQ(state.speed_level, 0);
+    EXPECT_LE(state.v_ratio[0], 1.0);         // clamped while the speed is still above the new cap
+    EXPECT_GE(state.v_ratio[0], -1.0);
+    ASSERT_FALSE(h.last_wire.empty());
+    const auto wire = QJsonDocument::fromJson(QByteArray::fromStdString(h.last_wire)).object();
+    ASSERT_TRUE(valid_state(wire)) << "step " << i;   // an invalid state would disable the input
+  }
+  const auto state = h.node->link().get_state();
+  EXPECT_NEAR(state.v_body[0], 0.03, 1e-6);
+  EXPECT_NEAR(state.v_ratio[0], 1.0, 1e-6);
+  EXPECT_NEAR(state.err_pos_limit, 0.005 + 0.3 * 0.03, 1e-9);   // the new limit once slowed down
 }
 
 TEST_F(BackendTest, WireStateAndInputLeaseOverTheTopics)

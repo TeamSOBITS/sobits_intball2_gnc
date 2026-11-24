@@ -7,6 +7,7 @@
 // the vehicle, so it stalls (decelerates to rest and waits) while the tracking error exceeds a
 // limit rather than running away. Quaternions are [x, y, z, w]; p/v/a are in the reference frame;
 // w is in the body frame of q (same as MultiDOFJointTrajectory.velocities.angular).
+#include <algorithm>
 #include <array>
 #include <optional>
 
@@ -58,8 +59,17 @@ public:
     const TeleopLimits & limits, double mass, const Vec3 & inertia_diag,
     std::optional<Envelope> envelope = std::nullopt, bool centripetal = true);
 
-  // Swap the caps. Call only while at rest: a change mid-motion would jump the deceleration.
+  // Swap the caps; safe at any time, also mid-motion. The speeds follow the new caps through the
+  // acceleration limits (no jump). When a cap is lowered, the matching error limit (which shrinks
+  // with it) is kept at the larger old value until the reference speed is within the new cap, so
+  // the error built up at the old speed does not stall the reference. Raising a cap, or changing
+  // only the accelerations, takes effect directly (lower accelerations lengthen the stopping
+  // distance).
   void set_limits(const TeleopLimits & limits);
+  // Error limits in force now: `limits.err_*`, or the larger old values while a lowered cap is
+  // still being approached.
+  double err_pos_limit() const {return hold_pos_ ? std::max(held_pos_, limits.err_pos) : limits.err_pos;}
+  double err_att_limit() const {return hold_att_ ? std::max(held_att_, limits.err_att) : limits.err_att;}
   // Start (or restart) at pose (p, q) at rest.
   void reset(const Vec3 & p, const Quat & q);
   // Advance by dt [s]. key = (vx, vy, vz, wx, wy, wz) in [-1, 1] (body frame).
@@ -84,6 +94,9 @@ private:
   bool centripetal_;
   Vec3 r_ = Vec3::Zero();
   Quat q_ = quat_identity();
+  // Old (larger) error limits kept while decelerating to a lowered speed / angular speed cap.
+  bool hold_pos_ = false, hold_att_ = false;
+  double held_pos_ = 0, held_att_ = 0;
 };
 }  // namespace sobits_intball2_teleop
 #endif

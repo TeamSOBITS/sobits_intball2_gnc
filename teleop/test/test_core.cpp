@@ -2,6 +2,7 @@
 // (test/tools/gen_reference_golden.py).
 #include <gtest/gtest.h>
 
+#include <deque>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -169,4 +170,160 @@ TEST(Reference, RejectsBadLimits)
   lim.acc[1] = 0.1;
   lim.resume = 1.0;
   EXPECT_THROW(lim.validate(), std::invalid_argument);
+}
+
+namespace
+{
+TeleopLimits simple_limits(double vmax, double acc, double wmax = 0.0, double alpha = 0.0)
+{
+  TeleopLimits lim;
+  lim.vmax = vmax;
+  lim.wmax = wmax > 0 ? wmax : 2.0 * vmax;
+  lim.acc = Vec3::Constant(acc);
+  lim.alpha = Vec3::Constant(alpha > 0 ? alpha : 2.0 * acc);
+  const auto e = error_limits(lim.vmax, lim.wmax);
+  lim.err_pos = e[0];
+  lim.err_att = e[1];
+  return lim;
+}
+
+// Reference plus a "vehicle" that lags it by `lag` seconds (error proportional to speed).
+struct LagRig
+{
+  explicit LagRig(const TeleopLimits & lim, double lag_s = 0.3)
+  : ref(lim, 1.0, Vec3::Constant(0.01)), delay(static_cast<size_t>(lag_s / dt))
+  {
+    ref.reset(Vec3::Zero(), quat_identity());
+    for (size_t i = 0; i < delay; ++i) {history.push_back({Vec3::Zero(), quat_identity()});}
+  }
+  Setpoint step(const Vec6 & key)
+  {
+    const auto measured = history.front();
+    history.pop_front();
+    const Setpoint sp = ref.step(dt, key, measured.first, measured.second);
+    history.push_back({ref.p(), ref.q()});
+    return sp;
+  }
+  double dt = 0.02;
+  TeleopReference ref;
+  size_t delay;
+  std::deque<std::pair<Vec3, Quat>> history;
+};
+Vec6 key_x(double v) {Vec6 k = Vec6::Zero(); k[0] = v; return k;}
+Vec6 key_wz(double w) {Vec6 k = Vec6::Zero(); k[5] = w; return k;}
+}  // namespace
+
+TEST(ReferenceLevels, LoweringSpeedWhileMovingDoesNotStall)
+{
+  LagRig rig(simple_limits(0.15, 0.05));
+  for (int i = 0; i < 400; ++i) {rig.step(key_x(1.0));}
+  ASSERT_NEAR(rig.ref.vb[0], 0.15, 1e-9);
+  const double lag_err = rig.ref.pos_err;
+  ASSERT_GT(lag_err, 0.03);                       // above the new limit (14 mm), below the old (50 mm)
+  const TeleopLimits slow = simple_limits(0.03, 0.05);
+  ASSERT_GT(lag_err, slow.err_pos);
+  rig.ref.set_limits(slow);
+  EXPECT_NEAR(rig.ref.err_pos_limit(), error_limits(0.15, 0.3)[0], 1e-12);   // old limit kept
+  double max_decel = 0;
+  double prev_v = rig.ref.vb[0];
+  bool released = false;
+  for (int i = 0; i < 600; ++i) {
+    rig.step(key_x(1.0));
+    EXPECT_FALSE(rig.ref.stalled) << "step " << i;
+    max_decel = std::max(max_decel, (prev_v - rig.ref.vb[0]) / rig.dt);
+    prev_v = rig.ref.vb[0];
+    if (!released && rig.ref.vb[0] <= 0.03 + 1e-9) {
+      released = true;
+      EXPECT_GT(rig.ref.err_pos_limit(), slow.err_pos);  // the hold lasts until the step after
+    }
+  }
+  EXPECT_TRUE(released);
+  EXPECT_LE(max_decel, 0.05 + 1e-9);                // smooth: the acceleration cap is respected
+  EXPECT_NEAR(rig.ref.vb[0], 0.03, 1e-9);
+  EXPECT_DOUBLE_EQ(rig.ref.err_pos_limit(), slow.err_pos);   // the new limit applies afterwards
+  EXPECT_LT(rig.ref.pos_err, slow.err_pos);
+}
+
+TEST(ReferenceLevels, WithoutTheHoldTheSameChangeWouldStall)
+{
+  // Guards the test above: the measured error really exceeds the new limit.
+  LagRig rig(simple_limits(0.15, 0.05));
+  for (int i = 0; i < 400; ++i) {rig.step(key_x(1.0));}
+  TeleopReference fresh(simple_limits(0.03, 0.05), 1.0, Vec3::Constant(0.01));
+  fresh.reset(rig.ref.p(), rig.ref.q());
+  fresh.vb = rig.ref.vb;
+  fresh.step(0.02, key_x(1.0), rig.history.front().first, rig.history.front().second);
+  EXPECT_TRUE(fresh.stalled);
+}
+
+TEST(ReferenceLevels, RaisingSpeedAcceleratesSmoothly)
+{
+  LagRig rig(simple_limits(0.03, 0.05));
+  for (int i = 0; i < 200; ++i) {rig.step(key_x(1.0));}
+  rig.ref.set_limits(simple_limits(0.15, 0.05));
+  EXPECT_NEAR(rig.ref.err_pos_limit(), error_limits(0.15, 0.3)[0], 1e-12);   // no hold on a raise
+  double prev = rig.ref.vb[0], max_acc = 0;
+  for (int i = 0; i < 600; ++i) {
+    rig.step(key_x(1.0));
+    EXPECT_FALSE(rig.ref.stalled);
+    max_acc = std::max(max_acc, (rig.ref.vb[0] - prev) / rig.dt);
+    prev = rig.ref.vb[0];
+  }
+  EXPECT_NEAR(rig.ref.vb[0], 0.15, 1e-9);
+  EXPECT_LE(max_acc, 0.05 + 1e-9);
+  EXPECT_GT(max_acc, 0.05 - 1e-6);                 // and it does use the full acceleration
+}
+
+TEST(ReferenceLevels, LoweringAccelerationLengthensTheStop)
+{
+  auto stop_distance = [](bool lower) {
+      LagRig rig(simple_limits(0.15, 0.05));
+      for (int i = 0; i < 400; ++i) {rig.step(key_x(1.0));}
+      if (lower) {rig.ref.set_limits(simple_limits(0.15, 0.0125));}
+      const double x0 = rig.ref.p()[0];
+      for (int i = 0; i < 2000; ++i) {rig.step(Vec6::Zero());}
+      EXPECT_TRUE(rig.ref.at_rest());
+      return rig.ref.p()[0] - x0;
+    };
+  const double normal = stop_distance(false), lowered = stop_distance(true);
+  EXPECT_NEAR(normal, 0.15 * 0.15 / (2 * 0.05), 3e-3);   // within one step        // v^2 / 2a
+  EXPECT_NEAR(lowered, 0.15 * 0.15 / (2 * 0.0125), 3e-3);     // four times longer
+}
+
+TEST(ReferenceLevels, AtRestTheChangeIsImmediate)
+{
+  LagRig rig(simple_limits(0.15, 0.05));
+  rig.step(Vec6::Zero());
+  rig.ref.set_limits(simple_limits(0.03, 0.05));
+  rig.step(Vec6::Zero());                          // the hold is dropped at the next step
+  EXPECT_DOUBLE_EQ(rig.ref.err_pos_limit(), simple_limits(0.03, 0.05).err_pos);
+  EXPECT_DOUBLE_EQ(rig.ref.err_att_limit(), simple_limits(0.03, 0.05).err_att);
+}
+
+TEST(ReferenceLevels, LoweringAngularSpeedWhileTurningDoesNotStall)
+{
+  // Attitude error limit: 5 deg + 3 deg per 0.1 rad/s above 0.2 rad/s, so use wmax 0.5 -> 0.1.
+  LagRig rig(simple_limits(0.1, 0.05, 0.5, 0.2));
+  for (int i = 0; i < 400; ++i) {rig.step(key_wz(1.0));}
+  ASSERT_NEAR(rig.ref.wb[2], 0.5, 1e-9);
+  const TeleopLimits slow = simple_limits(0.1, 0.05, 0.1, 0.2);
+  ASSERT_GT(rig.ref.att_err, slow.err_att);
+  rig.ref.set_limits(slow);
+  EXPECT_NEAR(rig.ref.err_att_limit(), error_limits(0.1, 0.5)[1], 1e-12);
+  for (int i = 0; i < 600; ++i) {
+    rig.step(key_wz(1.0));
+    EXPECT_FALSE(rig.ref.stalled) << "step " << i;
+  }
+  EXPECT_NEAR(rig.ref.wb[2], 0.1, 1e-9);
+  EXPECT_DOUBLE_EQ(rig.ref.err_att_limit(), slow.err_att);
+}
+
+TEST(ReferenceLevels, SecondLoweringKeepsTheLargestLimit)
+{
+  LagRig rig(simple_limits(0.15, 0.05));
+  for (int i = 0; i < 400; ++i) {rig.step(key_x(1.0));}
+  rig.ref.set_limits(simple_limits(0.075, 0.05));
+  for (int i = 0; i < 20; ++i) {rig.step(key_x(1.0));}
+  rig.ref.set_limits(simple_limits(0.03, 0.05));
+  EXPECT_NEAR(rig.ref.err_pos_limit(), error_limits(0.15, 0.3)[0], 1e-12);
 }
