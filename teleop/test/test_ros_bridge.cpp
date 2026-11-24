@@ -128,6 +128,8 @@ protected:
       [this](std_msgs::msg::String::ConstSharedPtr m) {
         frames.push_back(QJsonDocument::fromJson(QByteArray::fromStdString(m->data)).object());
       });
+    mode_pub = backend->create_publisher<std_msgs::msg::String>("/joycon/rotation_mode",
+      rclcpp::QoS(1).reliable().transient_local());
     source_sub = backend->create_subscription<std_msgs::msg::String>(tag + "/input_source",
       rclcpp::QoS(1).reliable().transient_local(),
       [this](std_msgs::msg::String::ConstSharedPtr m) {sources.push_back(m->data);});
@@ -165,6 +167,10 @@ protected:
   {
     std_msgs::msg::String msg; msg.data = value; source_pub->publish(msg);
   }
+  void setRotationMode(const char * value)
+  {
+    std_msgs::msg::String msg; msg.data = value; mode_pub->publish(msg);
+  }
   void tap(int code) {key(*viewport, code); QKeyEvent r(QEvent::KeyRelease, code, Qt::NoModifier); QApplication::sendEvent(viewport.get(), &r); QTest::qWait(60);}
   int countEstop() const
   {
@@ -174,7 +180,7 @@ protected:
   QString active_id;
   static inline int counter_ = 0;
   std::shared_ptr<rclcpp::Node> panel_node, backend;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub, source_pub;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub, source_pub, mode_pub;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr key_sub, source_sub;
   rclcpp::executors::SingleThreadedExecutor executor;
   std::unique_ptr<QWidget> viewport;
@@ -289,6 +295,40 @@ TEST_F(SourceTest, PanelButtonsFollowAndRequestTheSource)
   setSource("keyboard"); pump(150);   // changed from elsewhere (Joy-Con button)
   EXPECT_TRUE(kb->isChecked()); EXPECT_FALSE(jc->isChecked());
   kb->click(); pump(100); EXPECT_EQ(b->source(), "keyboard");
+}
+TEST_F(SourceTest, RotationModeTopicReachesTheBridgeAndIgnoresBadValues)
+{
+  connect_bridge();
+  EXPECT_TRUE(bridge->rotationMode().isEmpty());          // nothing heard yet
+  setRotationMode("stick"); pump(150); EXPECT_EQ(bridge->rotationMode(), "stick");
+  setRotationMode("gyro"); pump(150); EXPECT_EQ(bridge->rotationMode(), "gyro");
+  setRotationMode("nonsense"); pump(150); EXPECT_EQ(bridge->rotationMode(), "gyro");   // ignored
+}
+TEST(TeleopWidgetSource, RotationModeIsShownAndChangesTheRotationKeys)
+{
+  using sobits_intball2_teleop::TeleopWidget;
+  // Stick mode (and the default): L stick + ZL / L. Gyro mode: tilting, drawn as arrows.
+  EXPECT_EQ(TeleopWidget::keyLabel("↑", true), "L↑");
+  EXPECT_EQ(TeleopWidget::keyLabel("↑", true, false), "↑");
+  EXPECT_EQ(TeleopWidget::keyLabel("E", true, false), "↻");
+  EXPECT_EQ(TeleopWidget::keyLabel("Q", true, false), "↺");
+  EXPECT_EQ(TeleopWidget::keyLabel("W", true, false), "R↑");     // translation does not change
+  EXPECT_EQ(TeleopWidget::keyLabel("E", false, false), "E");      // keyboard keys never change
+  TeleopWidget widget; widget.setRosState(snapshot(), true); widget.setInputSource("joycon");
+  EXPECT_TRUE(widget.rotationMode().isEmpty());
+  widget.setRotationMode("junk"); EXPECT_TRUE(widget.rotationMode().isEmpty());
+  widget.resize(640, 972);
+  const auto render = [&](const char * name) {
+    QImage image(widget.size(), QImage::Format_ARGB32); QPainter p(&image); widget.render(&p); p.end();
+    QDir().mkpath("preview_images"); EXPECT_TRUE(image.save(name)); return image;
+  };
+  const auto unknown = render("preview_images/ros_rotation_unknown.png");
+  widget.setRotationMode("gyro"); EXPECT_EQ(widget.rotationMode(), "gyro");
+  const auto gyro = render("preview_images/ros_rotation_gyro.png");
+  widget.setRosState(snapshot(), true); EXPECT_EQ(widget.rotationMode(), "gyro");   // survives updates
+  widget.setRotationMode("stick");
+  const auto stick = render("preview_images/ros_rotation_stick.png");
+  EXPECT_NE(unknown, gyro); EXPECT_NE(gyro, stick);
 }
 TEST(TeleopWidgetSource, LabelsAndHintFollowTheSource)
 {

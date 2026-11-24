@@ -28,6 +28,9 @@ public:
   static constexpr char kSourceKeyboard[] = "keyboard";
   static constexpr char kSourceJoycon[] = "joycon";
   static constexpr char kSourceTopic[] = "/gnc/teleop/input_source";
+  // Rotation mode of the Joy-Con ("gyro" or "stick"; empty until /joycon/rotation_mode arrives).
+  QString rotationMode() const {return rotation_mode_;}
+  static constexpr char kRotationModeTopic[] = "/joycon/rotation_mode";
   // Free drift (fans cut) lives in jaxa_control_node; nothing here resumes control on its own.
   bool freeDrift() const {return free_drift_;}
   double freeDriftSeconds() const;
@@ -36,10 +39,12 @@ Q_SIGNALS:
   void stateChanged();
   void freeDriftChanged();
   void sourceChanged();
+  void rotationModeChanged();
 private:
   void receive(const QString & data);
   void disconnectInput();
   void applySource(const QString & source);
+  void applyRotationMode(const QString & mode);
   void sendFrame(bool enable, bool estop, const std::array<double, 6> & axes);
   struct CallbackContext;
   std::shared_ptr<CallbackContext> callbacks_;
@@ -47,7 +52,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr subscription_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr source_publisher_;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr source_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr source_sub_, rotation_mode_sub_;
+  QString rotation_mode_;
   rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr free_drift_client_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr free_drift_sub_;
   rclcpp::Time free_drift_since_;

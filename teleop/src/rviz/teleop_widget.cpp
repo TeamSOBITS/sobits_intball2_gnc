@@ -61,7 +61,7 @@ void key(QPainter & p, double x, double y, const QString & name, const TeleopVie
   const QString & direction = {}, bool above = false)
 {
   const bool held = state.pressed.contains(name);
-  const QString shown = TeleopWidget::keyLabel(name, state.joycon);
+  const QString shown = TeleopWidget::keyLabel(name, state.joycon, state.rotation_mode == "stick");
   box(p, {x - 14, y - 12, 28, 24}, held ? yellow : QColor("#242a34"),
     held ? yellow : QColor("#89919c"), 3);
   // Two-character Joy-Con names are drawn smaller so they stay inside the 28 px key.
@@ -109,15 +109,28 @@ QString hintFor(bool joycon)
     "Enter on/off · Esc/Space E-stop · N no control · to JOY-CON: J key or HOLD HOME (R)";
 }
 }
-QString TeleopWidget::keyLabel(const QString & name, bool joycon)
+QString TeleopWidget::keyLabel(const QString & name, bool joycon, bool stick_rotation)
 {
   if (!joycon) {return name;}
+  if (!stick_rotation) {
+    // Gyro mode: the left Joy-Con is tilted (no buttons), so the rotation keys show the tilt.
+    static const QMap<QString, QString> tilt{{"E", "↻"}, {"Q", "↺"}};
+    if (tilt.contains(name)) {return tilt[name];}
+    if (name == "↑" || name == "↓" || name == "←" || name == "→") {return name;}
+  }
   static const QMap<QString, QString> names{
     {"W", "R↑"}, {"S", "R↓"}, {"A", "R←"}, {"D", "R→"}, {"R", "ZR"}, {"F", "R"},
     {"E", "ZL"}, {"Q", "L"},
     // Speed / accel levels are the left Joy-Con D-pad: up/down = speed, right/left = accel.
     {"[", "▼"}, {"]", "▲"}, {",", "◀"}, {".", "▶"}, {"↑", "L↑"}, {"↓", "L↓"}, {"←", "L←"}, {"→", "L→"}};
   return names.value(name, name);
+}
+void TeleopWidget::setRotationMode(const QString & mode)
+{
+  const QString value = (mode == "gyro" || mode == "stick") ? mode : QString();
+  if (value == state_.rotation_mode) {return;}
+  state_.rotation_mode = value;
+  update();
 }
 void TeleopWidget::setInputSource(const QString & source)
 {
@@ -129,8 +142,10 @@ void TeleopWidget::setRosState(const QJsonObject & data, bool connected)
 {
   ros_connected_ = connected;
   const bool joycon = state_.joycon;
+  const QString rotation_mode = state_.rotation_mode;
   state_ = TeleopViewState{}; state_.pressed = KeyboardInput::instance().pressedNames();
   state_.joycon = joycon;
+  state_.rotation_mode = rotation_mode;
   axes_ = {};
   if (!connected) {update(); return;}
   const auto status = data["status"].toString();
@@ -234,7 +249,14 @@ void TeleopWidget::drawTranslation(QPainter & p) const
 void TeleopWidget::drawRotation(QPainter & p) const
 {
   section(p, 280, 190, "ROTATION  /  BODY FRAME");
-  if (state_.joycon) {label(p, 608, 304, "gyro mode: ZL + tilt", 10, muted, Qt::AlignRight);}
+  if (state_.joycon) {
+    // Which way the Joy-Con rotates the vehicle, and the button that switches it (CAPTURE, left Joy-Con).
+    const bool stick = state_.rotation_mode == "stick";
+    const QString text = state_.rotation_mode.isEmpty() ? QString("CAPTURE: gyro / stick") :
+      stick ? QString("STICK MODE: L stick + ZL/L  ·  CAPTURE → gyro") :
+      QString("GYRO MODE: ZL + tilt  ·  CAPTURE → stick");
+    label(p, 608, 304, text, 12, stick ? QColor("#ffe27a") : QColor("#7fc4ff"), Qt::AlignRight, true);
+  }
   const std::array<QString, 3> titles{{"PITCH", "YAW", "ROLL"}};
   for (int i = 0; i < 3; ++i) {
     const double x = 109 + 211 * i;

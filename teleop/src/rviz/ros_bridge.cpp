@@ -55,6 +55,15 @@ RosBridge::RosBridge(rclcpp::Node::SharedPtr node, QObject * parent)
         QMetaObject::invokeMethod(target, [target, value]() {target->applySource(value);}, Qt::QueuedConnection);
       }
     });
+  rotation_mode_sub_ = node_->create_subscription<std_msgs::msg::String>(
+    kRotationModeTopic, rclcpp::QoS(1).reliable().transient_local(),
+    [callbacks](std_msgs::msg::String::ConstSharedPtr msg) {
+      std::lock_guard<std::mutex> lock(callbacks->mutex);
+      if (auto * target = callbacks->target) {
+        const auto value = QString::fromStdString(msg->data);
+        QMetaObject::invokeMethod(target, [target, value]() {target->applyRotationMode(value);}, Qt::QueuedConnection);
+      }
+    });
   connect(&KeyboardInput::instance(), &KeyboardInput::changed, this, &RosBridge::publishInput);
   connect(&KeyboardInput::instance(), &KeyboardInput::sourceToggleRequested, this, [this]() {
     requestSource(source_ == kSourceJoycon ? kSourceKeyboard : kSourceJoycon);
@@ -85,7 +94,7 @@ RosBridge::RosBridge(rclcpp::Node::SharedPtr node, QObject * parent)
 RosBridge::~RosBridge()
 {
   {std::lock_guard<std::mutex> lock(callbacks_->mutex); callbacks_->target = nullptr;}
-  subscription_.reset(); free_drift_sub_.reset(); source_sub_.reset();
+  subscription_.reset(); free_drift_sub_.reset(); source_sub_.reset(); rotation_mode_sub_.reset();
   timer_.stop(); KeyboardInput::instance().stop(); publishInput();
   KeyboardInput::instance().setJoyconMode(false);
 }
@@ -108,6 +117,12 @@ void RosBridge::requestSource(const QString & source)
   std_msgs::msg::String msg; msg.data = source.toStdString();
   source_publisher_->publish(msg);
   applySource(source);   // act at once; the echo of our own message is then a no-op
+}
+void RosBridge::applyRotationMode(const QString & mode)
+{
+  if ((mode != "gyro" && mode != "stick") || mode == rotation_mode_) {return;}
+  rotation_mode_ = mode;
+  Q_EMIT rotationModeChanged();
 }
 void RosBridge::applySource(const QString & source)
 {

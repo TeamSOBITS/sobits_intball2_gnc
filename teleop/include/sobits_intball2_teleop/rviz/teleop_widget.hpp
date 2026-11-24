@@ -22,6 +22,7 @@ struct TeleopViewState
   double attitude_error_deg = 0;
   bool shaped = false;
   bool joycon = false;   // labels show Joy-Con names instead of keyboard keys
+  QString rotation_mode;   // Joy-Con rotation: "gyro", "stick" or empty (not heard yet)
 };
 
 class TeleopWidget : public QWidget
@@ -34,8 +35,12 @@ public:
   // "keyboard" or "joycon": changes the key labels, the hint line and the banner tag.
   void setInputSource(const QString & source);
   QString inputSource() const {return state_.joycon ? "joycon" : "keyboard";}
-  // The text a key is drawn with, e.g. "W" -> "R↑" for the Joy-Con.
-  static QString keyLabel(const QString & name, bool joycon);
+  // Joy-Con rotation mode: "gyro" (ZL + tilt), "stick" (L stick + ZL / L) or empty (unknown).
+  void setRotationMode(const QString & mode);
+  QString rotationMode() const {return state_.rotation_mode;}
+  // The text a key is drawn with, e.g. "W" -> "R↑" for the Joy-Con. The rotation keys follow the
+  // Joy-Con rotation mode (stick_rotation = false: tilting the left Joy-Con, drawn as arrows).
+  static QString keyLabel(const QString & name, bool joycon, bool stick_rotation = true);
   QString hintText() const {return state_.hint;}
   QSize sizeHint() const override {return {640, 972};}
 protected:

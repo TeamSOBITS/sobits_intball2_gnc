@@ -1,0 +1,7 @@
+teleop_bridge:
+  ros__parameters:
+    rate: 30.0              # /gnc/teleop/key_state rate [Hz] (the RViz panel sends at ~30 Hz)
+    state_timeout: 0.5      # teleop_node considered gone without /gnc/teleop/state this long [s]
+    command_timeout: 0.2    # stop (and require + again) without /joycon/command this long [s]
+    assist_timeout: 0.2     # treat assist as 0 without /joycon/assist this long [s]
+    initial_source: joycon   # input source published once at start-up: joycon = start in Joy-Con mode ('' = publish nothing, keyboard = start in keyboard mode)

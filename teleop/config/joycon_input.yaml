@@ -1,0 +1,28 @@
+joycon_input:
+  ros__parameters:
+    rate: 100.0                     # /joycon/intent publish rate [Hz]
+    left_only: false                # TEST ONLY: left Joy-Con alone (no translation, start/stop = left stick click)
+    joy_timeout: 0.2                # stop publishing intent when either Joy-Con is silent this long [s]
+    imu_timeout: 0.1                # release the rotation clutch when the left IMU is silent this long [s]
+    # translation (right stick, ZR = up, R = down)
+    stick_deadzone: 0.15            # radial; rest offset measured 0.07, release overshoot up to 0.13
+    stick_saturation: 0.85          # stick radius treated as full (some directions top out near 0.85)
+    stick_exponent: 1.0             # 1 = linear response
+    limit_translation_norm: true    # |(vx, vy, vz)| <= 1: same top speed in every direction
+    # rotation (left Joy-Con tilt while ZL is held)
+    # Chosen from two recorded runs (2026-11-21): natural tilts were 40-110 deg and the other axes
+    # moved 10-30 deg along; 10 / 60 / 0.5 kept those cross-axis commands at 0.00-0.15.
+    rotation_deadzone_deg: 10.0
+    rotation_full_scale_deg: 60.0
+    rotation_dominant_ratio: 0.5    # zero axes below this x the largest rate (0 = off)
+    bias_window: 1.0                # gyro bias = mean over this long a still window [s]
+    bias_still_threshold_deg: 2.0   # "still": every sample within this of the window mean [deg/s]
+    # rotation by the left stick (mode "stick"; CAPTURE switches modes)
+    # stick up = pitch down (+wy, flight stick), stick left = yaw left (+wz), ZL = roll right (+wx), L = roll left (-wx)
+    rotation_mode_default: gyro     # "gyro" (ZL + tilt, as before) or "stick"
+    rotation_stick_deadzone: 0.15   # same shape as the right stick (stick_to_planar)
+    rotation_stick_saturation: 0.85
+    rotation_stick_exponent: 1.0
+    roll_strength: 1.0              # L / ZL roll command (fixed strength)
+    # switching the input source (keyboard <-> joycon)
+    source_hold: 1.0                # hold HOME (right Joy-Con) this long to switch [s]

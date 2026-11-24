@@ -16,6 +16,7 @@ find_package(pluginlib REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
@@ -52,6 +53,26 @@ ament_target_dependencies(teleop_backend rclcpp std_msgs geometry_msgs trajector
 add_executable(teleop_node src/backend/teleop_node_main.cpp)
 target_link_libraries(teleop_node teleop_backend)
 
+# Joy-Con input (a second input source next to the RViz panel). ROS-free logic in src/joycon/core,
+# the nodes in src/joycon/nodes (one file per node, built when present). Raw Linux input API
+# (linux/input.h), so there is no libevdev dependency.
+file(GLOB JOYCON_CORE_SRC CONFIGURE_DEPENDS src/joycon/core/*.cpp)
+add_library(teleop_joycon_core SHARED ${JOYCON_CORE_SRC})
+target_include_directories(teleop_joycon_core PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_link_libraries(teleop_joycon_core Eigen3::Eigen teleop_codec)
+set(JOYCON_NODES joycon_driver joycon_input shared_control teleop_bridge)
+set(JOYCON_NODE_TARGETS "")
+foreach(node ${JOYCON_NODES})
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/joycon/nodes/${node}.cpp)
+    add_executable(${node} src/joycon/nodes/${node}.cpp)
+    target_link_libraries(${node} teleop_joycon_core)
+    ament_target_dependencies(${node} rclcpp std_msgs geometry_msgs sensor_msgs)
+    list(APPEND JOYCON_NODE_TARGETS ${node})
+  endif()
+endforeach()
+
 # RViz panel and keyboard tool.
 add_library(teleop_panel_plugin SHARED
   src/rviz/ros_bridge.cpp src/rviz/teleop_panel.cpp src/rviz/teleop_widget.cpp
@@ -63,8 +84,8 @@ ament_target_dependencies(teleop_panel_plugin rviz_common rviz_rendering pluginl
 target_link_libraries(teleop_panel_plugin teleop_codec Qt5::Widgets)
 pluginlib_export_plugin_description_file(rviz_common rviz_plugins.xml)
 
-install(TARGETS teleop_core teleop_codec teleop_backend teleop_panel_plugin EXPORT export_teleop_core LIBRARY DESTINATION lib)
-install(TARGETS teleop_node RUNTIME DESTINATION lib/${PROJECT_NAME})
+install(TARGETS teleop_core teleop_codec teleop_backend teleop_joycon_core teleop_panel_plugin EXPORT export_teleop_core LIBRARY DESTINATION lib)
+install(TARGETS teleop_node ${JOYCON_NODE_TARGETS} RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
@@ -79,6 +100,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_backend test/test_backend.cpp ENV ROS_DOMAIN_ID=93 TIMEOUT 300)
   target_link_libraries(test_backend teleop_backend)
   ament_target_dependencies(test_backend rosgraph_msgs)
+  file(GLOB JOYCON_TEST_SRC CONFIGURE_DEPENDS test/joycon/test_*.cpp)
+  ament_add_gtest(test_joycon ${JOYCON_TEST_SRC})
+  target_link_libraries(test_joycon teleop_joycon_core)
   find_package(Qt5 REQUIRED COMPONENTS Test)
   ament_add_gtest(test_panel test/test_teleop_panel.cpp test/test_keyboard_input.cpp test/test_ros_bridge.cpp
     test/test_integration.cpp

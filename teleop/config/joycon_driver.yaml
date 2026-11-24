@@ -1,0 +1,6 @@
+joycon_driver:
+  ros__parameters:
+    joy_rate: 100.0            # /joycon/<side>/joy publish rate [Hz]
+    rumble_timeout: 0.5        # stop rumbling when no /joycon/<side>/rumble arrives within this [s]
+    stick_full_scale: 32767.0  # raw stick value mapped to 1.0 (measured max is about 27000-30000)
+    frame_prefix: joycon       # frames: joycon_left, joycon_left_imu, joycon_right, joycon_right_imu

@@ -196,6 +196,8 @@ sobits_intball2_gnc/                 # gitリポジトリルート（colconパ�
 
 速度・加速度の段階や誤差の上限などは，`config/gnc_params.yaml`の`teleop:`で変えられます．
 
+Joy-Conでも操作できます（起動・ボタンの割り当て・回転の方式の切り替えは[teleop/README.md](teleop/README.md#joy-con)）．
+
 <p align="right">(<a href="#readme-top">上に戻る</a>)</p>
 
 ### GNCの枠組み

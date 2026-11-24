@@ -73,6 +73,7 @@ void TeleopPanel::setBridge(RosBridge * bridge)
   connect(bridge_, &RosBridge::stateChanged, this, &TeleopPanel::refresh);
   connect(bridge_, &RosBridge::freeDriftChanged, this, &TeleopPanel::refresh);
   connect(bridge_, &RosBridge::sourceChanged, this, &TeleopPanel::refresh);
+  connect(bridge_, &RosBridge::rotationModeChanged, this, &TeleopPanel::refresh);
   refresh();
 }
 void TeleopPanel::refresh()
@@ -85,6 +86,7 @@ void TeleopPanel::refresh()
     on->setChecked(true);
   }
   widget_->setInputSource(joycon ? "joycon" : "keyboard");
+  widget_->setRotationMode(bridge_ ? bridge_->rotationMode() : QString());
   if (bridge_) {
     mode_label_->setText(QString("%1 · INPUT: %2").arg(bridge_->connected() ? "ROS / TELEOP STATE" : "ROS / DISCONNECTED")
       .arg(joycon ? "JOY-CON" : "KEYBOARD"));
