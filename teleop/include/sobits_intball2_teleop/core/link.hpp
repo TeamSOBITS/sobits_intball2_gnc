@@ -12,13 +12,15 @@ double steady_seconds();
 // Hand-off between the input side (set_key / get_state) and the node (take_key / set_state).
 // take_key reports released keys (and no enable) when the input has not been updated within
 // key_timeout seconds, so a frozen or closed panel can never leave a key held. estop is a
-// one-shot: it is delivered once and then cleared.
+// one-shot: it is delivered once and then cleared. releases() counts the keys set with enable=false,
+// so the node can tell that a release happened even if enable=true overwrote it before it looked.
 class TeleopLink
 {
 public:
   explicit TeleopLink(double key_timeout = 0.5, std::function<double()> clock = steady_seconds);
   void set_key(const KeyState & key);
   KeyState take_key();
+  uint64_t releases() const;
   void set_state(const TeleopState & state);
   TeleopState get_state() const;
 
@@ -30,6 +32,7 @@ private:
   bool has_key_ = false;
   double key_t_ = 0;
   bool estop_ = false;
+  uint64_t releases_ = 0;       // keys set with enable=false so far
   TeleopState state_;
 };
 }  // namespace sobits_intball2_teleop

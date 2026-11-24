@@ -116,6 +116,25 @@ TEST_F(BackendTest, EstopBrakesAtTheVehicleAndNeedsAReleaseBeforeRestart)
   EXPECT_EQ(h.status(), Status::Tracking);
 }
 
+TEST_F(BackendTest, AReleaseOverwrittenBeforeTheTickStillEndsTheEstopLatch)
+{
+  // Reproduced through the panel: Enter pressed right after an emergency stop. The release (enable
+  // off) and the next enable=true reach the link between two ticks, so the node only ever saw
+  // enable=true, stayed latched, and the operator had to press Enter again.
+  Harness h;
+  h.follow = true;
+  h.run(20);
+  h.run(100, forward());
+  ASSERT_EQ(h.status(), Status::Tracking);
+  KeyState stop = forward();
+  stop.estop = true;
+  h.step(stop);
+  h.run(5, forward());                                     // enable stays on, no tick sees a release
+  h.node->link().set_key(KeyState{});                      // the release arrives ...
+  h.run(120, forward());                                   // ... and enable=true overwrites it
+  EXPECT_EQ(h.status(), Status::Tracking);
+}
+
 TEST_F(BackendTest, StalledReferenceThatDoesNotClearIsBrakedAndDisabled)
 {
   Harness h;

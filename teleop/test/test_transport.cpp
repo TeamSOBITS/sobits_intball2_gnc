@@ -121,6 +121,62 @@ TEST(Lease, EstopIsAcknowledgedOnceAndInvalidInputDisables)
   EXPECT_FALSE(f.link.take_key().enable);
 }
 
+TEST(Lease, ForeignEstopBrakesOnceAndRepeatsDoNotBlockTheHolder)
+{
+  // Reproduced in the simulator: a panel that did not hold the lease kept sending the same estop
+  // and the joystick client could not start again.
+  Fixture f;
+  f.command(0);                                    // "a" holds the lease
+  f.command(1, enabled());
+  f.link.take_key();
+  EXPECT_FALSE(f.command(100, estop_key(), "b", 1));   // "b" is not the holder
+  KeyState key = f.link.take_key();
+  EXPECT_TRUE(key.estop);                          // its estop brakes the vehicle once
+  EXPECT_FALSE(key.enable);
+  f.command(2);                                    // the holder releases ...
+  f.command(3, enabled());                         // ... and starts again
+  EXPECT_TRUE(f.link.take_key().enable);
+  for (int i = 0; i < 100; ++i) {                  // "b" repeats the same estop at 30 Hz
+    f.now += 0.03;
+    f.command(101 + i, estop_key(), "b", 1);
+    f.command(4 + i, enabled());                   // the holder keeps sending enable
+    key = f.link.take_key();
+    EXPECT_FALSE(key.estop) << i;
+    EXPECT_TRUE(key.enable) << i;
+  }
+}
+
+TEST(Lease, ANewForeignEstopIdBrakesAgain)
+{
+  Fixture f;
+  f.command(0);
+  f.command(1, enabled());
+  f.command(100, estop_key(), "b", 1);
+  EXPECT_TRUE(f.link.take_key().estop);
+  f.command(101, estop_key(), "b", 1);
+  EXPECT_FALSE(f.link.take_key().estop);
+  f.command(102, estop_key(), "b", 2);
+  EXPECT_TRUE(f.link.take_key().estop);
+  f.command(103, estop_key(), "c", 1);             // another client has its own ids
+  EXPECT_TRUE(f.link.take_key().estop);
+}
+
+TEST(Lease, ForeignEstopCountsAsAcknowledgedWhenThatClientTakesTheLease)
+{
+  Fixture f;
+  f.command(0);
+  f.command(1, enabled());
+  f.command(100, estop_key(), "b", 3);
+  EXPECT_TRUE(f.link.take_key().estop);
+  f.now = 0.51;
+  f.lease.expire();                                // "a" went away
+  EXPECT_TRUE(f.command(0, estop_key(), "b", 3));  // "b" takes over, still asking for estop 3
+  EXPECT_EQ(f.lease.estop_ack(), 3);               // acknowledged, so the panel can clear it
+  EXPECT_FALSE(f.link.take_key().estop);           // and it does not fire a second time
+  EXPECT_TRUE(f.command(1, estop_key(), "b", 4));  // a new one still works
+  EXPECT_TRUE(f.link.take_key().estop);
+}
+
 TEST(Link, ReleasesKeysWhenInputGoesQuietAndDeliversEstopOnce)
 {
   double now = 0.0;
@@ -148,6 +204,20 @@ QJsonObject payload()
 }
 std::string dump(const QJsonObject & o) {return QJsonDocument(o).toJson(QJsonDocument::Compact).toStdString();}
 }  // namespace
+
+TEST(Link, CountsKeysSetWithoutEnable)
+{
+  TeleopLink link;
+  EXPECT_EQ(link.releases(), 0u);
+  KeyState enabled;
+  enabled.enable = true;
+  link.set_key(enabled);
+  EXPECT_EQ(link.releases(), 0u);
+  link.set_key(KeyState{});
+  link.set_key(enabled);                       // a release that enable=true overwrote ...
+  EXPECT_EQ(link.releases(), 1u);              // ... is still counted
+  EXPECT_TRUE(link.take_key().enable);         // what the node receives does not change
+}
 
 TEST(Codec, KeyRoundtripAndLevelSemantics)
 {

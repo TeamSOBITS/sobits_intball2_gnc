@@ -102,6 +102,7 @@ private:
   Phase phase_ = Phase::Idle;
   double hold_until_ = 0.0;
   bool estop_latched_ = false;
+  uint64_t latch_releases_ = 0;   // link_.releases() when the latch was set
   std::optional<double> stalled_since_;
   bool stall_stopped_ = false;
   std::optional<double> last_t_;

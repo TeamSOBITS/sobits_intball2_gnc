@@ -3,6 +3,7 @@
 // Exclusive input lease for the panel transport.
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 
@@ -29,6 +30,11 @@ public:
   int64_t estop_ack() const {return estop_ack_;}
 
 private:
+  // A client that does not hold the lease can still brake the vehicle with an estop, but each
+  // estop_id counts once: a panel that keeps repeating the same estop must not keep knocking
+  // the lease holder's input out. True when `estop_id` has not been handled for `client_id`.
+  bool take_foreign_estop(const std::string & client_id, int64_t estop_id);
+
   TeleopLink & link_;
   std::function<double()> clock_;
   double timeout_;
@@ -38,6 +44,7 @@ private:
   int64_t sequence_ = -1;
   bool ready_ = false;
   int64_t estop_ack_ = 0;
+  std::map<std::string, int64_t> foreign_estop_seen_;   // client -> highest estop_id handled
 };
 
 std::string make_uuid();

@@ -134,7 +134,12 @@ TeleopNode::TeleopNode(const rclcpp::NodeOptions & options)
 
   const auto wire_qos = rclcpp::QoS(1).reliable().durability_volatile();
   state_pub_ = create_publisher<std_msgs::msg::String>(kStateTopic, wire_qos);
-  key_sub_ = create_subscription<std_msgs::msg::String>(kKeyStateTopic, wire_qos,
+  // The key subscription keeps a short queue (the publisher side stays depth 1): the input side sends
+  // a release and the next enable=true back to back, and a depth-1 queue overwrote the release
+  // before the lease saw it, so the lease refused the enable (an Enter right after an emergency stop
+  // was ignored). Every frame must reach the lease in order.
+  const auto key_qos = rclcpp::QoS(10).reliable().durability_volatile();
+  key_sub_ = create_subscription<std_msgs::msg::String>(kKeyStateTopic, key_qos,
     [this](std_msgs::msg::String::ConstSharedPtr msg) {on_key(*msg);});
   // Transport liveness uses the steady clock; simulation motion still uses the node's ROS clock.
   wire_timer_ = create_wall_timer(std::chrono::milliseconds(33), [this]() {publish_wire_state();});
@@ -321,7 +326,10 @@ void TeleopNode::tick()
   last_t_ = now;
   const KeyState key = link_.take_key();
   apply_levels(key);
-  if (!key.enable) {estop_latched_ = false;}
+  // The latch (set by an estop or a stall stop) ends once the key has been released. The input side
+  // sends the release and the next enable=true in quick succession and the link keeps only the
+  // latest key, so also count the releases: one that was overwritten before this tick still counts.
+  if (!key.enable || link_.releases() != latch_releases_) {estop_latched_ = false;}
 
   const auto current = pose();
   if (!current || now - current->stamp > tf_timeout_) {return go_idle(Status::NoTf);}
@@ -336,6 +344,7 @@ void TeleopNode::tick()
     phase_ = Phase::Hold;
     hold_until_ = now + estop_hold_;
     estop_latched_ = true;
+    latch_releases_ = link_.releases();
   } else if (key.enable && !estop_latched_) {
     if (phase_ == Phase::Idle) {
       ref_->reset(p_meas, q_meas);
@@ -371,6 +380,7 @@ void TeleopNode::tick()
       phase_ = Phase::Hold;
       hold_until_ = now + estop_hold_;
       estop_latched_ = stall_stopped_ = true;
+      latch_releases_ = link_.releases();
       stalled_since_.reset();
     }
   } else {

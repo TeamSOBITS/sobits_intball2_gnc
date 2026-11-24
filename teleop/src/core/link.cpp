@@ -16,6 +16,7 @@ void TeleopLink::set_key(const KeyState & key)
 {
   std::lock_guard<std::mutex> lock(mutex_);
   estop_ = estop_ || key.estop;
+  if (!key.enable) {++releases_;}
   key_ = key;
   key_.estop = false;
   has_key_ = true;
@@ -37,6 +38,12 @@ void TeleopLink::set_state(const TeleopState & state)
 {
   std::lock_guard<std::mutex> lock(mutex_);
   state_ = state;
+}
+
+uint64_t TeleopLink::releases() const
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  return releases_;
 }
 
 TeleopState TeleopLink::get_state() const
