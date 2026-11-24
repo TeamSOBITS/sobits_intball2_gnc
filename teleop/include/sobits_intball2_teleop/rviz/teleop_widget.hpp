@@ -21,6 +21,7 @@ struct TeleopViewState
   double position_error_mm = 0;
   double attitude_error_deg = 0;
   bool shaped = false;
+  bool joycon = false;   // labels show Joy-Con names instead of keyboard keys
 };
 
 class TeleopWidget : public QWidget
@@ -30,7 +31,13 @@ public:
   explicit TeleopWidget(QWidget * parent = nullptr);
   void setRosState(const QJsonObject & state, bool connected);
   void setFreeDrift(bool on, double seconds);
-  QSize sizeHint() const override {return {640, 950};}
+  // "keyboard" or "joycon": changes the key labels, the hint line and the banner tag.
+  void setInputSource(const QString & source);
+  QString inputSource() const {return state_.joycon ? "joycon" : "keyboard";}
+  // The text a key is drawn with, e.g. "W" -> "R↑" for the Joy-Con.
+  static QString keyLabel(const QString & name, bool joycon);
+  QString hintText() const {return state_.hint;}
+  QSize sizeHint() const override {return {640, 972};}
 protected:
   void paintEvent(QPaintEvent * event) override;
 private:

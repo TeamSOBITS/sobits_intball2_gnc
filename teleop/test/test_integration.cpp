@@ -5,6 +5,7 @@
 #include <QKeyEvent>
 #include <QTest>
 #include <QWidget>
+#include <iostream>
 
 #include "harness.hpp"
 #include "sobits_intball2_teleop/rviz/keyboard_input.hpp"
@@ -82,6 +83,86 @@ TEST_F(IntegrationTest, PanelDrivesBackendAndSurvivesFocusLossEstopAndBackendLos
   input.deactivate();
   h->run(60);
   EXPECT_EQ(h->node->link().get_state().status, Status::Disabled);
+}
+
+// After an emergency stop one Enter must be enough to start again, whenever it is pressed
+// (reported on 2026-11-24: the keyboard needed two Enters).
+TEST_F(IntegrationTest, OneEnterRestartsAfterAnEmergencyStop)
+{
+  for (const int steps_before_enter : {1, 2, 3, 4, 5, 6, 8, 12, 20, 40, 60, 120}) {
+    auto h = std::make_unique<Harness>();
+    h->follow = true;
+    h->drive_link = false;
+    auto panel_node = std::make_shared<rclcpp::Node>("teleop_test_panel_enter");
+    h->exec.add_node(panel_node);
+    QWidget viewport;
+    auto & input = KeyboardInput::instance();
+    input.activate(&viewport);
+    auto bridge = std::make_unique<RosBridge>(panel_node);
+    for (int i = 0; i < 60 && !bridge->connected(); ++i) {h->step();}
+    ASSERT_TRUE(bridge->connected());
+    h->run(20);
+
+    tap(viewport, Qt::Key_Return);                 // start
+    send(viewport, QEvent::KeyPress, Qt::Key_W);
+    h->run(60);
+    ASSERT_EQ(h->status(), Status::Tracking);
+    send(viewport, QEvent::KeyRelease, Qt::Key_W);
+    tap(viewport, Qt::Key_Escape);                 // emergency stop
+    h->run(steps_before_enter);
+
+    tap(viewport, Qt::Key_Return);                 // the ONE Enter under test
+    int steps = 0;
+    for (; steps < 200 && h->status() != Status::Tracking; ++steps) {h->step();}
+    std::cout << "[ enter ] Enter after " << steps_before_enter << " steps -> tracking after " << steps
+              << " more steps (status " << status_name(h->status()) << ")" << std::endl;
+    EXPECT_EQ(h->status(), Status::Tracking) << "one Enter did not restart (waited " << steps_before_enter << " steps)";
+
+    bridge.reset();
+    input.deactivate();
+    h->run(40);
+  }
+}
+
+// Switching the input source away from the keyboard stops the vehicle (the panel goes silent and the
+// lease runs out); switching back lets the keyboard start again with one Enter.
+TEST_F(IntegrationTest, SwitchingToJoyconStopsTheVehicleAndBackToKeyboardRestarts)
+{
+  auto h = std::make_unique<Harness>();
+  h->follow = true;
+  h->drive_link = false;
+  auto panel_node = std::make_shared<rclcpp::Node>("teleop_test_panel_source");
+  h->exec.add_node(panel_node);
+  QWidget viewport;
+  auto & input = KeyboardInput::instance();
+  input.activate(&viewport);
+  auto bridge = std::make_unique<RosBridge>(panel_node);
+  for (int i = 0; i < 60 && !bridge->connected(); ++i) {h->step();}
+  ASSERT_TRUE(bridge->connected());
+  h->run(20);
+  tap(viewport, Qt::Key_Return);
+  send(viewport, QEvent::KeyPress, Qt::Key_W);
+  h->run(60);
+  ASSERT_EQ(h->status(), Status::Tracking);
+
+  bridge->requestSource("joycon");
+  h->run(100);
+  EXPECT_NE(h->status(), Status::Tracking);
+  EXPECT_FALSE(input.enabled());
+  // Esc while the Joy-Con is the source still reaches the backend.
+  tap(viewport, Qt::Key_Escape);
+  h->run(40);
+  EXPECT_NE(h->status(), Status::Tracking);
+
+  bridge->requestSource("keyboard");
+  h->run(120);
+  tap(viewport, Qt::Key_Return);
+  int steps = 0;
+  for (; steps < 200 && h->status() != Status::Tracking; ++steps) {h->step();}
+  EXPECT_EQ(h->status(), Status::Tracking) << "one Enter after returning to the keyboard did not start";
+  bridge.reset();
+  input.deactivate();
+  h->run(40);
 }
 
 TEST_F(IntegrationTest, PanelReportsDisconnectedWhenBackendStops)

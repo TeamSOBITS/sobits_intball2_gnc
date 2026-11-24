@@ -19,6 +19,9 @@ public:
   void activate(QWidget * input_widget, QObject * render_window = nullptr);
   void deactivate();
   void stop();
+  // In Joy-Con mode the motion keys, Enter, levels and N are ignored; only Esc / Space and J work.
+  void setJoyconMode(bool joycon);
+  bool joyconMode() const {return joycon_mode_;}
   void configureLevels(int speeds, int accels, int speed, int accel, bool reset);
   bool active() const {return active_;}
   bool enabled() const {return enabled_;}
@@ -31,6 +34,7 @@ Q_SIGNALS:
   void changed();
   void estopRequested();
   void freeDriftToggleRequested();
+  void sourceToggleRequested();
 protected:
   bool eventFilter(QObject * watched, QEvent * event) override;
 private:
@@ -39,6 +43,7 @@ private:
   void release(int key);
   bool active_ = false;
   bool enabled_ = false;
+  bool joycon_mode_ = false;
   int speed_count_ = 5;
   int accel_count_ = 5;
   int speed_level_ = 1;

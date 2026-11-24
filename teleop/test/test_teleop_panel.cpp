@@ -19,17 +19,17 @@ QImage render(QWidget & widget, QSize size)
 }
 TEST(TeleopPanel, DefaultsToDisconnectedBanner)
 {
-  TeleopWidget widget; const auto image = render(widget, {640, 950});
-  EXPECT_EQ(image.size(), QSize(640, 950));
+  TeleopWidget widget; const auto image = render(widget, {640, 972});
+  EXPECT_EQ(image.size(), QSize(640, 972));
   EXPECT_EQ(image.pixelColor(20, 20), QColor("#c0392b"));
 }
 TEST(TeleopPanel, PreservesIndicatorsOnResize)
 {
-  TeleopWidget widget; const auto reference = render(widget, {640, 950});
-  for (QSize size : {QSize(480, 570), QSize(900, 950), QSize(640, 1200)}) {
+  TeleopWidget widget; const auto reference = render(widget, {640, 972});
+  for (QSize size : {QSize(480, 570), QSize(900, 972), QSize(640, 1200)}) {
     const auto image = render(widget, size);
-    const double scale = std::min(size.width() / 640.0, size.height() / 950.0);
-    const double dx = (size.width() - 640 * scale) / 2, dy = (size.height() - 950 * scale) / 2;
+    const double scale = std::min(size.width() / 640.0, size.height() / 972.0);
+    const double dx = (size.width() - 640 * scale) / 2, dy = (size.height() - 972 * scale) / 2;
     for (QPoint point : {QPoint(20, 20), QPoint(400, 900), QPoint(20, 920)}) {
       EXPECT_EQ(image.pixelColor(qRound(dx + point.x() * scale), qRound(dy + point.y() * scale)),
         reference.pixelColor(point));

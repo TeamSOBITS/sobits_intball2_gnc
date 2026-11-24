@@ -5,7 +5,9 @@
 #include <rviz_common/display_context.hpp>
 #include <rviz_common/ros_integration/ros_node_abstraction_iface.hpp>
 #include <QHBoxLayout>
+#include <QButtonGroup>
 #include <QLabel>
+#include <QPushButton>
 #include <QVBoxLayout>
 #include <pluginlib/class_list_macros.hpp>
 
@@ -24,7 +26,26 @@ TeleopPanel::TeleopPanel(QWidget * parent)
   auto * label = new QLabel("ROS DISABLED", controls);
   mode_label_ = label;
   label->setStyleSheet("color: #ffd34d; font-size: 11px;");
-  row->addWidget(label);
+  row->addWidget(label, 1);
+  // Exclusive, checkable buttons showing (and requesting) the input source. No keyboard focus, so
+  // Enter / Space on the viewport never click them.
+  auto * group = new QButtonGroup(controls);
+  group->setExclusive(true);
+  for (auto * entry : {&keyboard_button_, &joycon_button_}) {
+    const bool is_keyboard = entry == &keyboard_button_;
+    auto * button = new QPushButton(is_keyboard ? "KEYBOARD" : "JOY-CON", controls);
+    button->setObjectName(is_keyboard ? "source_keyboard" : "source_joycon");
+    button->setCheckable(true); button->setFocusPolicy(Qt::NoFocus); button->setEnabled(false);
+    button->setStyleSheet(
+      "QPushButton {background: #242a34; color: #e8eaed; border: 1px solid #424b59; padding: 2px 8px; font-size: 11px;}"
+      "QPushButton:checked {background: #3b82c4; color: white;}"
+      "QPushButton:disabled {color: #6b7380;}");
+    group->addButton(button); row->addWidget(button); *entry = button;
+    connect(button, &QPushButton::clicked, this, [this, is_keyboard]() {
+      if (bridge_) {bridge_->requestSource(is_keyboard ? "keyboard" : "joycon");}
+      refresh();
+    });
+  }
   controls->setStyleSheet("background: #242a34; color: #e8eaed;");
   layout->addWidget(controls);
   layout->addWidget(widget_, 1);
@@ -44,15 +65,29 @@ void TeleopPanel::onInitialize()
   auto node = abstraction->get_raw_node();
   if (!node->has_parameter("teleop_ros_enabled")) {node->declare_parameter("teleop_ros_enabled", false);}
   if (!node->get_parameter("teleop_ros_enabled").as_bool()) {return;}
-  bridge_ = new RosBridge(node, this);
+  setBridge(new RosBridge(node, this));
+}
+void TeleopPanel::setBridge(RosBridge * bridge)
+{
+  bridge_ = bridge;
   connect(bridge_, &RosBridge::stateChanged, this, &TeleopPanel::refresh);
   connect(bridge_, &RosBridge::freeDriftChanged, this, &TeleopPanel::refresh);
+  connect(bridge_, &RosBridge::sourceChanged, this, &TeleopPanel::refresh);
   refresh();
 }
 void TeleopPanel::refresh()
 {
+  const bool joycon = bridge_ && bridge_->source() == "joycon";
+  keyboard_button_->setEnabled(bridge_ != nullptr); joycon_button_->setEnabled(bridge_ != nullptr);
+  {
+    // Checked state follows the bridge; setChecked() does not emit clicked(), so no feedback loop.
+    QPushButton * on = joycon ? joycon_button_ : keyboard_button_;
+    on->setChecked(true);
+  }
+  widget_->setInputSource(joycon ? "joycon" : "keyboard");
   if (bridge_) {
-    mode_label_->setText(bridge_->connected() ? "ROS / TELEOP STATE" : "ROS / DISCONNECTED");
+    mode_label_->setText(QString("%1 · INPUT: %2").arg(bridge_->connected() ? "ROS / TELEOP STATE" : "ROS / DISCONNECTED")
+      .arg(joycon ? "JOY-CON" : "KEYBOARD"));
     widget_->setRosState(bridge_->state(), bridge_->connected());
     widget_->setFreeDrift(bridge_->freeDrift(), bridge_->freeDriftSeconds());
   } else {

@@ -25,7 +25,7 @@ bool knownKey(int key)
   return motionKey(key) || key == Qt::Key_Return || key == Qt::Key_Enter ||
     key == Qt::Key_Escape || key == Qt::Key_Space || key == Qt::Key_BracketLeft ||
     key == Qt::Key_BracketRight || key == Qt::Key_Comma || key == Qt::Key_Period ||
-    key == Qt::Key_N;
+    key == Qt::Key_N || key == Qt::Key_J;
 }
 }
 KeyboardInput::KeyboardInput() = default;
@@ -50,6 +50,12 @@ void KeyboardInput::stop()
 {
   for (auto * timer : releases_) {timer->stop();}
   pressed_.clear(); enabled_ = false; Q_EMIT changed();
+}
+void KeyboardInput::setJoyconMode(bool joycon)
+{
+  if (joycon_mode_ == joycon) {return;}
+  joycon_mode_ = joycon;
+  if (joycon) {stop();}
 }
 void KeyboardInput::configureLevels(int speeds, int accels, int speed, int accel, bool reset)
 {
@@ -102,6 +108,10 @@ bool KeyboardInput::handleKey(QKeyEvent * event)
   if (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)) {
     return false;
   }
+  // J switches the input source (keyboard <-> Joy-Con); it is not held either.
+  if (key == Qt::Key_J) {Q_EMIT sourceToggleRequested(); return true;}
+  // Only the emergency stop and J work while the Joy-Con is the input source.
+  if (joycon_mode_) {return true;}
   // N toggles free drift (fans cut / control restored); it is not held, so it never enters pressed_.
   if (key == Qt::Key_N) {Q_EMIT freeDriftToggleRequested(); return true;}
   if (releases_.contains(key)) {releases_[key]->stop();}

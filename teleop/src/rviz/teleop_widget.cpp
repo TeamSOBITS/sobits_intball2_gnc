@@ -1,5 +1,6 @@
 #include "sobits_intball2_teleop/rviz/teleop_widget.hpp"
 #include "sobits_intball2_teleop/rviz/keyboard_input.hpp"
+#include <QMap>
 #include <QPainterPath>
 #include <QJsonArray>
 #include <QPolygonF>
@@ -60,9 +61,11 @@ void key(QPainter & p, double x, double y, const QString & name, const TeleopVie
   const QString & direction = {}, bool above = false)
 {
   const bool held = state.pressed.contains(name);
+  const QString shown = TeleopWidget::keyLabel(name, state.joycon);
   box(p, {x - 14, y - 12, 28, 24}, held ? yellow : QColor("#242a34"),
     held ? yellow : QColor("#89919c"), 3);
-  label(p, x, y + 5, name, 16, held ? background : foreground, Qt::AlignHCenter, true);
+  // Two-character Joy-Con names are drawn smaller so they stay inside the 28 px key.
+  label(p, x, y + 5, shown, shown.size() > 1 ? 12 : 16, held ? background : foreground, Qt::AlignHCenter, true);
   if (!direction.isEmpty()) {
     label(p, x, y + (above ? -19 : 28), direction, 11, muted, Qt::AlignHCenter);
   }
@@ -95,10 +98,39 @@ TeleopWidget::TeleopWidget(QWidget * parent) : QWidget(parent)
   setAccessibleName("Int-Ball2 teleop display");
 }
 
+namespace
+{
+constexpr double kHintExtra = 22;                    // banner height added for the second hint line
+constexpr double kCanvasHeight = 950 + kHintExtra;   // logical drawing height (width is 640)
+QString hintFor(bool joycon)
+{
+  return joycon ?
+    "+ on/off · − / Esc E-stop · to KEYBOARD: J key or HOLD HOME (R)" :
+    "Enter on/off · Esc/Space E-stop · N no control · to JOY-CON: J key or HOLD HOME (R)";
+}
+}
+QString TeleopWidget::keyLabel(const QString & name, bool joycon)
+{
+  if (!joycon) {return name;}
+  static const QMap<QString, QString> names{
+    {"W", "R↑"}, {"S", "R↓"}, {"A", "R←"}, {"D", "R→"}, {"R", "ZR"}, {"F", "R"},
+    {"E", "ZL"}, {"Q", "L"},
+    // Speed / accel levels are the left Joy-Con D-pad: up/down = speed, right/left = accel.
+    {"[", "▼"}, {"]", "▲"}, {",", "◀"}, {".", "▶"}, {"↑", "L↑"}, {"↓", "L↓"}, {"←", "L←"}, {"→", "L→"}};
+  return names.value(name, name);
+}
+void TeleopWidget::setInputSource(const QString & source)
+{
+  state_.joycon = source == "joycon";
+  if (ros_connected_) {state_.hint = hintFor(state_.joycon);}
+  update();
+}
 void TeleopWidget::setRosState(const QJsonObject & data, bool connected)
 {
   ros_connected_ = connected;
+  const bool joycon = state_.joycon;
   state_ = TeleopViewState{}; state_.pressed = KeyboardInput::instance().pressedNames();
+  state_.joycon = joycon;
   axes_ = {};
   if (!connected) {update(); return;}
   const auto status = data["status"].toString();
@@ -106,7 +138,7 @@ void TeleopWidget::setRosState(const QJsonObject & data, bool connected)
   if (status == "guidance") {state_.status = "GUIDANCE_ACTIVE";}
   state_.banner = QColor(status == "tracking" ? "#2e9e4f" : status == "stalled" ? "#b38b00" :
     status == "stopping" ? "#3b82c4" : status == "disabled" ? "#626975" : "#c0392b");
-  state_.hint = "Enter on/off · Esc / Space emergency stop · N no control on/off";
+  state_.hint = hintFor(state_.joycon);
   const auto ratios = data["v_ratio"].toArray();
   for (int i = 0; i < 6; ++i) {axes_[i] = ratios[i].toDouble();}
   state_.position_error_mm = data["pos_err"].toDouble() * 1000;
@@ -138,15 +170,29 @@ void TeleopWidget::paintEvent(QPaintEvent *)
 {
   QPainter p(this); p.setRenderHint(QPainter::Antialiasing);
   p.fillRect(rect(), background);
-  const double scale = std::min(width() / 640.0, height() / 950.0);
-  p.translate((width() - 640 * scale) / 2, (height() - 950 * scale) / 2);
+  const double scale = std::min(width() / 640.0, height() / kCanvasHeight);
+  p.translate((width() - 640 * scale) / 2, (height() - kCanvasHeight * scale) / 2);
   p.scale(scale, scale);
   const bool drift = free_drift_;
-  box(p, {12, 10, 616, 58}, drift ? QColor("#c0392b") : state_.banner, Qt::transparent, 3);
+  box(p, {12, 10, 616, 58 + kHintExtra}, drift ? QColor("#c0392b") : state_.banner, Qt::transparent, 3);
   label(p, 320, 36, drift ? QString("NO CONTROL · %1 s").arg(free_drift_seconds_, 0, 'f', 1) : state_.status,
     23, Qt::white, Qt::AlignHCenter, true);
-  label(p, 320, 57, drift ? "FREE DRIFT · fans cut · N / Esc / Space restores control" : state_.hint,
-    12, Qt::white, Qt::AlignHCenter);
+  if (drift) {
+    label(p, 320, 60, "FREE DRIFT · fans cut · N / Esc / Space restores control", 14, Qt::white, Qt::AlignHCenter, true);
+  } else {
+    // The hint is two larger lines: the controls, then how to switch the input source (highlighted,
+    // since nothing else on the panel says which key or button does it).
+    const int split = state_.hint.indexOf(" · to ");
+    const QString controls = split < 0 ? state_.hint : state_.hint.left(split);
+    label(p, 320, 59, controls, 14, Qt::white, Qt::AlignHCenter, true);
+    if (split >= 0) {
+      label(p, 320, 81, state_.hint.mid(split + 3).toUpper(), 14, QColor("#ffe27a"), Qt::AlignHCenter, true);
+    }
+  }
+  if (ros_connected_ && !drift) {
+    label(p, 24, 28, state_.joycon ? "INPUT: JOY-CON" : "INPUT: KEYBOARD", 12, Qt::white, Qt::AlignLeft, true);
+  }
+  p.translate(0, kHintExtra);   // everything below the banner moves down by the extra hint line
   drawTranslation(p); drawRotation(p); drawLevels(p); drawErrors(p); drawFans(p);
 }
 
@@ -188,6 +234,7 @@ void TeleopWidget::drawTranslation(QPainter & p) const
 void TeleopWidget::drawRotation(QPainter & p) const
 {
   section(p, 280, 190, "ROTATION  /  BODY FRAME");
+  if (state_.joycon) {label(p, 608, 304, "gyro mode: ZL + tilt", 10, muted, Qt::AlignRight);}
   const std::array<QString, 3> titles{{"PITCH", "YAW", "ROLL"}};
   for (int i = 0; i < 3; ++i) {
     const double x = 109 + 211 * i;
@@ -250,12 +297,6 @@ void TeleopWidget::drawLevels(QPainter & p) const
       QString("%1 %").arg(accels_[level] * 100, 0, 'f', 0);
     label(p, 445, y + 5, value);
     label(p, 608, y + 5, QString("L%1/%2").arg(level + 1).arg(count), 12, muted, Qt::AlignRight);
-    if (ros_connected_ && requested != level) {
-      const int next = std::clamp(requested, 0, count - 1);
-      p.setBrush(Qt::NoBrush); p.setPen(QPen(yellow, 2));
-      p.drawRoundedRect(QRectF(173 + next * step, y - 10, step - 2, 20), 3, 3);
-      label(p, 442, y + 17, QString("pending L%1 · on stop").arg(next + 1), 10, yellow);
-    }
   }
 }
 
